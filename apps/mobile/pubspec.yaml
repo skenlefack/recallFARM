@@ -46,7 +46,7 @@ dev_dependencies:
   flutter_driver:
     sdk: flutter
   # Tests de LocalDb sur le poste (SQLite FFI, sans chiffrement) : ADR-004.
-  sqflite_common_ffi: ^2.3.4
+  sqflite_common_ffi: '>=2.3.4 <2.4.0' # sqlite3 2.x : pas de hook native-assets (sinon libsqlite3.so dans l'APK)
   flutter_lints: ^4.0.0
 
 flutter:
