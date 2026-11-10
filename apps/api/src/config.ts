@@ -33,12 +33,18 @@ export function loadConfig() {
     packsDir: defaultPacksDir(),
     vectorsDir: defaultVectorsDir(),
     otpDevEcho: bool(env.OTP_DEV_ECHO, !production),
-    smsProvider: (env.SMS_PROVIDER || 'simulator') as 'simulator' | 'http',
+    smsProvider: (env.SMS_PROVIDER || 'simulator') as 'simulator' | 'http' | 'connector',
     smsHttpUrl: env.SMS_HTTP_URL || '',
     smsHttpToken: env.SMS_HTTP_TOKEN || '',
     smsSenderId: env.SMS_SENDER_ID || 'RecallFarm',
-    whatsappProvider: (env.WHATSAPP_PROVIDER || 'simulator') as 'simulator',
-    paymentProvider: (env.PAYMENT_PROVIDER || 'simulator') as 'simulator' | 'orange' | 'mtn',
+    /** Cost recorded by the SMS simulator per segment (ISO 4217 minor units). */
+    smsSimCostMinor: int(env.SMS_SIM_COST_MINOR, 15),
+    smsSimCurrency: env.SMS_SIM_CURRENCY || 'XAF',
+    whatsappProvider: (env.WHATSAPP_PROVIDER || 'simulator') as 'simulator' | 'connector',
+    paymentProvider: (env.PAYMENT_PROVIDER || 'simulator') as 'simulator' | 'connector',
+    /** Public base URL of the API, used for aggregator callbacks (…/v1/connectors/:name/payment). */
+    publicApiUrl: env.PUBLIC_API_URL || 'http://localhost:8080',
+    publicAppUrl: env.PUBLIC_APP_URL || 'http://localhost:8080',
     paymentWebhookSecret: env.PAYMENT_WEBHOOK_SECRET || (production ? '' : `${DEV_SECRET}-webhook`),
     paymentSimAutoConfirmMs: int(env.PAYMENT_SIM_AUTOCONFIRM_MS, 5000),
     corsOrigins: (env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:8080')
@@ -57,6 +63,11 @@ export function loadConfig() {
     devEndpoints: !production,
     openapiExport: bool(env.OPENAPI_EXPORT, false),
   };
+  const allowed = { smsProvider: ['simulator', 'http', 'connector'], whatsappProvider: ['simulator', 'connector'], paymentProvider: ['simulator', 'connector'] };
+  for (const [k, values] of Object.entries(allowed)) {
+    const v = (cfg as Record<string, unknown>)[k] as string;
+    if (!values.includes(v)) throw new Error(`${k} invalide : "${v}" (valeurs : ${values.join(', ')})`);
+  }
   if (production) {
     const missing = ['jwtAccessSecret', 'jwtRefreshSecret', 'paymentWebhookSecret'].filter((k) => !(cfg as any)[k]);
     if (missing.length && !cfg.openapiExport) {

@@ -8,7 +8,7 @@ import { config } from '../config';
 import { Payment, Subscription } from '../database/entities';
 import { ParamsService } from '../params/params.service';
 import { EntitlementsService } from './entitlements.service';
-import { PAYMENT_PROVIDER, PaymentProvider, SimulatorPaymentProvider } from './payment.providers';
+import { PAYMENT_PROVIDER, PaymentProvider, PaymentProviderError, SimulatorPaymentProvider } from './payment.providers';
 
 export interface CheckoutInput {
   account_type: 'user' | 'organisation';
@@ -109,7 +109,17 @@ export class BillingService {
         created_by: user.id,
       }),
     );
-    const init = await this.provider.initiate(payment);
+    let init: Awaited<ReturnType<PaymentProvider['initiate']>>;
+    try {
+      init = await this.provider.initiate(payment);
+    } catch (e) {
+      const code = e instanceof PaymentProviderError ? e.code : 'network';
+      this.logger.warn(`payment ${payment.id}: initiation failed (${code}) ${(e as Error).message}`);
+      payment.status = 'echoue';
+      payment.raw = { ...payment.raw, error_code: code };
+      await repo.save(payment);
+      throw Errors.business('PAY-INIT', 'Le paiement n’a pas pu être lancé. Réessayez dans quelques minutes.', { payment_id: payment.id, error_code: code });
+    }
     payment.provider_ref = init.provider_ref;
     payment.status = 'en_attente';
     await repo.save(payment);

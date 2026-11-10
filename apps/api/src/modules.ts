@@ -4,7 +4,9 @@ import { AlertsService } from './alerts/alerts.service';
 import { BillingController } from './billing/billing.controller';
 import { BillingService } from './billing/billing.service';
 import { EntitlementsService } from './billing/entitlements.service';
-import { MtnMomoProvider, OrangeMoneyProvider, PAYMENT_PROVIDER, SimulatorPaymentProvider } from './billing/payment.providers';
+import { ConnectorPaymentProvider, PAYMENT_PROVIDER, SimulatorPaymentProvider } from './billing/payment.providers';
+import { CONNECTOR_REGISTRY, ConnectorRegistry } from './connectors/connector-registry';
+import { ConnectorsController } from './connectors/connectors.controller';
 import { AccessService } from './common/access.service';
 import { TokenService } from './common/auth';
 import { KeysService } from './common/keys.service';
@@ -30,7 +32,15 @@ import { MiscController } from './misc/misc.controller';
 import { InboundController } from './notifications/inbound.controller';
 import { MessagingService } from './notifications/messaging.service';
 import { NotificationsScheduler } from './notifications/notifications.scheduler';
-import { HttpSmsProvider, SimulatorSmsProvider, SimulatorWhatsAppProvider, SMS_PROVIDER, WHATSAPP_PROVIDER } from './notifications/providers';
+import { InboundService } from './notifications/inbound.service';
+import {
+  ConnectorMessageProvider,
+  HttpSmsProvider,
+  SimulatorSmsProvider,
+  SimulatorWhatsAppProvider,
+  SMS_PROVIDER,
+  WHATSAPP_PROVIDER,
+} from './notifications/providers';
 import { OrganisationsController } from './organisations/organisations.controller';
 import { OrganisationsService } from './organisations/organisations.service';
 import { ParamsController } from './params/params.controller';
@@ -59,19 +69,42 @@ export class CommonModule {}
 @Module({ providers: [ParamsService], controllers: [ParamsController], exports: [ParamsService] })
 export class ParamsModule {}
 
-/** Channel adapters (SMS simulator | HTTP aggregator, WhatsApp simulator) + outbound journal. */
+/** Connector routed for a messaging channel; fails fast at start-up when the configuration is incomplete. */
+function routedMessaging(registry: ConnectorRegistry, channel: 'sms' | 'whatsapp'): ConnectorMessageProvider {
+  const name = registry.route(channel);
+  const found = name ? registry.get(name) : null;
+  const spec = found?.spec[channel];
+  if (!found || !spec) throw new Error(`${channel.toUpperCase()}_PROVIDER=connector mais routing.${channel} absent de PROVIDERS_CONFIG(_FILE)`);
+  return new ConnectorMessageProvider(found.client, spec);
+}
+
+/** Channel adapters (simulator | HTTP | declarative connector, ADR-002) + outbound journal. */
 @Global()
 @Module({
   providers: [
-    { provide: SMS_PROVIDER, useFactory: () => (config().smsProvider === 'http' ? new HttpSmsProvider() : new SimulatorSmsProvider()) },
-    { provide: WHATSAPP_PROVIDER, useClass: SimulatorWhatsAppProvider },
+    { provide: CONNECTOR_REGISTRY, useFactory: () => ConnectorRegistry.fromEnv() },
+    {
+      provide: SMS_PROVIDER,
+      inject: [CONNECTOR_REGISTRY],
+      useFactory: (registry: ConnectorRegistry) => {
+        const p = config().smsProvider;
+        if (p === 'connector') return routedMessaging(registry, 'sms');
+        return p === 'http' ? new HttpSmsProvider() : new SimulatorSmsProvider();
+      },
+    },
+    {
+      provide: WHATSAPP_PROVIDER,
+      inject: [CONNECTOR_REGISTRY],
+      useFactory: (registry: ConnectorRegistry) =>
+        config().whatsappProvider === 'connector' ? routedMessaging(registry, 'whatsapp') : new SimulatorWhatsAppProvider(),
+    },
     MessagingService,
   ],
-  exports: [MessagingService, SMS_PROVIDER, WHATSAPP_PROVIDER],
+  exports: [MessagingService, SMS_PROVIDER, WHATSAPP_PROVIDER, CONNECTOR_REGISTRY],
 })
 export class MessagingModule {}
 
-/** Plans, checkout, payments (simulator + HMAC webhook), subscriptions, signed entitlements. */
+/** Plans, checkout, payments (simulator | declarative connectors), subscriptions, signed entitlements. */
 @Global()
 @Module({
   providers: [
@@ -79,9 +112,12 @@ export class MessagingModule {}
     BillingService,
     {
       provide: PAYMENT_PROVIDER,
-      useFactory: () => {
-        const p = config().paymentProvider;
-        return p === 'orange' ? new OrangeMoneyProvider() : p === 'mtn' ? new MtnMomoProvider() : new SimulatorPaymentProvider();
+      inject: [CONNECTOR_REGISTRY],
+      useFactory: (registry: ConnectorRegistry) => {
+        if (config().paymentProvider !== 'connector') return new SimulatorPaymentProvider();
+        const p = new ConnectorPaymentProvider(registry);
+        if (!p.methods().length) throw new Error('PAYMENT_PROVIDER=connector mais routing.payment absent de PROVIDERS_CONFIG(_FILE)');
+        return p;
       },
     },
   ],
@@ -124,7 +160,12 @@ export class StockSalesModule {}
 export class InboxModule {}
 
 /** Scheduler (J-7/J-1/J/J+3, quiet hours, caps) and inbound SMS / USSD. */
-@Module({ imports: [HealthModule, JournalModule], providers: [NotificationsScheduler], controllers: [InboundController], exports: [NotificationsScheduler] })
+@Module({
+  imports: [HealthModule, JournalModule],
+  providers: [NotificationsScheduler, InboundService],
+  controllers: [InboundController, ConnectorsController],
+  exports: [NotificationsScheduler],
+})
 export class NotificationsModule {}
 
 @Module({ providers: [OrganisationsService], controllers: [OrganisationsController] })

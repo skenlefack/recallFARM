@@ -20,3 +20,4 @@ playwright-report/
 *.keystore
 *.jks
 key.properties
+infra/providers/providers.json

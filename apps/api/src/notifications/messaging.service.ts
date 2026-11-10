@@ -62,9 +62,22 @@ export class MessagingService {
       provider_ref: res.provider_ref ?? null,
       error_code: res.error_code ?? null,
       sent_at: res.status === 'envoye' ? new Date() : null,
-      cost_minor: input.channel === 'sms' && res.status === 'envoye' ? 15 : null,
-      currency: input.channel === 'sms' ? 'XAF' : null,
+      cost_minor: res.status === 'envoye' && res.cost_minor !== undefined ? res.cost_minor : null,
+      currency: res.status === 'envoye' && res.cost_minor !== undefined ? (res.currency ?? null) : null,
     });
+  }
+
+  /** Applies a delivery report (DLR) to the journal entry with this provider reference. Returns the rows updated. */
+  async applyDeliveryReport(providerRef: string, status: 'delivre' | 'echoue' | 'envoye', errorCode?: string): Promise<number> {
+    const res: [unknown[], number] = await this.ds.query(
+      `UPDATE outbound_messages
+          SET status = $2,
+              delivered_at = CASE WHEN $2 = 'delivre' THEN now() ELSE delivered_at END,
+              error_code = CASE WHEN $2 = 'echoue' THEN COALESCE($3, error_code, 'non_delivre') ELSE error_code END
+        WHERE provider_ref = $1 AND status <> 'delivre'`,
+      [providerRef, status, errorCode ?? null],
+    );
+    return res[1] ?? 0;
   }
 
   async smsSentToday(phone: string, sinceIso: string): Promise<{ total: number; high: number }> {

@@ -12,7 +12,9 @@ export class CheckoutDto {
   @ApiProperty() @IsUUID() account_id: string;
   @ApiProperty({ example: 'pro' }) @IsString() plan: string;
   @ApiProperty({ enum: ['monthly', 'yearly'] }) @IsIn(['monthly', 'yearly']) period: 'monthly' | 'yearly';
-  @ApiProperty({ enum: ['orange_money', 'mtn_momo'] }) @IsIn(['orange_money', 'mtn_momo']) method: string;
+  @ApiProperty({ example: 'orange_money', description: 'Code d’un moyen de paiement du pack pays (GET /plans → payment_methods)' })
+  @Matches(/^[a-z0-9_]{2,30}$/)
+  method: string;
   @ApiProperty({ example: '+237690000001' }) @Matches(/^\+[1-9]\d{7,14}$/) phone: string;
 }
 

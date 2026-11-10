@@ -336,10 +336,8 @@
             "type": "string"
           },
           "method": {
-            "enum": [
-              "orange_money",
-              "mtn_momo"
-            ],
+            "description": "Code d’un moyen de paiement du pack pays (GET /plans → payment_methods)",
+            "example": "orange_money",
             "type": "string"
           },
           "period": {
@@ -379,6 +377,18 @@
             "description": "Act details (defaults: vaccination today for the reminder step)"
           }
         },
+        "type": "object"
+      },
+      "ConnectorTestSmsDto": {
+        "properties": {
+          "phone": {
+            "example": "+237690000001",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
+        ],
         "type": "object"
       },
       "ConsentDto": {
@@ -812,6 +822,27 @@
         },
         "type": "object"
       },
+      "EventDto": {
+        "properties": {
+          "device_id_hash": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "props": {
+            "type": "object"
+          },
+          "ts": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ts"
+        ],
+        "type": "object"
+      },
       "ExpenseDto": {
         "properties": {
           "amount": {
@@ -1161,6 +1192,23 @@
           "session_id",
           "phone",
           "text"
+        ],
+        "type": "object"
+      },
+      "IngestDto": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/EventDto"
+            },
+            "type": "array"
+          },
+          "farm_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "events"
         ],
         "type": "object"
       },
@@ -1702,6 +1750,71 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/admin/connectors": {
+      "get": {
+        "operationId": "Connectors_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/v1/admin/connectors/{name}/test-sms": {
+      "post": {
+        "operationId": "Connectors_testSms",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectorTestSmsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
     "/v1/admin/messages": {
       "get": {
         "operationId": "Inbound_messages",
@@ -2254,6 +2367,146 @@
         ]
       }
     },
+    "/v1/connectors/{name}/dlr": {
+      "post": {
+        "operationId": "Connectors_dlr",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Accuse de reception d’un SMS (DLR)",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/v1/connectors/{name}/payment": {
+      "post": {
+        "operationId": "Connectors_payment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Resultat asynchrone d’un paiement mobile money",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/v1/connectors/{name}/sms": {
+      "post": {
+        "operationId": "Connectors_inboundSms",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "SMS entrant envoye par un agregateur (format decrit par le connecteur)",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/v1/connectors/{name}/ussd": {
+      "post": {
+        "operationId": "Connectors_ussd",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Etape de session USSD (menu du pack pays)",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
     "/v1/daily-logs/{id}": {
       "get": {
         "operationId": "Journal_get",
@@ -2315,6 +2568,20 @@
         ],
         "tags": [
           "journal"
+        ]
+      }
+    },
+    "/v1/data-registry": {
+      "get": {
+        "operationId": "DataRegistry_registry",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "rgpd"
         ]
       }
     },
@@ -3888,6 +4155,34 @@
         ]
       }
     },
+    "/v1/imports/{id}/cancel": {
+      "post": {
+        "operationId": "ImportsExports_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "imports-exports"
+        ]
+      }
+    },
     "/v1/imports/{id}/commit": {
       "post": {
         "operationId": "ImportsExports_commit",
@@ -4215,7 +4510,43 @@
         ]
       }
     },
+    "/v1/me/delete/cancel": {
+      "post": {
+        "operationId": "Me_cancelDeletion",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      }
+    },
     "/v1/me/export": {
+      "get": {
+        "operationId": "Me_fullExport",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      },
       "post": {
         "operationId": "Me_exportData",
         "parameters": [],
@@ -5698,6 +6029,71 @@
         ],
         "tags": [
           "health"
+        ]
+      }
+    },
+    "/v1/v1/admin/analytics/dashboard": {
+      "get": {
+        "operationId": "AdminAnalytics_dashboard",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "analytics"
+        ]
+      }
+    },
+    "/v1/v1/analytics/events": {
+      "post": {
+        "operationId": "Analytics_ingest",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "analytics"
         ]
       }
     }

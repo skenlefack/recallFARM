@@ -1,7 +1,8 @@
 # ADR-001 — Fournisseurs SMS, USSD et paiement mobile money
 
 ## Statut
-EN ATTENTE — decisions D-03 et D-07 requises.
+PARTIELLEMENT REMPLACE par ADR-002 (connecteurs parametrables, 2026-11-10). Le choix commercial
+de l'agregateur (D-07) et du code court (D-03) reste au proprietaire du produit, mais ne bloque plus le code.
 
 ## Contexte
 Le MVP utilise des simulateurs pour SMS, USSD et paiement mobile money. Le pilote de Yaounde necessite des fournisseurs reels. Les interfaces dans le code sont generiques (pattern adaptateur), ce qui permet de brancher un fournisseur reel sans modifier le code metier.

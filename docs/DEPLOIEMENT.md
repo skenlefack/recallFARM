@@ -86,8 +86,8 @@ Avec la CI : les images sont publiées sur `ghcr.io/<organisation>/recallfarm-{a
 ## 8. Brancher les vrais fournisseurs
 | Variable | Valeur | Effet |
 |---|---|---|
-| `SMS_PROVIDER=http` + `SMS_HTTP_URL`, `SMS_HTTP_TOKEN`, `SMS_SENDER_ID` | agrégateur SMS (D-07) | envois réels des OTP et rappels |
-| `PAYMENT_PROVIDER` | `simulator` aujourd'hui ; adaptateurs Orange Money / MTN MoMo prêts à compléter dans `apps/api/src/billing/providers` | paiement réel |
+| `SMS_PROVIDER=connector` + `PROVIDERS_CONFIG_FILE` (ou `http` + `SMS_HTTP_URL`) | agrégateur SMS (D-07) décrit en JSON | envois réels des OTP et rappels |
+| `PAYMENT_PROVIDER=connector` + `PROVIDERS_CONFIG_FILE` | n'importe quel agrégateur décrit en JSON (ADR-002, `infra/providers/README.md`) | paiement réel |
 | `PAYMENT_WEBHOOK_SECRET` | secret HMAC fourni par l'agrégateur | vérification des webhooks |
 Désactiver `OTP_DEV_ECHO` et `SEED_ON_START` avant toute ouverture au public.
 

@@ -59,6 +59,8 @@ services:
     volumes:
       - apikeys:/app/keys
       - exports:/app/var
+      # Connecteurs d'agregateurs (ADR-002) : providers.json reste sur le serveur, hors depot.
+      - ./infra/providers:/run/providers:ro
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

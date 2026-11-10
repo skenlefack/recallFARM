@@ -62,7 +62,10 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
 
 ## Providers and simulators
 
-- **SMS** `SMS_PROVIDER=simulator` stores messages (readable at `/v1/dev/outbox`); `http` posts `{from,to,text}` to `SMS_HTTP_URL`.
+- **SMS** `SMS_PROVIDER=simulator` stores messages (readable at `/v1/dev/outbox`); `http` posts `{from,to,text}` to `SMS_HTTP_URL`;
+  `connector` uses any aggregator described in JSON (`PROVIDERS_CONFIG_FILE`, ADR-002, `infra/providers/README.md`).
+- **Connectors** `src/connectors/`: declarative SMS / WhatsApp / USSD / mobile-money aggregators; callbacks on
+  `/v1/connectors/:name/{sms,dlr,ussd,payment}`; `GET /v1/admin/connectors`, `POST /v1/admin/connectors/:name/test-sms`.
 - **WhatsApp**: simulator only. **Push** = journaled (`channel=push`), delivered through `/inbox` and sync.
 - **Payments** `PAYMENT_PROVIDER=simulator`: checkout returns `{payment_id, status:"initie", ussd_push:true}` and auto-confirms after
   `PAYMENT_SIM_AUTOCONFIRM_MS` (5 s) through the webhook code path; `POST /v1/dev/payments/:id/confirm|fail` for manual control.
