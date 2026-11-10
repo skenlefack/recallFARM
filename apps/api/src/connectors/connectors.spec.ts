@@ -5,7 +5,7 @@ import { ConnectorPaymentProvider, PaymentProviderError } from '../billing/payme
 import { reloadConfig } from '../config';
 import { Payment } from '../database/entities';
 import { ConnectorMessageProvider } from '../notifications/providers';
-import { ConnectorHttp, FetchFn, verifyInbound } from './connector-http';
+import { ConnectorHttp, FetchFn, inspectInbound, parseTimestamp, verifyInbound } from './connector-http';
 import { ConnectorConfigError, ConnectorRegistry, parseProvidersConfig } from './connector-registry';
 import { ConnectorSpec, ProvidersConfig } from './connector.types';
 import { missingEnv, validateProvidersConfig } from './connector.validation';
@@ -100,6 +100,17 @@ describe('template helpers', () => {
     expect(smsSegments('ê'.repeat(71)).segments).toBe(2);
   });
 
+  it('never splits an extension character or a surrogate pair across two segments (m14)', () => {
+    // 152 septets then "€" (2 septets): the phone moves "€" to part 2, then 153 more septets need part 3.
+    const gsm = `${'a'.repeat(152)}€${'a'.repeat(152)}`;
+    expect(smsSegments(gsm)).toEqual({ encoding: 'gsm7', units: 306, segments: 3 });
+    expect(smsSegments('a'.repeat(306)).segments).toBe(2);
+    // 66 UTF-16 units then an emoji (2 units): the pair moves to part 2.
+    const ucs = `${'ê'.repeat(66)}😀${'ê'.repeat(66)}`;
+    expect(smsSegments(ucs)).toEqual({ encoding: 'ucs2', units: 134, segments: 3 });
+    expect(smsSegments('ê'.repeat(134)).segments).toBe(2);
+  });
+
   it('writes major-unit amounts without floating point', () => {
     expect(amountMajor(2500, 'XAF')).toBe('2500');
     expect(amountMajor(1999, 'EUR')).toBe('19.99');
@@ -163,6 +174,112 @@ describe('providers configuration validation', () => {
     expect(validateProvidersConfig(ussd).join()).toContain('inbound_auth: obligatoire');
     const authed = { connectors: { ag: { ...withInbound.connectors.ag, inbound_auth: { type: 'header', name: 'x', value: 'y' } } } };
     expect(validateProvidersConfig(authed)).toEqual([]);
+  });
+
+  it('validates the USSD options (text mode, screen size, session, response values)', () => {
+    const auth = { type: 'header', name: 'x', value: 'y' };
+    const ok = {
+      connectors: {
+        uu: {
+          inbound_auth: auth,
+          ussd: {
+            inbound: { session_id: 's', phone: 'p', text: 't', text_mode: 'last', separator: '*' },
+            max_chars: 182,
+            session_ttl_s: 120,
+            more: { key: '99', label: 'Plus' },
+            response: { type: 'json', body: { m: '{{message}}', a: '{{continue}}' }, continue_values: { continue: 'request', end: 'end' }, headers: { Freeflow: '{{continue}}' } },
+          },
+        },
+      },
+    };
+    expect(validateProvidersConfig(ok)).toEqual([]);
+    const bad = {
+      connectors: {
+        uu: {
+          inbound_auth: auth,
+          ussd: {
+            inbound: { session_id: 's', phone: 'p', text: 't', text_mode: 'diff', separator: '**' },
+            max_chars: 20,
+            session_ttl_s: 5,
+            more: { key: 'x', label: '' },
+            response: { type: 'text', continue_prefix: 1, headers: { a: 1 }, continue_values: { continue: {} } },
+          },
+        },
+        vv: { inbound_auth: auth, ussd: { inbound: {}, response: { type: 'json' }, more: 'x' } },
+      },
+    };
+    const joined = validateProvidersConfig(bad).join('\n');
+    for (const f of [
+      'ussd.inbound.text_mode',
+      'ussd.inbound.separator',
+      'ussd.max_chars',
+      'ussd.session_ttl_s',
+      'ussd.more.key',
+      'ussd.more.label',
+      'ussd.response.continue_prefix',
+      'ussd.response.headers',
+      'ussd.response.continue_values',
+      'connectors.vv.ussd.inbound: session_id, phone et text requis',
+      'connectors.vv.ussd.more: objet attendu',
+      'connectors.vv.ussd.response.body: requis',
+    ])
+      expect(joined).toContain(f);
+    expect(validateProvidersConfig({ connectors: { ww: { inbound_auth: auth, ussd: 'x' } } }).join()).toContain('ussd: objet attendu');
+    expect(validateProvidersConfig({ connectors: { ww: { inbound_auth: auth, ussd: { inbound: { session_id: 's', phone: 'p', text: 't' }, response: { type: 'xml' } } } } }).join()).toContain(
+      'ussd.response.type',
+    );
+  });
+
+  it('validates the optional payment operations (status, refund, list)', () => {
+    const base = {
+      base_url: 'https://h.example',
+      inbound_auth: { type: 'header', name: 'x', value: 'y' },
+      payment: {
+        initiate: { url: '/c', result: { ref: 'id' } },
+        webhook: { ref: 'id', status: 's', status_map: { OK: 'confirme' } },
+        status: { method: 'GET', url: '/p/{{provider_ref}}', result: { status: 'state', status_map: { OK: 'confirme', KO: 'echoue' } } },
+        refund: { url: '/r', body: { key: '{{refund_id}}' }, result: { ref: 'id', status: 's', status_map: { DONE: 'rembourse' } } },
+        list: { method: 'GET', url: '/tx?date={{date}}', result: { items: 'data', ref: 'id', status: 's', status_map: { OK: 'confirme' } } },
+      },
+    };
+    expect(validateProvidersConfig({ connectors: { pp: base } })).toEqual([]);
+    const bad = {
+      connectors: {
+        pp: {
+          ...base,
+          payment: {
+            ...base.payment,
+            status: { url: '/p', result: { status_map: {} } },
+            refund: { url: '/r', result: { status_map: { DONE: 'paye' } } },
+            list: { url: '/l', result: { items: 'data', status: 's', status_map: { OK: 'x' } } },
+          },
+        },
+        qq: { ...base, payment: { ...base.payment, status: { url: '/p', result: { status: 's', status_map: [] } }, refund: { url: '/r', result: 'x' }, list: { url: '/l' } } },
+      },
+    };
+    const joined = validateProvidersConfig(bad).join('\n');
+    for (const f of [
+      'connectors.pp.payment.status.result.status: requis',
+      'connectors.pp.payment.refund.result.status: requis avec status_map',
+      'payment.refund.result.status_map.DONE: rembourse, echoue ou en_attente',
+      'connectors.pp.payment.list.result: payment_id ou ref requis',
+      'payment.list.result.status_map.OK: confirme, echoue ou en_attente',
+      'connectors.qq.payment.status.result.status_map: objet requis',
+      'connectors.qq.payment.refund.result: objet attendu',
+      'connectors.qq.payment.list.result: items et status requis',
+    ])
+      expect(joined).toContain(f);
+  });
+
+  it('validates the HMAC anti-replay options', () => {
+    const c = (a: Record<string, unknown>) => ({ connectors: { hh: { inbound_auth: { type: 'hmac_sha256', header: 's', secret: 'k', ...a } } } });
+    expect(validateProvidersConfig(c({ timestamp_header: 'x-ts', tolerance_s: 120, signed_payload: '{{timestamp}}.{{body}}' }))).toEqual([]);
+    const joined = [
+      ...validateProvidersConfig(c({ timestamp_header: '', tolerance_s: 1, signed_payload: 'x' })),
+      ...validateProvidersConfig(c({ signed_payload: '{{timestamp}}.{{body}}' })),
+    ].join('\n');
+    for (const f of ['timestamp_header: texte requis', 'tolerance_s: entre 10 et 3600', 'signed_payload: doit contenir {{body}} une seule fois', '{{timestamp}} demande timestamp_header'])
+      expect(joined).toContain(f);
   });
 
   it('rejects non-objects and invalid JSON', () => {
@@ -260,6 +377,40 @@ describe('ConnectorHttp', () => {
     expect(f.calls[4].headers.authorization).toBe('Bearer T2');
   });
 
+  it('shares one OAuth2 token request between concurrent calls, and renews a revoked token on 401 (m7)', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((ok) => (release = ok));
+    const calls: string[] = [];
+    let tokenN = 0;
+    const fn: FetchFn = async (input, init) => {
+      const url = String(input);
+      calls.push(`${url} ${(init?.headers as Record<string, string>).authorization ?? ''}`);
+      if (url.endsWith('/token')) {
+        await gate;
+        tokenN++;
+        return new Response(JSON.stringify({ access_token: `T${tokenN}`, expires_in: 3600 }));
+      }
+      const auth = (init?.headers as Record<string, string>).authorization;
+      return new Response('{}', { status: auth === 'Bearer T1' && url.endsWith('/revoked') ? 401 : 200 });
+    };
+    const http = new ConnectorHttp('o', { base_url: 'https://h.example', auth: { type: 'oauth2_client_credentials', token_url: 'https://h.example/token', client_id: 'i', client_secret: 's' } }, fn);
+    const all = Promise.all([http.call({ url: '/a' }, {}), http.call({ url: '/b' }, {}), http.call({ url: '/c' }, {})]);
+    release();
+    await all;
+    expect(calls.filter((c) => c.includes('/token'))).toHaveLength(1);
+    const res = await http.call({ url: '/revoked' }, {});
+    expect(res.ok).toBe(true);
+    expect(calls.slice(-3)).toEqual([
+      expect.stringMatching(/\/revoked Bearer T1$/),
+      expect.stringMatching(/\/token Basic /),
+      expect.stringMatching(/\/revoked Bearer T2$/),
+    ]);
+    // Without OAuth2 a 401 is returned as is (no retry).
+    const plain = fakeFetch([{ status: 401 }]);
+    expect((await new ConnectorHttp('p', { base_url: 'https://h.example' }, plain.fn).call({ url: '/x' }, {})).http_status).toBe(401);
+    expect(plain.calls).toHaveLength(1);
+  });
+
   it('puts OAuth2 client credentials in the body when asked, and fails without a token', async () => {
     const f = fakeFetch([{ body: { token: 'T' } }, { body: {} }, { body: {} }]);
     const auth = { type: 'oauth2_client_credentials' as const, token_url: 'https://h.example/t2', client_id: 'id', client_secret: 's', client_auth: 'body' as const, token_path: 'token', extra: { audience: 'x' } };
@@ -308,6 +459,30 @@ describe('verifyInbound', () => {
     expect(verifyInbound(a, { headers: { 'x-signature': sig }, query: {} })).toBe(false);
     const b64 = createHmac('sha512', 'k').update(body).digest('base64');
     expect(verifyInbound({ type: 'hmac_sha512', header: 'sig', secret: 'k', encoding: 'base64' }, { headers: { sig: b64 }, query: {}, rawBody: body })).toBe(true);
+  });
+
+  it('refuses stale or future signing times and signs "{{timestamp}}.{{body}}" (anti-replay, m8)', () => {
+    const now = Date.parse('2026-11-10T10:00:00Z');
+    const ts = String(Math.floor(now / 1000));
+    const a = { type: 'hmac_sha256' as const, header: 'x-sig', secret: 'k', timestamp_header: 'x-ts', tolerance_s: 60, signed_payload: '{{timestamp}}.{{body}}' };
+    const sign = (t: string) => createHmac('sha256', 'k').update(`${t}.${body.toString()}`).digest('hex');
+    const ok = inspectInbound(a, { headers: { 'x-sig': sign(ts), 'x-ts': ts }, query: {}, rawBody: body }, now);
+    expect(ok).toEqual({ ok: true, replay_key: `sha256:${sign(ts)}`, replay_ttl_ms: 120_000 });
+    const old = String(Math.floor(now / 1000) - 61);
+    expect(inspectInbound(a, { headers: { 'x-sig': sign(old), 'x-ts': old }, query: {}, rawBody: body }, now)).toEqual({ ok: false, reason: 'timestamp' });
+    expect(inspectInbound(a, { headers: { 'x-sig': sign(ts) }, query: {}, rawBody: body }, now)).toEqual({ ok: false, reason: 'timestamp' });
+    // The time is part of the signature: changing it breaks the signature.
+    const shifted = String(Number(ts) + 1);
+    expect(inspectInbound(a, { headers: { 'x-sig': sign(ts), 'x-ts': shifted }, query: {}, rawBody: body }, now)).toEqual({ ok: false, reason: 'signature' });
+    expect(inspectInbound({ type: 'header', name: 'x', value: 'v' }, { headers: { x: 'w' }, query: {} })).toEqual({ ok: false, reason: 'secret' });
+  });
+
+  it('reads signing times in seconds, milliseconds or ISO 8601', () => {
+    expect(parseTimestamp('1762768800')).toBe(1762768800000);
+    expect(parseTimestamp('1762768800123')).toBe(1762768800123);
+    expect(parseTimestamp('2026-11-10T10:00:00Z')).toBe(Date.parse('2026-11-10T10:00:00Z'));
+    expect(parseTimestamp('demain')).toBeNull();
+    expect(parseTimestamp('2026-11-10')).toBeNull();
   });
 });
 

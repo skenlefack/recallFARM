@@ -116,22 +116,38 @@ const GSM7_BASIC =
   '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
 const GSM7_EXT = '^{}\\[~]|€\f';
 
-/** Counts SMS segments: GSM-7 (160 / 153 per part) or UCS-2 (70 / 67 per part). */
+/** Fills concatenated segments one by one: a character (2 septets, or a surrogate pair) is never split across two parts. */
+function fillSegments(sizes: number[], single: number, part: number): number {
+  const total = sizes.reduce((a, b) => a + b, 0);
+  if (total <= single) return 1;
+  let segments = 1;
+  let used = 0;
+  for (const size of sizes) {
+    if (used + size > part) {
+      segments++;
+      used = 0;
+    }
+    used += size;
+  }
+  return segments;
+}
+
+/** Counts SMS segments: GSM-7 (160 / 153 per part) or UCS-2 (70 / 67 per part), as a phone splits them (m14). */
 export function smsSegments(text: string): { encoding: 'gsm7' | 'ucs2'; units: number; segments: number } {
-  let units = 0;
+  const septets: number[] = [];
   let gsm = true;
   for (const ch of text) {
-    if (GSM7_BASIC.includes(ch)) units += 1;
-    else if (GSM7_EXT.includes(ch)) units += 2;
+    if (GSM7_BASIC.includes(ch)) septets.push(1);
+    else if (GSM7_EXT.includes(ch)) septets.push(2);
     else {
       gsm = false;
       break;
     }
   }
-  if (gsm) return { encoding: 'gsm7', units, segments: units <= 160 ? 1 : Math.ceil(units / 153) };
+  if (gsm) return { encoding: 'gsm7', units: septets.reduce((a, b) => a + b, 0), segments: fillSegments(septets, 160, 153) };
   // UCS-2 counts UTF-16 code units (characters outside the BMP use two).
-  const u = text.length;
-  return { encoding: 'ucs2', units: u, segments: u <= 70 ? 1 : Math.ceil(u / 67) };
+  const units = [...text].map((ch) => ch.length);
+  return { encoding: 'ucs2', units: text.length, segments: fillSegments(units, 70, 67) };
 }
 
 /** Minor-unit exponent of an ISO 4217 currency (XAF → 0, EUR → 2), from the runtime's ICU data. */

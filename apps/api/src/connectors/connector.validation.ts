@@ -46,6 +46,12 @@ function checkInboundAuth(a: InboundAuthSpec | undefined, where: string, errs: s
   if (a.type === 'hmac_sha256' || a.type === 'hmac_sha512') {
     if (typeof a.header !== 'string' || typeof a.secret !== 'string') errs.push(`${where}: header et secret requis`);
     if (a.encoding && !['hex', 'base64'].includes(a.encoding)) errs.push(`${where}.encoding: "hex" ou "base64"`);
+    if (a.timestamp_header !== undefined && (typeof a.timestamp_header !== 'string' || !a.timestamp_header)) errs.push(`${where}.timestamp_header: texte requis`);
+    if (a.tolerance_s !== undefined && (!Number.isInteger(a.tolerance_s) || a.tolerance_s < 10 || a.tolerance_s > 3600)) errs.push(`${where}.tolerance_s: entre 10 et 3600`);
+    if (a.signed_payload !== undefined) {
+      if (typeof a.signed_payload !== 'string' || a.signed_payload.split('{{body}}').length !== 2) errs.push(`${where}.signed_payload: doit contenir {{body}} une seule fois`);
+      else if (a.signed_payload.includes('{{timestamp}}') && !a.timestamp_header) errs.push(`${where}.signed_payload: {{timestamp}} demande timestamp_header`);
+    }
     return;
   }
   errs.push(`${where}.type: inconnu`);
@@ -74,10 +80,81 @@ function checkMessaging(s: ConnectorSpec['sms'], where: string, c: ConnectorSpec
   if (s.inbound && (typeof s.inbound.from !== 'string' || typeof s.inbound.text !== 'string')) errs.push(`${where}.inbound: from et text requis`);
   if (s.dlr) {
     if (typeof s.dlr.ref !== 'string' || typeof s.dlr.status !== 'string') errs.push(`${where}.dlr: ref et status requis`);
-    if (!isObj(s.dlr.status_map)) errs.push(`${where}.dlr.status_map: objet requis`);
-    else
-      for (const [k, v] of Object.entries(s.dlr.status_map))
-        if (!['delivre', 'echoue', 'envoye'].includes(v as string)) errs.push(`${where}.dlr.status_map.${k}: delivre, echoue ou envoye`);
+    checkStatusMap(s.dlr.status_map, ['delivre', 'echoue', 'envoye'], `${where}.dlr.status_map`, errs);
+  }
+}
+
+function isFlag(v: unknown): boolean {
+  return ['string', 'number', 'boolean'].includes(typeof v);
+}
+
+function checkStatusMap(m: unknown, allowed: string[], where: string, errs: string[]) {
+  if (!isObj(m)) return void errs.push(`${where}: objet requis`);
+  const list = `${allowed.slice(0, -1).join(', ')} ou ${allowed[allowed.length - 1]}`;
+  for (const [k, v] of Object.entries(m)) if (!allowed.includes(v as string)) errs.push(`${where}.${k}: ${list}`);
+}
+
+function checkUssd(u: ConnectorSpec['ussd'], w: string, errs: string[]) {
+  if (!isObj(u)) return void errs.push(`${w}.ussd: objet attendu`);
+  if (!isObj(u.inbound) || ['session_id', 'phone', 'text'].some((k) => typeof (u.inbound as unknown as Record<string, unknown>)[k] !== 'string'))
+    errs.push(`${w}.ussd.inbound: session_id, phone et text requis`);
+  else {
+    if (u.inbound.text_mode !== undefined && !['cumulative', 'last'].includes(u.inbound.text_mode)) errs.push(`${w}.ussd.inbound.text_mode: "cumulative" ou "last"`);
+    if (u.inbound.separator !== undefined && (typeof u.inbound.separator !== 'string' || u.inbound.separator.length !== 1)) errs.push(`${w}.ussd.inbound.separator: un caractere`);
+  }
+  if (u.max_chars !== undefined && (!Number.isInteger(u.max_chars) || u.max_chars < 60 || u.max_chars > 1000)) errs.push(`${w}.ussd.max_chars: entier entre 60 et 1000`);
+  if (u.session_ttl_s !== undefined && (!Number.isInteger(u.session_ttl_s) || u.session_ttl_s < 30 || u.session_ttl_s > 900)) errs.push(`${w}.ussd.session_ttl_s: entre 30 et 900`);
+  if (u.more !== undefined) {
+    if (!isObj(u.more)) errs.push(`${w}.ussd.more: objet attendu`);
+    else {
+      if (u.more.key !== undefined && (typeof u.more.key !== 'string' || !/^[0-9#*]{1,2}$/.test(u.more.key))) errs.push(`${w}.ussd.more.key: 1 ou 2 touches (chiffres, * ou #)`);
+      if (u.more.label !== undefined && (typeof u.more.label !== 'string' || !u.more.label || u.more.label.length > 20)) errs.push(`${w}.ussd.more.label: 1 a 20 caracteres`);
+    }
+  }
+  if (!isObj(u.response) || !['text', 'json'].includes(u.response.type)) return void errs.push(`${w}.ussd.response.type: "text" ou "json"`);
+  const r = u.response;
+  if (r.type === 'json' && r.body === undefined) errs.push(`${w}.ussd.response.body: requis pour "json"`);
+  if (r.type === 'text') {
+    for (const k of ['continue_prefix', 'end_prefix'] as const)
+      if (r[k] !== undefined && typeof r[k] !== 'string') errs.push(`${w}.ussd.response.${k}: texte attendu`);
+  }
+  if (r.headers !== undefined && (!isObj(r.headers) || Object.values(r.headers).some((v) => typeof v !== 'string'))) errs.push(`${w}.ussd.response.headers: objet de textes`);
+  if (r.continue_values !== undefined && (!isObj(r.continue_values) || !isFlag(r.continue_values.continue) || !isFlag(r.continue_values.end)))
+    errs.push(`${w}.ussd.response.continue_values: continue et end requis (texte, nombre ou booleen)`);
+}
+
+function checkPayment(p: NonNullable<ConnectorSpec['payment']>, w: string, c: ConnectorSpec, errs: string[]) {
+  const PAY = ['confirme', 'echoue', 'en_attente'];
+  checkRequest(p.initiate, `${w}.payment.initiate`, c, errs);
+  if (!isObj(p.initiate?.result) || typeof p.initiate.result.ref !== 'string') errs.push(`${w}.payment.initiate.result.ref: requis`);
+  if (!isObj(p.webhook)) errs.push(`${w}.payment.webhook: requis`);
+  else {
+    if (!p.webhook.payment_id && !p.webhook.ref) errs.push(`${w}.payment.webhook: payment_id ou ref requis`);
+    if (typeof p.webhook.status !== 'string') errs.push(`${w}.payment.webhook.status: requis`);
+    checkStatusMap(p.webhook.status_map, PAY, `${w}.payment.webhook.status_map`, errs);
+  }
+  if (p.status !== undefined) {
+    checkRequest(p.status, `${w}.payment.status`, c, errs);
+    if (!isObj(p.status.result) || typeof p.status.result.status !== 'string') errs.push(`${w}.payment.status.result.status: requis`);
+    else checkStatusMap(p.status.result.status_map, PAY, `${w}.payment.status.result.status_map`, errs);
+  }
+  if (p.refund !== undefined) {
+    checkRequest(p.refund, `${w}.payment.refund`, c, errs);
+    const r = p.refund.result;
+    if (r !== undefined && !isObj(r)) errs.push(`${w}.payment.refund.result: objet attendu`);
+    else if (r?.status !== undefined || r?.status_map !== undefined) {
+      if (typeof r.status !== 'string') errs.push(`${w}.payment.refund.result.status: requis avec status_map`);
+      checkStatusMap(r.status_map, ['rembourse', 'echoue', 'en_attente'], `${w}.payment.refund.result.status_map`, errs);
+    }
+  }
+  if (p.list !== undefined) {
+    checkRequest(p.list, `${w}.payment.list`, c, errs);
+    const r = p.list.result;
+    if (!isObj(r) || typeof r.items !== 'string' || typeof r.status !== 'string') errs.push(`${w}.payment.list.result: items et status requis`);
+    else {
+      if (!r.payment_id && !r.ref) errs.push(`${w}.payment.list.result: payment_id ou ref requis`);
+      checkStatusMap(r.status_map, PAY, `${w}.payment.list.result.status_map`, errs);
+    }
   }
 }
 
@@ -102,27 +179,8 @@ export function validateProvidersConfig(cfg: unknown): string[] {
     checkInboundAuth(c.inbound_auth, `${w}.inbound_auth`, errs);
     checkMessaging(c.sms, `${w}.sms`, c, errs);
     checkMessaging(c.whatsapp, `${w}.whatsapp`, c, errs);
-    if (c.ussd !== undefined) {
-      const u = c.ussd;
-      if (!isObj(u.inbound) || ['session_id', 'phone', 'text'].some((k) => typeof (u.inbound as unknown as Record<string, unknown>)[k] !== 'string'))
-        errs.push(`${w}.ussd.inbound: session_id, phone et text requis`);
-      if (!isObj(u.response) || !['text', 'json'].includes(u.response.type)) errs.push(`${w}.ussd.response.type: "text" ou "json"`);
-      else if (u.response.type === 'json' && u.response.body === undefined) errs.push(`${w}.ussd.response.body: requis pour "json"`);
-    }
-    if (c.payment !== undefined) {
-      const p = c.payment;
-      checkRequest(p.initiate, `${w}.payment.initiate`, c, errs);
-      if (!isObj(p.initiate?.result) || typeof p.initiate.result.ref !== 'string') errs.push(`${w}.payment.initiate.result.ref: requis`);
-      if (!isObj(p.webhook)) errs.push(`${w}.payment.webhook: requis`);
-      else {
-        if (!p.webhook.payment_id && !p.webhook.ref) errs.push(`${w}.payment.webhook: payment_id ou ref requis`);
-        if (typeof p.webhook.status !== 'string') errs.push(`${w}.payment.webhook.status: requis`);
-        if (!isObj(p.webhook.status_map)) errs.push(`${w}.payment.webhook.status_map: objet requis`);
-        else
-          for (const [k, v] of Object.entries(p.webhook.status_map))
-            if (!['confirme', 'echoue', 'en_attente'].includes(v as string)) errs.push(`${w}.payment.webhook.status_map.${k}: confirme, echoue ou en_attente`);
-      }
-    }
+    if (c.ussd !== undefined) checkUssd(c.ussd, w, errs);
+    if (c.payment !== undefined) checkPayment(c.payment, w, c, errs);
     const receives = !!(c.payment || c.ussd || c.sms?.inbound || c.sms?.dlr || c.whatsapp?.inbound || c.whatsapp?.dlr);
     if (receives && (!c.inbound_auth || c.inbound_auth.type === 'none'))
       errs.push(`${w}.inbound_auth: obligatoire des que le connecteur recoit des appels (sms, dlr, ussd, paiement)`);
