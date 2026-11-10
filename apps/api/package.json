@@ -13,6 +13,8 @@
     "start:dev": "node --watch -r ts-node/register/transpile-only src/main.ts",
     "test": "jest --config jest.config.js",
     "test:e2e": "jest --config test/jest-e2e.config.js --runInBand",
+    "test:cov": "jest --config jest.config.js --coverage",
+    "test:e2e:cov": "jest --config test/jest-e2e.config.js --runInBand --coverage",
     "migration:run": "node -r ts-node/register/transpile-only src/scripts/migrate.ts",
     "migration:run:prod": "node dist/scripts/migrate.js",
     "migration:revert": "node -r ts-node/register/transpile-only src/scripts/revert.ts",

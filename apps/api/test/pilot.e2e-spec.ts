@@ -83,7 +83,7 @@ describe('pilot journey', () => {
     expect(r.body).toMatchObject({ db: 'ok', redis: 'disabled' });
   });
 
-  it('OTP request/verify creates the account, refresh works, 4th request in 15 min is rate limited', async () => {
+  it('EF-AUT-01 RG-AUT-01: OTP request/verify creates the account, refresh works, 4th request in 15 min is rate limited', async () => {
     const s = await login(phone);
     token = s.token;
     refresh = s.refresh;
@@ -103,7 +103,7 @@ describe('pilot journey', () => {
     expect(r.body.error).toMatchObject({ code: 'VALIDATION_ERROR', fields: { hacker: 'champ non autorisé' } });
   });
 
-  it('creates a farm (idempotent upsert)', async () => {
+  it('EF-ONB-02: creates a farm (idempotent upsert)', async () => {
     const body = { id: farmId, name: 'Ferme pilote Soa', speculations: ['volaille'], country: 'CM', locality: 'Soa' };
     const r = await http.post('/v1/farms').set(auth(token)).send(body).expect(201);
     expect(r.body).toMatchObject({ id: farmId, currency: 'XAF', name: 'Ferme pilote Soa' });
@@ -113,7 +113,7 @@ describe('pilot journey', () => {
     expect(list.body.next_cursor).toBeNull();
   });
 
-  it('validates a batch against the resolved form, then creates it with reminders', async () => {
+  it('EF-CHE-02 EF-VAC-02 EF-ONB-01: validates a batch against the resolved form, then creates it with reminders', async () => {
     const bad = await http
       .post(`/v1/farms/${farmId}/batches`)
       .set(auth(token))
@@ -136,7 +136,7 @@ describe('pilot journey', () => {
     expect(rem.body.data[0]).toMatchObject({ timing: 'en_retard', status: 'a_venir' });
   });
 
-  it('daily log: high mortality opens a critical alert; duplicates → 409; RG-JOU-03', async () => {
+  it('EF-JOU-01 RG-JOU-05 RG-CHE-01: daily log: high mortality opens a critical alert; duplicates → 409; RG-JOU-03', async () => {
     const r = await http
       .post(`/v1/farms/${farmId}/daily-logs`)
       .set(auth(token))
@@ -168,7 +168,7 @@ describe('pilot journey', () => {
   });
 
   let eventId = '';
-  it('health event recomputes reminders; certificate requires Pro', async () => {
+  it('EF-VAC-01 EF-VAC-04 EF-VAC-06: health event recomputes reminders; certificate requires Pro', async () => {
     eventId = randomUUID();
     const r = await http
       .post('/v1/health-events')
@@ -181,7 +181,7 @@ describe('pilot journey', () => {
     expect(cert.body.error).toMatchObject({ code: 'PLAN_REQUIRED', details: { required_plan: 'pro' } });
   });
 
-  it('inbound SMS "OK <code>" confirms the reminder', async () => {
+  it('EF-VAC-04 T-02: inbound SMS "OK <code>" confirms the reminder', async () => {
     const rem = await http.get(`/v1/reminders?farm_id=${farmId}&status=ouvert`).set(auth(token)).expect(200);
     const marek = rem.body.data.find((x: any) => x.step === 'marek_j1');
     const r = await http.post('/v1/inbound/sms').send({ from: phone, text: `ok ${marek.short_code}` }).expect(200);
@@ -192,7 +192,7 @@ describe('pilot journey', () => {
     expect(outbox.body.data[0].text).toMatch(/merci/i);
   });
 
-  it('checkout + signed webhook activates Pro; entitlements JWS verifies offline', async () => {
+  it('T-08 EF-ABO-01 EF-ABO-02: checkout + signed webhook activates Pro; entitlements JWS verifies offline', async () => {
     const me = await http.get('/v1/me').set(auth(token)).expect(200);
     const co = await http
       .post('/v1/subscriptions/checkout')
@@ -218,7 +218,7 @@ describe('pilot journey', () => {
     await http.get(`/v1/health-events/${eventId}/certificate.json`).set(auth(token)).expect(200);
   });
 
-  it('sync push/pull round trip with idempotent replay and daily_log conflict merge', async () => {
+  it('T-07 T-33 EF-SYN-01 EF-SYN-02 EF-SYN-03 EF-SYN-04 RG-SYN-01: sync push/pull round trip with idempotent replay and daily_log conflict merge', async () => {
     const newLog = randomUUID();
     const changes = [
       { entity: 'batches', op: 'upsert', id: batchId, client_rev: 2, data: { farm_id: farmId, strain: 'Cobb 500 (hors ligne)', current_count: 1 } },
@@ -255,7 +255,7 @@ describe('pilot journey', () => {
     expect(delta.body.changes).toEqual([]);
   });
 
-  it('certificate QR payload verifies publicly (Marthe, Rex, rabies)', async () => {
+  it('T-35 EF-VAC-06 EF-CAN-01 EF-CAN-02: certificate QR payload verifies publicly (Marthe, Rex, rabies)', async () => {
     const marthe = await login(DEMO.phones.marthe);
     const book = await http.get(`/v1/dogs/${DEMO.marthe.rex}`).set(auth(marthe.token)).expect(200);
     expect(book.body).toMatchObject({ name: 'Rex', chip_number: '120093000418271', rabies_status: 'a_jour' });
@@ -274,7 +274,7 @@ describe('pilot journey', () => {
     expect(mc.body.expected_coef).toBeCloseTo(0.03125, 5);
   });
 
-  it('studio four-eyes: the author cannot publish, the reviewer can', async () => {
+  it('T-43 EF-PAR-06 RG-PAR-04: studio four-eyes: the author cannot publish, the reviewer can', async () => {
     const author = await login(DEMO.phones.jeanMarc);
     const reviewer = await login(DEMO.phones.mbarga);
     const draft = await http.post('/v1/studio/packs/pays.CM/versions').set(auth(author.token)).send({ changelog: 'Texte SMS' }).expect(201);
@@ -314,7 +314,7 @@ describe('pilot journey', () => {
     await http.post('/v1/studio/packs/pays.CM/rollback').set(auth(reviewer.token)).send({ to_version: '1.0.0', reason: 'test' }).expect(200);
   });
 
-  it('organisation dashboard (Structure) masks cells under 5 farms', async () => {
+  it('T-36 RG-SUR-02 EF-ANA-02: organisation dashboard (Structure) masks cells under 5 farms', async () => {
     const aicha = await login(DEMO.phones.aicha);
     const d = await http.get(`/v1/organisations/${DEMO.orgId}/dashboard`).set(auth(aicha.token)).expect(200);
     expect(d.body.kpis).toMatchObject({ total_farmers: 312, active_farmers_7d: 241, farmers_without_smartphone: 64, overdue_reminders: 48, overdue_j3: 17, batches_over_threshold: 2 });
@@ -329,7 +329,7 @@ describe('pilot journey', () => {
     await http.get(`/v1/organisations/${DEMO.orgId}/dashboard`).set(auth(token)).expect(403);
   });
 
-  it('notification scheduler applies the plan and journals messages', async () => {
+  it('EF-NOT-01 EF-NOT-02 EF-VAC-03 RG-NOT-02: notification scheduler applies the plan and journals messages', async () => {
     const r = await app.get(NotificationsScheduler).runOnce(new Date(`${today}T09:00:00+01:00`));
     expect(r.considered).toBeGreaterThan(0);
     expect(r.push + r.sent + r.capped).toBeGreaterThan(0);
