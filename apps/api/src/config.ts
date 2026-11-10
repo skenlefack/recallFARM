@@ -68,6 +68,9 @@ export function loadConfig() {
     const v = (cfg as Record<string, unknown>)[k] as string;
     if (!values.includes(v)) throw new Error(`${k} invalide : "${v}" (valeurs : ${values.join(', ')})`);
   }
+  if (production && !cfg.openapiExport && (cfg.paymentProvider === 'connector' || cfg.smsProvider === 'connector') && !env.PUBLIC_API_URL) {
+    throw new Error('PUBLIC_API_URL requis en production avec des connecteurs (URL de rappel des agregateurs)');
+  }
   if (production) {
     const missing = ['jwtAccessSecret', 'jwtRefreshSecret', 'paymentWebhookSecret'].filter((k) => !(cfg as any)[k]);
     if (missing.length && !cfg.openapiExport) {

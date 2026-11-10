@@ -27,7 +27,8 @@ export class ConnectorHttp {
   ) {}
 
   private url(raw: string, vars: Vars): URL {
-    const rendered = renderText(raw, vars);
+    // Values inserted in a URL are percent-encoded: a "&" in a batch name cannot add parameters.
+    const rendered = renderText(raw, vars, encodeURIComponent);
     if (/^https?:\/\//.test(rendered)) return new URL(rendered);
     const base = resolveEnv(this.spec.base_url ?? '').replace(/\/+$/, '');
     return new URL(`${base}/${rendered.replace(/^\/+/, '')}`);
@@ -151,6 +152,7 @@ export function verifyInbound(
   if (!given || !req.rawBody) return false;
   const algo = auth.type === 'hmac_sha512' ? 'sha512' : 'sha256';
   const expected = createHmac(algo, resolveEnv(auth.secret)).update(req.rawBody).digest(auth.encoding ?? 'hex');
-  const value = auth.prefix && given.startsWith(auth.prefix) ? given.slice(auth.prefix.length) : given;
+  const raw = auth.prefix && given.startsWith(auth.prefix) ? given.slice(auth.prefix.length) : given;
+  const value = (auth.encoding ?? 'hex') === 'hex' ? raw.toLowerCase() : raw;
   return same(value, expected);
 }

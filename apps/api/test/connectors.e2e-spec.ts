@@ -66,8 +66,18 @@ function providers(port: number) {
             status: 'status',
             status_map: { SUCCESS: 'confirme', FAILED: 'echoue', PENDING: 'en_attente' },
             fees_minor: 'fees',
+            amount_minor: 'amount',
             ack: { ok: true },
           },
+        },
+      },
+      // Second aggregator with its own secret: it must not be able to confirm fakeagg's payments.
+      otheragg: {
+        base_url: `http://127.0.0.1:${port}/v1`,
+        inbound_auth: { type: 'header', name: 'x-callback-token', value: 'other-secret' },
+        payment: {
+          initiate: { url: '/payments/collect', body: { reference: '{{reference}}' }, result: { ref: 'transaction_id' } },
+          webhook: { payment_id: 'reference', status: 'status', status_map: { SUCCESS: 'confirme' } },
         },
       },
     },
@@ -164,6 +174,7 @@ describe('declarative connectors', () => {
     const reply = received.slice(before).find((x) => x.path === '/v1/sms/messages');
     expect(reply?.body).toMatchObject({ to: '237690000001', message: expect.stringMatching(/non compris/) });
     await http.post('/v1/connectors/fakeagg/sms').set(CB).send({ content: 'x' }).expect(422);
+    await http.post('/v1/connectors/fakeagg/sms').set(CB).send({ msisdn: 'abc', content: 'x' }).expect(422);
   });
 
   it('applies delivery reports to the outbound journal', async () => {
@@ -176,6 +187,9 @@ describe('declarative connectors', () => {
     expect(row.rows[0].delivered_at).not.toBeNull();
     const unknown = await http.post('/v1/connectors/fakeagg/dlr').set(CB).send({ id: ref, state: 'WHATEVER' }).expect(200);
     expect(unknown.body.applied).toBe(false);
+    const proto = await http.post('/v1/connectors/fakeagg/dlr').set(CB).send({ id: ref, state: 'constructor' }).expect(200);
+    expect(proto.body.applied).toBe(false);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: ref, status: 'constructor' }).expect(200);
     const again = await http.post('/v1/connectors/fakeagg/dlr').set(CB).send({ id: ref, state: 'FAILED' }).expect(200);
     expect(again.body.applied).toBe(false);
   });
@@ -213,7 +227,7 @@ describe('declarative connectors', () => {
     expect(pending.body).toEqual({ ok: true });
     expect((await http.get(`/v1/payments/${co.body.payment_id}`).set(auth).expect(200)).body.status).toBe('en_attente');
 
-    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ transaction_id: co.body.provider_ref, status: 'SUCCESS', fees: 50 }).expect(200);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ transaction_id: co.body.provider_ref, status: 'SUCCESS', fees: 50, amount: 2500 }).expect(200);
     const paid = await http.get(`/v1/payments/${co.body.payment_id}`).set(auth).expect(200);
     expect(paid.body.status).toBe('confirme');
     const fees = await db.query(`SELECT fees_minor::int AS f FROM payments WHERE id = $1`, [co.body.payment_id]);
@@ -224,24 +238,72 @@ describe('declarative connectors', () => {
     expect(me.body.entitlements.plan).toBe('pro');
   });
 
-  it('marks the payment failed and answers 422 when the aggregator refuses', async () => {
-    const marthe = await login('+237690000001');
-    queued['/v1/payments/collect'] = [{ status: 500, body: { error: 'down' } }];
-    const r = await http
+  const checkout = (token: string, id: string) =>
+    http
       .post('/v1/subscriptions/checkout')
-      .set({ authorization: `Bearer ${marthe.token}` })
-      .send({ account_type: 'user', account_id: marthe.id, plan: 'pro', period: 'monthly', method: 'orange_money', phone: '+237690000001' })
-      .expect(422);
-    expect(r.body.error.details).toMatchObject({ rule: 'PAY-INIT', error_code: 'http_500' });
-    const p = await db.query(`SELECT status FROM payments WHERE id = $1`, [r.body.error.details.payment_id]);
-    expect(p.rows[0].status).toBe('echoue');
+      .set({ authorization: `Bearer ${token}` })
+      .send({ account_type: 'user', account_id: id, plan: 'pro', period: 'monthly', method: 'orange_money', phone: '+237690000001' });
+  const status = async (token: string, id: string) => (await http.get(`/v1/payments/${id}`).set({ authorization: `Bearer ${token}` }).expect(200)).body.status;
+
+  it('explicit refusal (4xx) fails the payment; a late confirmation still activates it', async () => {
+    const m = await login('+237690000001');
+    queued['/v1/payments/collect'] = [{ status: 400, body: { error: 'solde insuffisant' } }];
+    const r = await checkout(m.token, m.id).expect(422);
+    expect(r.body.error.details).toMatchObject({ rule: 'PAY-INIT', error_code: 'http_400' });
+    const id = r.body.error.details.payment_id;
+    expect(await status(m.token, id)).toBe('echoue');
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    expect(await status(m.token, id)).toBe('confirme');
+  });
+
+  it('unknown outcome (5xx) keeps the payment pending, and the webhook confirms it', async () => {
+    const m = await login('+237690000001');
+    queued['/v1/payments/collect'] = [{ status: 503, body: { error: 'down' } }];
+    const r = await checkout(m.token, m.id).expect(422);
+    expect(r.body.error.details).toMatchObject({ rule: 'PAY-PENDING', status: 'en_attente', error_code: 'http_503' });
+    const id = r.body.error.details.payment_id;
+    expect(await status(m.token, id)).toBe('en_attente');
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    expect(await status(m.token, id)).toBe('confirme');
+  });
+
+  it('refuses a confirmation with another amount, or from another connector, and keeps the webhook for audit', async () => {
+    const m = await login('+237690000001');
+    const co = await checkout(m.token, m.id).expect(201);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co.body.payment_id, status: 'SUCCESS', amount: 100 }).expect(200);
+    expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
+    await http
+      .post('/v1/connectors/otheragg/payment')
+      .set({ 'x-callback-token': 'other-secret' })
+      .send({ reference: co.body.payment_id, status: 'SUCCESS' })
+      .expect(404);
+    expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
+    const raw = await db.query(`SELECT raw FROM payments WHERE id = $1`, [co.body.payment_id]);
+    expect(raw.rows[0].raw.connector).toBe('fakeagg');
+    expect(raw.rows[0].raw.events).toEqual([expect.objectContaining({ status: 'confirme', body: expect.objectContaining({ amount: 100 }) })]);
+  });
+
+  it('two simultaneous confirmations extend the subscription only once', async () => {
+    const m = await login('+237690000001');
+    const before = await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id]);
+    const co = await checkout(m.token, m.id).expect(201);
+    const hook = () => http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co.body.payment_id, status: 'SUCCESS', amount: 2500 });
+    const results = await Promise.all([hook(), hook(), hook()]);
+    results.forEach((r) => expect(r.status).toBe(200));
+    const after = await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id]);
+    const expected = new Date(before.rows[0].expires_at);
+    expected.setUTCMonth(expected.getUTCMonth() + 1);
+    expect(new Date(after.rows[0].expires_at).toISOString()).toBe(expected.toISOString());
   });
 
   it('lists connectors without secrets and sends a test SMS (platform roles only)', async () => {
     const admin = await login('+237690000009');
     const list = await http.get('/v1/admin/connectors').set({ authorization: `Bearer ${admin.token}` }).expect(200);
-    expect(list.body.data).toEqual([{ name: 'fakeagg', label: 'Agregateur de test', channels: ['sms', 'ussd', 'payment'], routed_for: ['sms', 'ussd', 'payment:orange_money'] }]);
-    expect(JSON.stringify(list.body)).not.toMatch(/agg-token|cb-secret|127\.0\.0\.1/);
+    expect(list.body.data).toEqual([
+      { name: 'fakeagg', label: 'Agregateur de test', channels: ['sms', 'ussd', 'payment'], routed_for: ['sms', 'ussd', 'payment:orange_money'] },
+      { name: 'otheragg', label: 'otheragg', channels: ['payment'], routed_for: [] },
+    ]);
+    expect(JSON.stringify(list.body)).not.toMatch(/agg-token|cb-secret|other-secret|127\.0\.0\.1/);
     const t = await http.post('/v1/admin/connectors/fakeagg/test-sms').set({ authorization: `Bearer ${admin.token}` }).send({ phone: '+237690000002' }).expect(200);
     expect(t.body).toMatchObject({ connector: 'fakeagg', channel: 'sms', status: 'envoye', provider_ref: expect.stringMatching(/^MSG-/) });
     const farmer = await login('+237690000001');

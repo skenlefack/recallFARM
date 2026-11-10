@@ -122,8 +122,10 @@ export function validateProvidersConfig(cfg: unknown): string[] {
           for (const [k, v] of Object.entries(p.webhook.status_map))
             if (!['confirme', 'echoue', 'en_attente'].includes(v as string)) errs.push(`${w}.payment.webhook.status_map.${k}: confirme, echoue ou en_attente`);
       }
-      if (!c.inbound_auth || c.inbound_auth.type === 'none') errs.push(`${w}.inbound_auth: obligatoire pour recevoir des paiements`);
     }
+    const receives = !!(c.payment || c.ussd || c.sms?.inbound || c.sms?.dlr || c.whatsapp?.inbound || c.whatsapp?.dlr);
+    if (receives && (!c.inbound_auth || c.inbound_auth.type === 'none'))
+      errs.push(`${w}.inbound_auth: obligatoire des que le connecteur recoit des appels (sms, dlr, ussd, paiement)`);
   }
   const r = conf.routing ?? {};
   const route = (channel: 'sms' | 'whatsapp' | 'ussd', name: string | undefined) => {

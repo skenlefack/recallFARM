@@ -9,6 +9,8 @@ export interface PaymentInitResult {
   provider_ref: string;
   ussd_push: boolean;
   redirect_url?: string;
+  /** Connector that initiated the payment; only it may later confirm it. */
+  connector?: string;
 }
 
 /** Mobile-money aggregator adapter (05 §16). */
@@ -59,7 +61,7 @@ export class ConnectorPaymentProvider implements PaymentProvider {
   async initiate(payment: Payment): Promise<PaymentInitResult> {
     const name = this.registry.paymentRoute(payment.method);
     const found = name ? this.registry.get(name) : null;
-    if (!found?.spec.payment) throw new PaymentProviderError('not_configured', `aucun connecteur pour le moyen ${payment.method}`);
+    if (!found?.spec.payment) throw new PaymentProviderError('not_configured', `aucun connecteur pour le moyen ${payment.method}`, true);
     const { client, spec } = found;
     const p = spec.payment!;
     const cfg = config();
@@ -76,11 +78,14 @@ export class ConnectorPaymentProvider implements PaymentProvider {
       callback_url: `${cfg.publicApiUrl.replace(/\/+$/, '')}/v1/connectors/${client.name}/payment`,
       return_url: cfg.publicAppUrl,
     });
-    if (!res.ok) throw new PaymentProviderError(`http_${res.http_status}`, `${client.name} a refuse le paiement`);
+    if (!res.ok) {
+      // 4xx, or 2xx with a refusal status: explicit refusal. 5xx: unknown outcome.
+      throw new PaymentProviderError(`http_${res.http_status}`, `${client.name} a refuse le paiement`, res.http_status < 500, client.name);
+    }
     const ref = getString(res.body, p.initiate.result.ref);
-    if (!ref) throw new PaymentProviderError('no_reference', `${client.name} n'a pas renvoye de reference`);
+    if (!ref) throw new PaymentProviderError('no_reference', `${client.name} n'a pas renvoye de reference`, false, client.name);
     const redirect = getString(res.body, p.initiate.result.redirect_url);
-    return { provider_ref: ref, ussd_push: p.initiate.ussd_push ?? true, ...(redirect ? { redirect_url: redirect } : {}) };
+    return { provider_ref: ref, ussd_push: p.initiate.ussd_push ?? true, connector: client.name, ...(redirect ? { redirect_url: redirect } : {}) };
   }
 }
 
@@ -88,6 +93,9 @@ export class PaymentProviderError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /** True when the aggregator explicitly refused (nothing can have been debited). */
+    readonly definitive = false,
+    readonly connector?: string,
   ) {
     super(message);
   }
