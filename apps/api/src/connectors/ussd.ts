@@ -44,6 +44,8 @@ export interface UssdState {
   pages: string[];
   page: number;
   end: boolean;
+  /** Inputs being evaluated (set before the action, cleared after): an interrupted step is never run twice. */
+  pending?: string[];
 }
 
 /**
@@ -76,12 +78,16 @@ export type UssdStep = { kind: 'page'; state: UssdState } | { kind: 'repeat'; st
  *   identical text (aggregator retry) replays the last screen without running the action again;
  * - last: only the last input is sent; the stored state gives the previous ones. The first hop of a
  *   session always shows the main menu (some aggregators send the dialled code as text).
- * In both modes, the "Suite" key on a paged screen shows the next page.
+ * In both modes, the "Suite" key on a paged screen shows the next page, and a closed session replays
+ * its closing screen.
  */
 export function readHop(text: string, state: UssdState | null, o: Pick<UssdOptions, 'text_mode' | 'separator' | 'more_key'>): UssdStep {
   const input = text.trim();
   // `end` applies to the last page only: a long closing screen is still paged.
   const morePage = (s: UssdState): UssdState | null => (s.page < s.pages.length - 1 ? { ...s, page: s.page + 1 } : null);
+  // A closed session (closing screen fully shown) only ever replays its closing screen: whatever the
+  // aggregator sends again (retry after a timeout, in either mode), the action is not run twice (B1).
+  if (state && state.end && state.page >= state.pages.length - 1) return { kind: 'repeat', state };
   if (o.text_mode === 'last') {
     if (!state) return { kind: 'evaluate', inputs: [], raw: input };
     const next = input === o.more_key ? morePage(state) : null;

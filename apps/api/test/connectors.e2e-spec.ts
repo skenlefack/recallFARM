@@ -81,14 +81,16 @@ function providers(port: number) {
           },
           status: {
             method: 'GET',
-            url: '/payments/{{provider_ref}}',
+            // By our reference: works for a payment whose initiation timed out (no provider_ref, M1).
+            url: '/payments/by-reference/{{reference}}',
             result: { status: 'state', status_map: { SUCCESS: 'confirme', FAILED: 'echoue', PENDING: 'en_attente' }, amount_minor: 'amount' },
           },
           refund: {
             url: '/refunds',
             body: { key: '{{refund_id}}', transaction: '{{provider_ref}}', amount: '{{amount_minor}}', reason: '{{reason}}' },
-            result: { ref: 'refund_id', status: 'state', status_map: { DONE: 'rembourse', REFUSED: 'echoue', QUEUED: 'en_attente' } },
+            result: { ref: 'refund_id', status: 'state', status_map: { DONE: 'rembourse', REFUSED: 'echoue', QUEUED: 'en_attente' }, http_map: { '409': 'rembourse' } },
           },
+          refund_status: { method: 'GET', url: '/refunds/{{refund_id}}', result: { status: 'state', status_map: { DONE: 'rembourse', REFUSED: 'echoue', QUEUED: 'en_attente' } } },
           list: {
             method: 'GET',
             url: '/payments?date={{date}}',
@@ -404,15 +406,46 @@ describe('declarative connectors', () => {
     expect((await db.query(`SELECT count(*)::int AS n FROM ussd_sessions WHERE id LIKE 'ussd:lastagg:L1:%'`)).rows[0].n).toBe(1);
   });
 
-  it('USSD signatures: HMAC with signing time on the real route, stale or replayed calls refused (m8)', async () => {
+  it('USSD signatures: HMAC with signing time on the real route; a replay gets the same screen without a new step; stale calls refused (m8, M2)', async () => {
     const r = signed({ sid: 'L2', msisdn: marthePhone, input: '' });
-    await http.post('/v1/connectors/lastagg/ussd').set(r.headers).send(r.raw).expect(200);
-    // Exactly the same signed call again: refused as a replay.
-    await http.post('/v1/connectors/lastagg/ussd').set(r.headers).send(r.raw).expect(401);
+    const first = await http.post('/v1/connectors/lastagg/ussd').set(r.headers).send(r.raw).expect(200);
+    // Exactly the same signed call again (aggregator retry): 200, same screen, the session does not move.
+    const again = await http.post('/v1/connectors/lastagg/ussd').set(r.headers).send(r.raw).expect(200);
+    expect(again.body).toEqual(first.body);
+    const next = signed({ sid: 'L2', msisdn: marthePhone, input: '0' });
+    const page2 = await http.post('/v1/connectors/lastagg/ussd').set(next.headers).send(next.raw).expect(200);
+    expect(page2.body.text).not.toBe(first.body.text);
     const old = signed({ sid: 'L2', msisdn: marthePhone, input: '1' }, Math.floor(Date.now() / 1000) - 120);
     await http.post('/v1/connectors/lastagg/ussd').set(old.headers).send(old.raw).expect(401);
     const forged = signed({ sid: 'L2', msisdn: marthePhone, input: '1' });
     await http.post('/v1/connectors/lastagg/ussd').set({ ...forged.headers, 'x-sig': '0'.repeat(64) }).send(forged.raw).expect(401);
+  });
+
+  it('USSD after the closing screen, and concurrent identical hops, never record twice (B1, both modes)', async () => {
+    // "last" mode: two signatures (different signing times), so only the session lock and the
+    // closed-session rule protect the action, not the replay cache.
+    const hopAt = (sid: string, input: string, at: number) => {
+      const r = signed({ sid, msisdn: marthePhone, input }, at);
+      return http.post('/v1/connectors/lastagg/ussd').set(r.headers).send(r.raw);
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const before = await mortality('B02');
+    for (const [i, input] of ['', '3', '2'].entries()) await hopAt('B1L', input, now - 10 + i).expect(200);
+    const [a, b] = await Promise.all([hopAt('B1L', '3', now - 2), hopAt('B1L', '3', now - 1)]);
+    expect(a.body.action).toBe('end');
+    expect(b.body).toEqual(a.body);
+    expect(await mortality('B02')).toBe(before + 3);
+    // The aggregator sends the same input again after the end: closing screen, mortality unchanged.
+    const late = await hopAt('B1L', '3', now);
+    expect(late.body).toEqual(a.body);
+    expect(await mortality('B02')).toBe(before + 3);
+    // "cumulative" mode: two identical final hops at the same time.
+    for (const t of ['', '3', '3*2']) await ussd(t, 'B1C').expect(200);
+    const [c, d] = await Promise.all([ussd('3*2*2', 'B1C'), ussd('3*2*2', 'B1C')]);
+    expect(c.text).toMatch(/^END 2 mort\(s\)/);
+    expect(d.text).toBe(c.text);
+    expect((await ussd('3*2*2*1', 'B1C').expect(200)).text).toBe(c.text);
+    expect(await mortality('B02')).toBe(before + 5);
   });
 
   it('USSD "cumulative" mode: an identical retry replays the closing screen without recording twice; every path asks <= 3 screens', async () => {
@@ -535,7 +568,7 @@ describe('declarative connectors', () => {
     const m = await login('+237690000001');
     const admin = await login('+237690000009');
     const co = await checkout(m.token, m.id).expect(201);
-    const statusPath = `/v1/payments/${co.body.provider_ref}`;
+    const statusPath = `/v1/payments/by-reference/${co.body.payment_id}`;
     await db.query(`UPDATE payments SET created_at = now() - interval '10 minutes' WHERE id = $1`, [co.body.payment_id]);
     queued[statusPath] = Array.from({ length: 6 }, () => ({ status: 200, body: { state: 'PENDING' } }));
     const ops = opsService();
@@ -559,16 +592,29 @@ describe('declarative connectors', () => {
     expect(await status(m.token, co.body.payment_id)).toBe('confirme');
   });
 
+  it('initiation timeout, then status query by our reference, then confirmed (M1)', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    queued['/v1/payments/collect'] = [{ status: 503, body: {} }];
+    const r = await checkout(m.token, m.id).expect(422);
+    const id = r.body.error.details.payment_id as string;
+    expect((await db.query(`SELECT provider_ref FROM payments WHERE id = $1`, [id])).rows[0].provider_ref).toBeNull();
+    queued[`/v1/payments/by-reference/${id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
+    const checked = await http.post(`/v1/admin/payments/${id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(checked.body).toMatchObject({ status: 'confirme', outcome: 'confirmed' });
+    expect(received.some((x) => x.path === '/v1/payments/' || x.path === '/v1/payments/by-reference/')).toBe(false);
+  });
+
   it('a status query confirms a payment whose webhook never came (admin "check now")', async () => {
     const m = await login('+237690000001');
     const admin = await login('+237690000009');
     const co = await checkout(m.token, m.id).expect(201);
-    queued[`/v1/payments/${co.body.provider_ref}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
+    queued[`/v1/payments/by-reference/${co.body.payment_id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
     const r = await http.post(`/v1/admin/payments/${co.body.payment_id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
     expect(r.body).toMatchObject({ id: co.body.payment_id, status: 'confirme', checked: true, outcome: 'confirmed' });
     // A status with another amount is refused like a webhook.
     const co2 = await checkout(m.token, m.id).expect(201);
-    queued[`/v1/payments/${co2.body.provider_ref}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 1 } }];
+    queued[`/v1/payments/by-reference/${co2.body.payment_id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 1 } }];
     const r2 = await http.post(`/v1/admin/payments/${co2.body.payment_id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
     expect(r2.body.status).toBe('en_attente');
   });
@@ -582,12 +628,13 @@ describe('declarative connectors', () => {
     await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(422); // not confirmed yet
     await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
     await http.post(`/v1/admin/payments/${id}/refund`).set({ authorization: `Bearer ${m.token}` }).send({ reason: 'Erreur de formule' }).expect(403);
-    queued['/v1/refunds'] = [{ status: 503, body: {} }, { status: 200, body: { state: 'DONE', refund_id: 'RF-1' } }];
+    // 503: unknown outcome, followed by the refund status query; the retry answers 409, declared "already refunded".
+    queued['/v1/refunds'] = [{ status: 503, body: {} }, { status: 409, body: { error: 'already refunded' } }];
     const unknown = await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(422);
-    expect(unknown.body.error.details).toMatchObject({ rule: 'PAY-REFUND-PENDING', error_code: 'http_503' });
+    expect(unknown.body.error.details).toMatchObject({ rule: 'PAY-REFUND-PENDING', refund_status: 'inconnu', error_code: 'http_503' });
     expect(await status(m.token, id)).toBe('remboursement_en_cours');
     const done = await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(200);
-    expect(done.body).toMatchObject({ id, status: 'rembourse', refund: expect.objectContaining({ status: 'rembourse', ref: 'RF-1', reason: 'Erreur de formule' }) });
+    expect(done.body).toMatchObject({ id, status: 'rembourse', refund: expect.objectContaining({ status: 'rembourse', http_status: 409, reason: 'Erreur de formule' }) });
     const calls = received.filter((r) => r.path === '/v1/refunds');
     expect(calls.slice(-2).map((c) => c.body.key)).toEqual([done.body.refund.id, done.body.refund.id]);
     expect(calls[calls.length - 1].body).toMatchObject({ transaction: co.body.provider_ref, amount: 2500, reason: 'Erreur de formule' });
@@ -606,6 +653,33 @@ describe('declarative connectors', () => {
     const refused = await http.post(`/v1/admin/payments/${co2.body.payment_id}/refund`).set(aauth).send({ reason: 'Essai de refus' }).expect(422);
     expect(refused.body.error.details.rule).toBe('PAY-REFUND-REFUSED');
     expect(await status(m.token, co2.body.payment_id)).toBe('confirme');
+  });
+
+  it('two simultaneous refunds call the aggregator once; a pending refund is settled by the refund status query (M3)', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const aauth = { authorization: `Bearer ${admin.token}` };
+    const co = await checkout(m.token, m.id).expect(201);
+    const id = co.body.payment_id;
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    const before = received.filter((r) => r.path === '/v1/refunds').length;
+    queued['/v1/refunds'] = [{ status: 202, body: { state: 'QUEUED', refund_id: 'RF-Q' } }, { status: 200, body: { state: 'DONE' } }];
+    const send = () => http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Double clic' });
+    const results = await Promise.all([send(), send()]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(results.find((r) => r.status === 409)?.body.error.details.rule).toBe('PAY-REFUND-IN-PROGRESS');
+    expect(received.filter((r) => r.path === '/v1/refunds').length - before).toBe(1);
+    const ok = results.find((r) => r.status === 200)!;
+    expect(ok.body).toMatchObject({ status: 'remboursement_en_cours', refund: expect.objectContaining({ status: 'en_attente', ref: 'RF-Q' }) });
+    // Pending: a third request is refused as well, no new aggregator call.
+    await send().expect(409);
+    // The poller asks the refund status with the refund key.
+    queued[`/v1/refunds/${ok.body.refund.id}`] = [{ status: 200, body: { state: 'DONE' } }];
+    const r = await opsService().pollRefunds(new Date(Date.now() + 3600_000));
+    expect(r).toMatchObject({ refunded: 1 });
+    expect(await status(m.token, id)).toBe('rembourse');
+    const audit = await db.query(`SELECT action, actor_role FROM audit_log WHERE entity = 'payments' AND entity_id = $1 ORDER BY id`, [id]);
+    expect(audit.rows[audit.rows.length - 1]).toEqual({ action: 'refund_rembourse', actor_role: 'systeme' });
   });
 
   it('daily reconciliation: aggregator list ↔ database, payments without subscription, connectors that cannot be checked', async () => {
@@ -666,7 +740,7 @@ describe('declarative connectors', () => {
     delete spec.list;
     try {
       const target = (await db.query(`SELECT id, provider_ref FROM payments WHERE status = 'confirme' AND raw->>'connector' = 'fakeagg' ORDER BY created_at DESC LIMIT 1`)).rows[0];
-      queued[`/v1/payments/${target.provider_ref}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 999 } }];
+      queued[`/v1/payments/by-reference/${target.id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 999 } }];
       const r = await http.post('/v1/admin/payments/reconciliations').set(aauth).send({ day: today }).expect(200);
       expect(r.body.sources).toEqual([{ connector: 'fakeagg', source: 'statut' }]);
       expect(r.body.divergences).toEqual(expect.arrayContaining([expect.objectContaining({ payment_id: target.id, ecart: 'montant' })]));

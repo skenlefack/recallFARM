@@ -87,6 +87,21 @@ describe('readHop: last-input mode', () => {
   });
 });
 
+describe('readHop: closed sessions (B1)', () => {
+  const closed = state({ inputs: ['3', '1', '5'], raw: '5', pages: ['5 mort(s) enregistre(s).'], page: 0, end: true });
+
+  it('replays the closing screen whatever is sent again, in both modes (the action is not run twice)', () => {
+    expect(readHop('5', closed, { ...o, text_mode: 'last' })).toEqual({ kind: 'repeat', state: closed });
+    expect(readHop('3*1*5', { ...closed, raw: '3*1*5' }, o)).toEqual({ kind: 'repeat', state: { ...closed, raw: '3*1*5' } });
+    expect(readHop('3*1*5*1', { ...closed, raw: '3*1*5' }, o).kind).toBe('repeat');
+  });
+
+  it('still pages a long closing screen before closing', () => {
+    const paged = { ...closed, pages: ['a', 'b'], page: 0 };
+    expect(readHop('0', paged, { ...o, text_mode: 'last' })).toEqual({ kind: 'page', state: { ...paged, page: 1 } });
+  });
+});
+
 describe('renderUssdResponse (free response format)', () => {
   const cont = { text: 'Menu', end: false };
   const end = { text: 'Merci', end: true };

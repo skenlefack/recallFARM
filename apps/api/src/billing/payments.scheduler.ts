@@ -23,8 +23,8 @@ export class PaymentsScheduler {
   async statusTick(): Promise<void> {
     if (!config().schedulerEnabled) return;
     try {
-      const r = await this.kv.withLock('scheduler:payments-status', 55_000, () => this.ops.pollPending());
-      if (r && r.checked) this.logger.log(`paiements en attente : ${JSON.stringify(r)}`);
+      const r = await this.kv.withLock('scheduler:payments-status', 55_000, async () => ({ payments: await this.ops.pollPending(), refunds: await this.ops.pollRefunds() }));
+      if (r && r.payments.checked + r.refunds.checked) this.logger.log(`paiements et remboursements en attente : ${JSON.stringify(r)}`);
     } catch (e) {
       this.logger.error(`interrogation des paiements impossible : ${(e as Error).message}`);
     }

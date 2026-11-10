@@ -1,5 +1,5 @@
 import { AuthSpec, ConnectorSpec, InboundAuthSpec, ProvidersConfig, RequestSpec } from './connector.types';
-import { envRefs } from './template';
+import { envRefs, usesVar } from './template';
 
 const NAME = /^[a-z0-9][a-z0-9_-]{1,40}$/;
 const CODE = /^[a-z0-9_]{2,30}$/;
@@ -138,14 +138,30 @@ function checkPayment(p: NonNullable<ConnectorSpec['payment']>, w: string, c: Co
     if (!isObj(p.status.result) || typeof p.status.result.status !== 'string') errs.push(`${w}.payment.status.result.status: requis`);
     else checkStatusMap(p.status.result.status_map, PAY, `${w}.payment.status.result.status_map`, errs);
   }
+  const REFUND = ['rembourse', 'echoue', 'en_attente'];
   if (p.refund !== undefined) {
     checkRequest(p.refund, `${w}.payment.refund`, c, errs);
+    // The refund key must reach the aggregator, or a retry could refund twice (M3).
+    if (isObj(p.refund) && !usesVar([p.refund.url, p.refund.headers, p.refund.body], 'refund_id'))
+      errs.push(`${w}.payment.refund: {{refund_id}} requis (url, headers ou body) comme cle d'idempotence`);
     const r = p.refund.result;
     if (r !== undefined && !isObj(r)) errs.push(`${w}.payment.refund.result: objet attendu`);
-    else if (r?.status !== undefined || r?.status_map !== undefined) {
-      if (typeof r.status !== 'string') errs.push(`${w}.payment.refund.result.status: requis avec status_map`);
-      checkStatusMap(r.status_map, ['rembourse', 'echoue', 'en_attente'], `${w}.payment.refund.result.status_map`, errs);
+    else {
+      if (r?.status !== undefined || r?.status_map !== undefined) {
+        if (typeof r.status !== 'string') errs.push(`${w}.payment.refund.result.status: requis avec status_map`);
+        checkStatusMap(r.status_map, REFUND, `${w}.payment.refund.result.status_map`, errs);
+      }
+      if (r?.http_map !== undefined) {
+        checkStatusMap(r.http_map, REFUND, `${w}.payment.refund.result.http_map`, errs);
+        if (isObj(r.http_map)) for (const k of Object.keys(r.http_map)) if (!/^[1-5]\d\d$/.test(k)) errs.push(`${w}.payment.refund.result.http_map.${k}: code HTTP attendu`);
+      }
     }
+  }
+  if (p.refund_status !== undefined) {
+    checkRequest(p.refund_status, `${w}.payment.refund_status`, c, errs);
+    if (!p.refund) errs.push(`${w}.payment.refund_status: demande payment.refund`);
+    if (!isObj(p.refund_status.result) || typeof p.refund_status.result.status !== 'string') errs.push(`${w}.payment.refund_status.result.status: requis`);
+    else checkStatusMap(p.refund_status.result.status_map, REFUND, `${w}.payment.refund_status.result.status_map`, errs);
   }
   if (p.list !== undefined) {
     checkRequest(p.list, `${w}.payment.list`, c, errs);

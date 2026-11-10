@@ -195,13 +195,15 @@ export class BillingService implements OnApplicationBootstrap {
   }
 
   /**
-   * Records the outcome of the initiation only while the payment is still "initie": a confirmation
-   * that arrived during the call is never overwritten. `raw` is merged, not replaced.
+   * Records the outcome of the initiation. The status changes only while the payment is still
+   * "initie" (a confirmation that arrived during the call is never overwritten); the aggregator
+   * reference and `raw` are always kept (m5), `raw` merged, not replaced.
    */
   private async settle(id: string, set: { status?: string; provider_ref?: string }, raw: Record<string, unknown>): Promise<void> {
     await this.ds.query(
-      `UPDATE payments SET status = COALESCE($2, status), provider_ref = COALESCE($3, provider_ref), raw = raw || $4::jsonb, updated_at = now()
-        WHERE id = $1 AND status = 'initie'`,
+      `UPDATE payments SET status = CASE WHEN status = 'initie' THEN COALESCE($2, status) ELSE status END,
+              provider_ref = COALESCE(provider_ref, $3), raw = raw || $4::jsonb, updated_at = now()
+        WHERE id = $1`,
       [id, set.status ?? null, set.provider_ref ?? null, JSON.stringify(raw)],
     );
   }

@@ -51,6 +51,10 @@ Toujours sans code par fournisseur ni dependance nouvelle :
   (`"{{timestamp}}.{{body}}"`) ; une signature n'est acceptee qu'une fois dans la fenetre (anti-rejeu).
 - **Accuses de reception** : rattaches au connecteur et au canal (`/dlr?channel=whatsapp`), statut
   jamais en recul ; `{{message_id}}` = id de notre journal (cle d'idempotence chez l'agregateur).
+- Apres la revue P1.1-P1.2-integrations : verrou par session USSD et ecran de fin rejoue (aucune
+  action deux fois), requete de statut par notre reference, `{{refund_id}}` obligatoire,
+  `http_map` et `refund_status` pour le remboursement (jamais de succes ni de refus par defaut),
+  signature anti-rejeu liberee si le traitement echoue.
 - Sources consultees : aucun agregateur n'est encore retenu (D-03, D-07). Les formats prevus
   couvrent les familles d'API publiques courantes (saisie USSD cumulee type « CON/END », saisie
   derniere etape avec indicateur de session `FC/FB` ou `request/end`, paiements push USSD avec

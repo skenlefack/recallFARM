@@ -67,6 +67,14 @@ export function renderText(template: string, vars: Vars, encode?: (v: string) =>
   return encode && SINGLE_VAR.test(template) ? encode(String(v)) : String(v);
 }
 
+/** True when a templated value (string, object, array) uses {{name}}. */
+export function usesVar(template: unknown, name: string): boolean {
+  if (typeof template === 'string') return new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`, 'i').test(template);
+  if (Array.isArray(template)) return template.some((t) => usesVar(t, name));
+  if (template && typeof template === 'object') return Object.values(template).some((t) => usesVar(t, name));
+  return false;
+}
+
 /** Reads a dot path ("data.items.0.id") in a parsed document. */
 export function getPath(doc: unknown, path: string | undefined): unknown {
   if (!path) return undefined;

@@ -133,6 +133,7 @@ export interface UssdSpec {
 }
 
 export type PaymentStatusMap = Record<string, 'confirme' | 'echoue' | 'en_attente'>;
+export type RefundStatusMap = Record<string, 'rembourse' | 'echoue' | 'en_attente'>;
 
 export interface PaymentSpec {
   initiate: RequestSpec & {
@@ -158,19 +159,29 @@ export interface PaymentSpec {
   };
   /**
    * Optional status query (variables: payment_id, reference, provider_ref, method). Used for payments
-   * left pending and for the daily reconciliation when `list` is absent.
+   * left pending and for the daily reconciliation when `list` is absent. Prefer our reference
+   * (`{{reference}}`): a payment whose initiation timed out has no `provider_ref`, and a query that
+   * needs it is not sent (the payment stays "non interrogeable").
    */
   status?: RequestSpec & {
     result: { status: JsonPath; status_map: PaymentStatusMap; fees_minor?: JsonPath; amount_minor?: JsonPath; currency?: JsonPath };
   };
   /**
    * Optional refund of a confirmed payment (variables: payment_id, reference, provider_ref, refund_id,
-   * amount_minor, amount, currency, phone, phone_e164, method, reason). `refund_id` is stable for a
-   * payment: a retried refund carries the same key.
+   * amount_minor, amount, currency, phone, phone_e164, method, reason). `{{refund_id}}` is required in
+   * the request: it is stable for a payment, so a retried refund carries the same idempotency key.
+   * Outcome: `status_map` on the body, then `http_map` on the HTTP code (e.g. {"409": "rembourse"} for
+   * "already refunded", {"202": "en_attente"}). Otherwise a 2xx is "en_attente" and any other code is
+   * unknown: never read as a success or a refusal by default.
    */
   refund?: RequestSpec & {
-    result?: { ref?: JsonPath; status?: JsonPath; status_map?: Record<string, 'rembourse' | 'echoue' | 'en_attente'> };
+    result?: { ref?: JsonPath; status?: JsonPath; status_map?: RefundStatusMap; http_map?: RefundStatusMap };
   };
+  /**
+   * Optional status query of a refund (variables of `refund` plus refund_ref). Without it, a refund
+   * whose outcome is unknown is shown "a_verifier" to the administration.
+   */
+  refund_status?: RequestSpec & { result: { status: JsonPath; status_map: RefundStatusMap } };
   /**
    * Optional list of the aggregator transactions of one day, for the daily reconciliation
    * (variables: date "YYYY-MM-DD", from and to in UTC ISO 8601). One page is read.

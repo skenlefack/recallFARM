@@ -4,7 +4,7 @@ import { config } from '../config';
 import { ConnectorRegistry } from '../connectors/connector-registry';
 import { ConnectorHttp } from '../connectors/connector-http';
 import { ConnectorSpec, PaymentSpec } from '../connectors/connector.types';
-import { amountMajor, formatPhone, getPath, getString } from '../connectors/template';
+import { amountMajor, formatPhone, getPath, getString, usesVar } from '../connectors/template';
 import { Payment } from '../database/entities';
 import { parseMinor } from '../notifications/providers';
 
@@ -33,8 +33,17 @@ export interface ProviderTransaction extends ProviderPaymentStatus {
 }
 
 export interface RefundResult {
-  status: 'rembourse' | 'echoue' | 'en_attente';
+  /** "inconnu": the aggregator's answer says nothing the descriptor can interpret. */
+  status: 'rembourse' | 'echoue' | 'en_attente' | 'inconnu';
   refund_ref?: string;
+  http_status?: number;
+}
+
+/** Network-level failure (outcome unknown), as opposed to a programming error (m7). */
+export function isNetworkError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;
+  return e.name === 'TypeError' && (/fetch failed|network|socket|ECONN|ENOTFOUND|ETIMEDOUT/i.test(e.message) || !!(e as { cause?: unknown }).cause);
 }
 
 /** Mobile-money aggregator adapter (05 §16). Optional operations depend on what the aggregator offers. */
@@ -49,6 +58,10 @@ export interface PaymentProvider {
   status?(payment: Payment): Promise<ProviderPaymentStatus | null>;
   /** Refunds a confirmed payment; `refundId` is stable for the payment (idempotency key). */
   refund?(payment: Payment, refundId: string, reason: string): Promise<RefundResult>;
+  /** Asks the outcome of a refund; null when the aggregator offers no such query. */
+  refundStatus?(payment: Payment, refundId: string, refundRef?: string): Promise<RefundResult | null>;
+  /** Whether the connector of this payment describes a refund status query. */
+  refundStatusAvailable?(payment: Payment): boolean;
   /** Connectors involved in payments (for the daily reconciliation). */
   connectors?(): string[];
   /** Transactions of one day for a connector; null when it offers no list. */
@@ -143,9 +156,17 @@ export class ConnectorPaymentProvider implements PaymentProvider {
     return { status, raw_status: raw.slice(0, 40), ...(fees !== undefined ? { fees_minor: fees } : {}), ...(amount !== undefined ? { amount_minor: amount } : {}), ...(currency ? { currency } : {}) };
   }
 
+  /** A request that needs the aggregator reference is not sent without it (M1). */
+  private needsRef(req: unknown, payment: Payment, client: ConnectorHttp): void {
+    const r = req as { url?: unknown; headers?: unknown; body?: unknown };
+    if (!payment.provider_ref && usesVar([r.url, r.headers, r.body], 'provider_ref'))
+      throw new PaymentProviderError('non_interrogeable_sans_reference', `${client.name}: paiement ${payment.id} sans reference agregateur`, true, client.name);
+  }
+
   async status(payment: Payment): Promise<ProviderPaymentStatus | null> {
     const { client, spec, p } = this.connectorOf(payment);
     if (!p.status) return null;
+    this.needsRef(p.status, payment, client);
     const res = await client.call(p.status, this.vars(payment, spec));
     if (!res.ok) throw new PaymentProviderError(`http_${res.http_status}`, `${client.name}: statut illisible`, false, client.name);
     return this.mapStatus(res.body, p.status.result);
@@ -154,13 +175,37 @@ export class ConnectorPaymentProvider implements PaymentProvider {
   async refund(payment: Payment, refundId: string, reason: string): Promise<RefundResult> {
     const { client, spec, p } = this.connectorOf(payment);
     if (!p.refund) throw new PaymentProviderError('not_supported', `${client.name} ne propose pas de remboursement`, true, client.name);
+    this.needsRef(p.refund, payment, client);
     const res = await client.call(p.refund, { ...this.vars(payment, spec), refund_id: refundId, reason });
-    if (!res.ok) throw new PaymentProviderError(`http_${res.http_status}`, `${client.name} a refuse le remboursement`, res.http_status < 500, client.name);
     const r = p.refund.result;
     const ref = getString(res.body, r?.ref);
     const raw = r?.status ? (getString(res.body, r.status) ?? '') : '';
-    const status = r?.status_map && Object.hasOwn(r.status_map, raw) ? r.status_map[raw] : r?.status ? 'en_attente' : 'rembourse';
-    return { status, ...(ref ? { refund_ref: ref } : {}) };
+    const code = String(res.http_status);
+    // Body status, then HTTP code, as the descriptor says; otherwise never concluded (M3).
+    const status: RefundResult['status'] =
+      r?.status_map && raw && Object.hasOwn(r.status_map, raw)
+        ? r.status_map[raw]
+        : r?.http_map && Object.hasOwn(r.http_map, code)
+          ? r.http_map[code]
+          : res.http_status >= 200 && res.http_status < 300
+            ? 'en_attente'
+            : 'inconnu';
+    return { status, http_status: res.http_status, ...(ref ? { refund_ref: ref } : {}) };
+  }
+
+  refundStatusAvailable(payment: Payment): boolean {
+    return !!this.connectorOf(payment).p.refund_status;
+  }
+
+  async refundStatus(payment: Payment, refundId: string, refundRef?: string): Promise<RefundResult | null> {
+    const { client, spec, p } = this.connectorOf(payment);
+    if (!p.refund_status) return null;
+    if (!refundRef && usesVar([p.refund_status.url, p.refund_status.headers, p.refund_status.body], 'refund_ref')) return null;
+    const res = await client.call(p.refund_status, { ...this.vars(payment, spec), refund_id: refundId, refund_ref: refundRef ?? '', reason: '' });
+    if (!res.ok) return { status: 'inconnu', http_status: res.http_status };
+    const raw = getString(res.body, p.refund_status.result.status) ?? '';
+    const m = p.refund_status.result.status_map;
+    return { status: Object.hasOwn(m, raw) ? m[raw] : 'en_attente', http_status: res.http_status };
   }
 
   async list(connector: string, day: string, fromIso: string, toIso: string): Promise<ProviderTransaction[] | null> {

@@ -267,6 +267,34 @@ describe('providers configuration validation', () => {
       'connectors.qq.payment.status.result.status_map: objet requis',
       'connectors.qq.payment.refund.result: objet attendu',
       'connectors.qq.payment.list.result: items et status requis',
+      "connectors.pp.payment.refund: {{refund_id}} requis (url, headers ou body) comme cle d'idempotence",
+    ])
+      expect(joined).toContain(f);
+  });
+
+  it('requires {{refund_id}} in refunds and validates http_map and refund_status (M3)', () => {
+    const pay = (extra: Record<string, unknown>) => ({
+      connectors: {
+        pp: {
+          base_url: 'https://h.example',
+          inbound_auth: { type: 'header', name: 'x', value: 'y' },
+          payment: { initiate: { url: '/c', result: { ref: 'id' } }, webhook: { ref: 'id', status: 's', status_map: { OK: 'confirme' } }, ...extra },
+        },
+      },
+    });
+    const refund = { url: '/r/{{refund_id}}', result: { http_map: { '409': 'rembourse', '202': 'en_attente' } } };
+    const refundStatus = { method: 'GET', url: '/r/{{refund_id}}', result: { status: 's', status_map: { OK: 'rembourse' } } };
+    expect(validateProvidersConfig(pay({ refund, refund_status: refundStatus }))).toEqual([]);
+    expect(validateProvidersConfig(pay({ refund: { url: '/r', headers: { 'Idempotency-Key': '{{refund_id}}' } } }))).toEqual([]);
+    const joined = [
+      ...validateProvidersConfig(pay({ refund: { url: '/r/{{refund_id}}', result: { http_map: { abc: 'rembourse', '409': 'fait' } } }, refund_status: { url: '/s', result: {} } })),
+      ...validateProvidersConfig(pay({ refund_status: refundStatus })),
+    ].join('\n');
+    for (const f of [
+      'payment.refund.result.http_map.abc: code HTTP attendu',
+      'payment.refund.result.http_map.409: rembourse, echoue ou en_attente',
+      'payment.refund_status.result.status: requis',
+      'payment.refund_status: demande payment.refund',
     ])
       expect(joined).toContain(f);
   });

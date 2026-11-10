@@ -23,6 +23,12 @@ export class ConnectorTestSmsDto {
 
 type InboundReq = Request & { rawBody?: Buffer };
 
+/** Outcome of the inbound check: the connector, and the anti-replay claim when the call is signed with a time. */
+interface Authorised {
+  spec: ConnectorSpec;
+  replay: { key: string; ttlMs: number } | null;
+}
+
 /** Value supplied by the caller, made safe for one log line (m10): no control characters, 40 characters at most. */
 export function logSafe(v: string): string {
   // eslint-disable-next-line no-control-regex
@@ -53,9 +59,10 @@ export class ConnectorsController {
   /**
    * Finds the connector and checks the caller (shared secret or HMAC, constant time). An unknown
    * connector gets the same 401 as a wrong secret, so names cannot be enumerated (m9). With a signing
-   * time, a signature is accepted once (anti-replay, m8).
+   * time, the signature is claimed: a second identical call is a duplicate, answered without being
+   * processed again (see `once`). A call outside the time window stays refused (401).
    */
-  private async authorise(name: string, req: InboundReq): Promise<ConnectorSpec> {
+  private async authorise(name: string, req: InboundReq): Promise<Authorised> {
     const refused = Errors.unauthenticated('Authentification du connecteur invalide');
     const found = this.registry.get(name);
     if (!found) {
@@ -67,11 +74,28 @@ export class ConnectorsController {
       this.logger.warn(`${name}: appel entrant refuse (${check.reason})`);
       throw refused;
     }
-    if (check.replay_key && !(await this.kv.setNx(`replay:${name}:${check.replay_key}`, '1', check.replay_ttl_ms ?? 600_000))) {
-      this.logger.warn(`${name}: appel entrant refuse (signature deja utilisee : rejeu)`);
-      throw refused;
+    if (!check.replay_key) return { spec: found.spec, replay: null };
+    return { spec: found.spec, replay: { key: `replay:${name}:${check.replay_key}`, ttlMs: check.replay_ttl_ms ?? 600_000 } };
+  }
+
+  /**
+   * Anti-replay without losing a legitimate retry (M2): a duplicate gets `duplicateAnswer` (the usual
+   * acknowledgement); the claim is released when processing fails, so the aggregator's retry is processed.
+   */
+  private async once<T>(auth: Authorised, process: () => Promise<T>, duplicateAnswer: () => Promise<T>): Promise<T> {
+    // The signature is claimed only here, after validation: a refused call (422) leaves no claim.
+    if (auth.replay && !(await this.kv.setNx(auth.replay.key, 'pending', auth.replay.ttlMs))) {
+      this.logger.warn(`appel signe deja recu (rejeu) : reponse sans nouveau traitement`);
+      return duplicateAnswer();
     }
-    return found.spec;
+    try {
+      const out = await process();
+      if (auth.replay) await this.kv.set(auth.replay.key, 'done', auth.replay.ttlMs);
+      return out;
+    } catch (e) {
+      if (auth.replay) await this.kv.del(auth.replay.key);
+      throw e;
+    }
   }
 
   /** Body of a POST, or the query parameters of a GET. */
@@ -108,12 +132,17 @@ export class ConnectorsController {
   @ApiOperation({ summary: 'SMS entrant envoye par un agregateur (format decrit par le connecteur)' })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
   async inboundSms(@Param('name') name: string, @Req() req: InboundReq, @Body() rawBody: Record<string, unknown>) {
-    const spec = await this.authorise(name, req);
+    const auth = await this.authorise(name, req);
+    const spec = auth.spec;
     const body = this.payload(req, rawBody);
     if (!spec.sms?.inbound) throw Errors.notFound('Reception SMS');
     const from = this.phone(body, spec.sms.inbound.from, 'from', spec);
     const text = getString(body, spec.sms.inbound.text) ?? '';
-    return this.inbound.handleSms(from, text);
+    return this.once<Record<string, unknown>>(
+      auth,
+      () => this.inbound.handleSms(from, text),
+      async () => ({ handled: false, duplicate: true }),
+    );
   }
 
   @Public()
@@ -134,7 +163,8 @@ export class ConnectorsController {
   @ApiQuery({ name: 'channel', required: false, enum: ['sms', 'whatsapp'] })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
   async dlr(@Param('name') name: string, @Req() req: InboundReq, @Body() rawBody: Record<string, unknown>, @Query('channel') channel?: string) {
-    const spec = await this.authorise(name, req);
+    const auth = await this.authorise(name, req);
+    const spec = auth.spec;
     const body = this.payload(req, rawBody);
     // Each channel has its own format and its own messages (m5).
     const ch = channel === 'whatsapp' ? 'whatsapp' : 'sms';
@@ -144,8 +174,11 @@ export class ConnectorsController {
     const raw = getString(body, dlr.status) ?? '';
     const status = Object.hasOwn(dlr.status_map, raw) ? dlr.status_map[raw] : undefined;
     if (!status) return { received: true, applied: false };
-    const updated = await this.messaging.applyDeliveryReport(name, ch, ref, status, getString(body, dlr.error));
-    return { received: true, applied: updated > 0 };
+    return this.once<Record<string, unknown>>(
+      auth,
+      async () => ({ received: true, applied: (await this.messaging.applyDeliveryReport(name, ch, ref, status, getString(body, dlr.error))) > 0 }),
+      async () => ({ received: true, applied: false, duplicate: true }),
+    );
   }
 
   @Public()
@@ -155,14 +188,18 @@ export class ConnectorsController {
   @ApiOperation({ summary: 'Etape de session USSD (menu du pack pays, saisie cumulee ou derniere saisie, ecrans pagines)' })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
   async ussd(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>, @Res({ passthrough: true }) res: Response) {
-    const spec = await this.authorise(name, req);
+    const auth = await this.authorise(name, req);
+    const spec = auth.spec;
     if (!spec.ussd) throw Errors.notFound('USSD');
     const m = spec.ussd.inbound;
     const sessionId = this.field(body, m.session_id, 'session_id');
     if (sessionId.length > 100) throw Errors.validation({ session_id: '100 caracteres au plus' });
     const phone = this.phone(body, m.phone, 'phone', spec);
     const text = (getString(body, m.text) ?? '').slice(0, 200);
-    const screen = await this.sessions.hop(name, sessionId, phone, text, ussdOptions(spec.ussd));
+    const options = ussdOptions(spec.ussd);
+    const hop = () => this.sessions.hop(name, sessionId, phone, text, options);
+    // A replayed signed hop gets the screen stored for the session, without a new step.
+    const screen = await this.once(auth, hop, async () => (await this.sessions.current(name, sessionId, phone)) ?? hop());
     const out = renderUssdResponse(spec.ussd.response, screen, sessionId);
     for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v);
     res.type(out.contentType);
@@ -176,8 +213,8 @@ export class ConnectorsController {
   @ApiOperation({ summary: 'Resultat asynchrone d’un paiement mobile money' })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
   async payment(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>) {
-    const spec = await this.authorise(name, req);
-    const w = spec.payment?.webhook;
+    const auth = await this.authorise(name, req);
+    const w = auth.spec.payment?.webhook;
     if (!w) throw Errors.notFound('Paiement');
     const ack = w.ack ?? { received: true };
     const raw = getString(body, w.status) ?? '';
@@ -191,7 +228,7 @@ export class ConnectorsController {
     if (!paymentId && !ref) throw Errors.validation({ reference: 'reference du paiement absente' });
     const fees = Number(getPath(body, w.fees_minor));
     const amount = w.amount_minor ? Number(getPath(body, w.amount_minor)) : undefined;
-    await this.billing.applyResult(
+    const apply = () => this.billing.applyResult(
       {
         ...(paymentId && /^[0-9a-f-]{36}$/i.test(paymentId) ? { payment_id: paymentId } : { provider_ref: ref ?? paymentId }),
         status,
@@ -204,6 +241,8 @@ export class ConnectorsController {
         ...(w.currency ? { currency: getString(body, w.currency) ?? '' } : {}),
       },
     );
+    // Already processed (or being processed): same acknowledgement, no second application.
+    await this.once<unknown>(auth, apply, async () => null);
     return ack;
   }
 

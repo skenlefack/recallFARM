@@ -8,7 +8,7 @@ import { Payment } from '../database/entities';
 import { DataSource } from 'typeorm';
 import { BillingService, idFromKey } from './billing.service';
 import { nextPollDelayMin, PaymentOpsService } from './payment-ops.service';
-import { ConnectorPaymentProvider, PaymentProviderError, SimulatorPaymentProvider } from './payment.providers';
+import { ConnectorPaymentProvider, isNetworkError, PaymentProviderError, SimulatorPaymentProvider } from './payment.providers';
 
 const EXAMPLE = resolve(__dirname, '../../../../infra/providers/providers.example.json');
 
@@ -80,7 +80,8 @@ describe('ConnectorPaymentProvider: status, refund, list (M6)', () => {
   it('asks the status of the connector that initiated the payment', async () => {
     const { p, calls } = provider([{ body: { status: 'SUCCESS', fees: '15', amount: 2500, currency: 'XAF' } }, { body: { status: 'BIZARRE' } }, { status: 502 }]);
     expect(await p.status(payment())).toEqual({ status: 'confirme', raw_status: 'SUCCESS', fees_minor: 15, amount_minor: 2500, currency: 'XAF' });
-    expect(calls[0]).toMatchObject({ method: 'GET', url: 'https://api.agregateur.example/v1/payments/TX-9' });
+    // Queried by our reference (documented as recommended): works without an aggregator reference.
+    expect(calls[0]).toMatchObject({ method: 'GET', url: `https://api.agregateur.example/v1/payments/by-reference/${payment().id}` });
     expect(await p.status(payment())).toMatchObject({ status: 'inconnu', raw_status: 'BIZARRE' });
     await expect(p.status(payment())).rejects.toMatchObject({ code: 'http_502', definitive: false });
     // A connector without status query answers null.
@@ -88,15 +89,56 @@ describe('ConnectorPaymentProvider: status, refund, list (M6)', () => {
     await expect(p.status(payment({ raw: {}, method: 'cash' }))).rejects.toBeInstanceOf(PaymentProviderError);
   });
 
-  it('refunds with a stable key and maps the outcome', async () => {
-    const { p, calls } = provider([{ body: { refund_id: 'RF-1', state: 'DONE' } }, { body: { state: 'QUEUED' } }, { body: { state: 'REJECTED' } }, { status: 409 }, { status: 503 }]);
-    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'rembourse', refund_ref: 'RF-1' });
+  it('never sends a query that needs the aggregator reference when the payment has none (M1)', async () => {
+    const byRef = JSON.parse(JSON.stringify(example)) as ProvidersConfig;
+    byRef.connectors.agregateur_exemple.payment!.status!.url = '/payments/{{provider_ref}}';
+    const f = fakeFetch([]);
+    const p = new ConnectorPaymentProvider(new ConnectorRegistry(byRef, f.fn));
+    await expect(p.status(payment({ provider_ref: null }))).rejects.toMatchObject({ code: 'non_interrogeable_sans_reference', definitive: true });
+    await expect(p.refund(payment({ provider_ref: null }), 'k', 'r')).rejects.toMatchObject({ code: 'non_interrogeable_sans_reference' });
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('refunds with a stable key and reads the outcome only as the descriptor says (M3)', async () => {
+    const { p, calls } = provider([
+      { body: { refund_id: 'RF-1', state: 'DONE' } },
+      { body: { state: 'QUEUED' } },
+      { body: { state: 'REJECTED' } },
+      { status: 409 },
+      { status: 202, body: {} },
+      { status: 400 },
+      { status: 503 },
+    ]);
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'rembourse', refund_ref: 'RF-1', http_status: 200 });
     expect(JSON.parse(calls[0].body!)).toMatchObject({ idempotency_key: 'key-1', transaction_id: 'TX-9', amount: 2500, reason: 'doublon' });
-    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'en_attente' });
-    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'echoue' });
-    await expect(p.refund(payment(), 'key-1', 'doublon')).rejects.toMatchObject({ code: 'http_409', definitive: true });
-    await expect(p.refund(payment(), 'key-1', 'doublon')).rejects.toMatchObject({ code: 'http_503', definitive: false });
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'en_attente', http_status: 200 });
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'echoue', http_status: 200 });
+    // 409 declared "already refunded" in http_map.
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'rembourse', http_status: 409 });
+    // 202 without status: pending, never a success by default; undeclared codes: unknown, never a refusal.
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'en_attente', http_status: 202 });
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'inconnu', http_status: 400 });
+    expect(await p.refund(payment(), 'key-1', 'doublon')).toEqual({ status: 'inconnu', http_status: 503 });
     await expect(p.refund(payment({ raw: { connector: 'operateur_oauth_exemple' } }), 'k', 'r')).rejects.toMatchObject({ code: 'not_supported', definitive: true });
+  });
+
+  it('asks the outcome of a refund when the connector describes it', async () => {
+    const { p, calls } = provider([{ body: { state: 'DONE' } }, { body: { state: '??' } }, { status: 500 }]);
+    expect(p.refundStatusAvailable(payment())).toBe(true);
+    expect(await p.refundStatus(payment(), 'key-1')).toEqual({ status: 'rembourse', http_status: 200 });
+    expect(calls[0].url).toBe('https://api.agregateur.example/v1/payments/refunds/key-1');
+    expect(await p.refundStatus(payment(), 'key-1')).toEqual({ status: 'en_attente', http_status: 200 });
+    expect(await p.refundStatus(payment(), 'key-1')).toEqual({ status: 'inconnu', http_status: 500 });
+    const other = payment({ raw: { connector: 'operateur_oauth_exemple' } });
+    expect(p.refundStatusAvailable(other)).toBe(false);
+    expect(await p.refundStatus(other, 'k')).toBeNull();
+  });
+
+  it('tells network failures from programming errors (m7)', () => {
+    expect(isNetworkError(new TypeError('fetch failed'))).toBe(true);
+    expect(isNetworkError(Object.assign(new Error('t'), { name: 'TimeoutError' }))).toBe(true);
+    expect(isNetworkError(new TypeError("Cannot read properties of undefined (reading 'id')"))).toBe(false);
+    expect(isNetworkError('x')).toBe(false);
   });
 
   it('reads the daily list of transactions', async () => {
@@ -123,10 +165,31 @@ describe('PaymentOpsService.pollPending', () => {
   it('goes on with the other payments when one cannot be applied', async () => {
     const a = payment({ id: 'a' });
     const b = payment({ id: 'b' });
-    const ds = { getRepository: () => ({ query: async () => [a, b] }), query: jest.fn().mockResolvedValue([[], 1]) };
+    // First query: the claim (UPDATE ... RETURNING); then the bookkeeping updates.
+    const ds = { query: jest.fn().mockResolvedValueOnce([[a, b], 2]).mockResolvedValue([[], 1]) };
     const billing = { applyResult: jest.fn().mockRejectedValueOnce(new Error('Paiement introuvable')).mockResolvedValueOnce({ status: 'confirme' }) };
     const provider = { name: 'x', initiate: jest.fn(), status: jest.fn().mockResolvedValue({ status: 'confirme', raw_status: 'SUCCESS' }) };
     const ops = new PaymentOpsService(ds as unknown as DataSource, billing as unknown as BillingService, provider);
     expect(await ops.pollPending(new Date())).toEqual({ checked: 2, confirmed: 1, failed: 0, still_pending: 0, flagged: 0, errors: 1 });
+    expect(ds.query.mock.calls[0][0]).toContain('FOR UPDATE SKIP LOCKED');
+  });
+
+  it('marks a payment without aggregator reference "non interrogeable", without concluding (M1)', async () => {
+    const p = payment({ id: 'c', provider_ref: null });
+    const ds = { query: jest.fn().mockResolvedValueOnce([[p], 1]).mockResolvedValue([[], 1]) };
+    const provider = { name: 'x', initiate: jest.fn(), status: jest.fn().mockRejectedValue(new PaymentProviderError('non_interrogeable_sans_reference', 'x', true)) };
+    const ops = new PaymentOpsService(ds as unknown as DataSource, { applyResult: jest.fn() } as unknown as BillingService, provider);
+    expect(await ops.pollPending(new Date())).toMatchObject({ checked: 1, errors: 1, confirmed: 0 });
+    expect(JSON.parse(ds.query.mock.calls[1][1][1]).poll.last).toBe('non_interrogeable_sans_reference');
+  });
+
+  it('lets a programming error surface instead of reading it as a network failure (m7)', async () => {
+    const p = payment({ id: 'd' });
+    const ds = { query: jest.fn().mockResolvedValueOnce([[p], 1]).mockResolvedValue([[], 1]) };
+    const provider = { name: 'x', initiate: jest.fn(), status: jest.fn().mockRejectedValue(new TypeError('x is not a function')) };
+    const ops = new PaymentOpsService(ds as unknown as DataSource, { applyResult: jest.fn() } as unknown as BillingService, provider);
+    // Counted as an error of this payment, the poll bookkeeping is not written as "network".
+    expect(await ops.pollPending(new Date())).toMatchObject({ checked: 1, errors: 1 });
+    expect(ds.query).toHaveBeenCalledTimes(1);
   });
 });

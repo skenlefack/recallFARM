@@ -58,7 +58,7 @@
         },
         "status": {
           "method": "GET",
-          "url": "/payments/{{provider_ref}}",
+          "url": "/payments/by-reference/{{reference}}",
           "result": {
             "status": "status",
             "status_map": { "SUCCESS": "confirme", "FAILED": "echoue", "CANCELLED": "echoue", "PENDING": "en_attente" },
@@ -71,7 +71,17 @@
           "method": "POST",
           "url": "/payments/refunds",
           "body": { "idempotency_key": "{{refund_id}}", "transaction_id": "{{provider_ref}}", "amount": "{{amount_minor}}", "reason": "{{reason}}" },
-          "result": { "ref": "refund_id", "status": "state", "status_map": { "DONE": "rembourse", "QUEUED": "en_attente", "REJECTED": "echoue" } }
+          "result": {
+            "ref": "refund_id",
+            "status": "state",
+            "status_map": { "DONE": "rembourse", "QUEUED": "en_attente", "REJECTED": "echoue" },
+            "http_map": { "409": "rembourse" }
+          }
+        },
+        "refund_status": {
+          "method": "GET",
+          "url": "/payments/refunds/{{refund_id}}",
+          "result": { "status": "state", "status_map": { "DONE": "rembourse", "QUEUED": "en_attente", "REJECTED": "echoue" } }
         },
         "list": {
           "method": "GET",
