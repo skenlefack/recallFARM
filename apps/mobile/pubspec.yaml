@@ -36,7 +36,6 @@ dependencies:
   crypto: ^3.0.3
   cryptography: ^2.7.0
   qr_flutter: ^4.1.0
-  google_fonts: ^6.2.1
   url_launcher: ^6.3.0
 
 dev_dependencies:
@@ -44,9 +43,43 @@ dev_dependencies:
     sdk: flutter
   integration_test:
     sdk: flutter
+  flutter_driver:
+    sdk: flutter
   flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
   assets:
     - assets/packs/
+    - assets/fonts/OFL-BricolageGrotesque.txt
+    - assets/fonts/OFL-IBMPlexSans.txt
+    - assets/fonts/OFL-IBMPlexMono.txt
+  # Polices des maquettes embarquees (sous-ensemble latin, SIL OFL 1.1) :
+  # aucun telechargement au premier lancement (hors ligne d'abord, 2G).
+  fonts:
+    - family: BricolageGrotesque
+      fonts:
+        - asset: assets/fonts/BricolageGrotesque-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/BricolageGrotesque-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/BricolageGrotesque-ExtraBold.ttf
+          weight: 800
+    - family: IBMPlexSans
+      fonts:
+        - asset: assets/fonts/IBMPlexSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexSans-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/IBMPlexSans-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/IBMPlexSans-Bold.ttf
+          weight: 700
+    - family: IBMPlexMono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/IBMPlexMono-SemiBold.ttf
+          weight: 600
