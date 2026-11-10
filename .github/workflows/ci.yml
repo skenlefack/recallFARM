@@ -69,7 +69,7 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
       - uses: subosito/flutter-action@v2
-        with: { channel: stable, flutter-version: 3.24.5, cache: true }
+        with: { channel: stable, flutter-version: 3.38.3, cache: true }
       - name: Générer les dossiers de plateforme
         run: test -d android || flutter create --platforms=android --org app.recallfarm --project-name recallfarm .
       - run: flutter pub get
@@ -89,7 +89,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/api/package-lock.json }
       - uses: subosito/flutter-action@v2
-        with: { channel: stable, flutter-version: 3.24.5, cache: true }
+        with: { channel: stable, flutter-version: 3.38.3, cache: true }
       - name: Install API deps
         run: cd apps/api && npm ci
       - name: Install Mobile deps

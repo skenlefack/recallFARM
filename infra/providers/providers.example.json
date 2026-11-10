@@ -1,0 +1,93 @@
+{
+  "connectors": {
+    "agregateur_exemple": {
+      "label": "Agregateur SMS + USSD + mobile money (exemple a adapter)",
+      "base_url": "https://api.agregateur.example/v1",
+      "auth": { "type": "bearer", "token": "${env:AGREGATEUR_API_TOKEN}" },
+      "phone_format": "e164_no_plus",
+      "inbound_auth": { "type": "header", "name": "x-callback-token", "value": "${env:AGREGATEUR_CALLBACK_TOKEN}" },
+      "sms": {
+        "sender_id": "RecallFarm",
+        "send": {
+          "method": "POST",
+          "url": "/sms/messages",
+          "format": "json",
+          "body": { "from": "{{sender}}", "to": "{{to}}", "message": "{{text}}", "client_ref": "{{message_id}}" },
+          "success": { "http": [200, 201, 202] },
+          "result": { "ref": "data.id", "cost_minor": "data.cost" }
+        },
+        "cost": { "per_segment_minor": 15, "currency": "XAF" },
+        "inbound": { "from": "from", "text": "text" },
+        "dlr": {
+          "ref": "id",
+          "status": "status",
+          "status_map": { "DELIVERED": "delivre", "FAILED": "echoue", "REJECTED": "echoue", "SENT": "envoye" },
+          "error": "reason"
+        }
+      },
+      "ussd": {
+        "inbound": { "session_id": "sessionId", "phone": "phoneNumber", "text": "text" },
+        "response": { "type": "text" }
+      },
+      "payment": {
+        "initiate": {
+          "method": "POST",
+          "url": "/payments/collect",
+          "format": "json",
+          "body": {
+            "amount": "{{amount_minor}}",
+            "currency": "{{currency}}",
+            "msisdn": "{{phone}}",
+            "operator": "{{method}}",
+            "reference": "{{reference}}",
+            "description": "{{description}}",
+            "notify_url": "{{callback_url}}"
+          },
+          "result": { "ref": "transaction_id" },
+          "ussd_push": true
+        },
+        "webhook": {
+          "payment_id": "reference",
+          "ref": "transaction_id",
+          "status": "status",
+          "status_map": { "SUCCESS": "confirme", "FAILED": "echoue", "CANCELLED": "echoue", "PENDING": "en_attente" },
+          "fees_minor": "fees"
+        }
+      }
+    },
+    "operateur_oauth_exemple": {
+      "label": "Operateur mobile money avec OAuth2 et formulaire (exemple a adapter)",
+      "base_url": "https://sandbox.operateur.example",
+      "auth": {
+        "type": "oauth2_client_credentials",
+        "token_url": "https://sandbox.operateur.example/oauth/token",
+        "client_id": "${env:OPERATEUR_CLIENT_ID}",
+        "client_secret": "${env:OPERATEUR_CLIENT_SECRET}"
+      },
+      "phone_format": "national",
+      "national_prefix": "237",
+      "inbound_auth": { "type": "hmac_sha256", "header": "x-signature", "secret": "${env:OPERATEUR_WEBHOOK_SECRET}", "encoding": "hex", "prefix": "sha256=" },
+      "payment": {
+        "initiate": {
+          "method": "POST",
+          "url": "/collection/requesttopay",
+          "format": "form",
+          "headers": { "x-reference-id": "{{payment_id}}" },
+          "body": { "amount": "{{amount}}", "currency": "{{currency}}", "payer": "{{phone}}", "externalId": "{{reference}}", "callback": "{{callback_url}}" },
+          "result": { "ref": "data.financialTransactionId", "redirect_url": "data.payUrl" },
+          "success": { "path": "status", "equals": ["ACCEPTED", "PENDING"] }
+        },
+        "webhook": {
+          "payment_id": "externalId",
+          "status": "status",
+          "status_map": { "SUCCESSFUL": "confirme", "FAILED": "echoue", "PENDING": "en_attente" }
+        }
+      }
+    }
+  },
+  "routing": {
+    "sms": "agregateur_exemple",
+    "ussd": "agregateur_exemple",
+    "payment": { "orange_money": "agregateur_exemple", "mtn_momo": "operateur_oauth_exemple" }
+  }
+}

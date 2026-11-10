@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { config } from '../config';
+import { ConnectorRegistry } from '../connectors/connector-registry';
+import { amountMajor, formatPhone, getString } from '../connectors/template';
 import { Payment } from '../database/entities';
 
 export interface PaymentInitResult {
@@ -40,19 +42,53 @@ export class SimulatorPaymentProvider implements PaymentProvider {
   }
 }
 
-/** Interfaces ready for the real aggregators; not wired in the MVP. */
-@Injectable()
-export class OrangeMoneyProvider implements PaymentProvider {
-  readonly name = 'orange';
-  async initiate(): Promise<PaymentInitResult> {
-    throw new Error('Orange Money provider is not wired in the MVP (PAYMENT_PROVIDER=simulator)');
+/**
+ * Any mobile-money aggregator described in the providers configuration (ADR-002),
+ * routed by payment method code (pack pays.*: orange_money, mtn_momo, ...).
+ */
+export class ConnectorPaymentProvider implements PaymentProvider {
+  readonly name = 'connector';
+
+  constructor(private readonly registry: ConnectorRegistry) {}
+
+  /** Methods that have a configured connector. */
+  methods(): string[] {
+    return Object.keys(this.registry.config.routing?.payment ?? {});
+  }
+
+  async initiate(payment: Payment): Promise<PaymentInitResult> {
+    const name = this.registry.paymentRoute(payment.method);
+    const found = name ? this.registry.get(name) : null;
+    if (!found?.spec.payment) throw new PaymentProviderError('not_configured', `aucun connecteur pour le moyen ${payment.method}`);
+    const { client, spec } = found;
+    const p = spec.payment!;
+    const cfg = config();
+    const res = await client.call(p.initiate, {
+      payment_id: payment.id,
+      reference: payment.id,
+      amount_minor: Number(payment.amount_minor),
+      amount: amountMajor(Number(payment.amount_minor), payment.currency),
+      currency: payment.currency,
+      phone: formatPhone(payment.phone ?? '', spec.phone_format, spec.national_prefix),
+      phone_e164: payment.phone ?? '',
+      method: payment.method,
+      description: `RecallFarm ${payment.plan ?? payment.purpose} ${payment.period ?? ''}`.trim(),
+      callback_url: `${cfg.publicApiUrl.replace(/\/+$/, '')}/v1/connectors/${client.name}/payment`,
+      return_url: cfg.publicAppUrl,
+    });
+    if (!res.ok) throw new PaymentProviderError(`http_${res.http_status}`, `${client.name} a refuse le paiement`);
+    const ref = getString(res.body, p.initiate.result.ref);
+    if (!ref) throw new PaymentProviderError('no_reference', `${client.name} n'a pas renvoye de reference`);
+    const redirect = getString(res.body, p.initiate.result.redirect_url);
+    return { provider_ref: ref, ussd_push: p.initiate.ussd_push ?? true, ...(redirect ? { redirect_url: redirect } : {}) };
   }
 }
 
-@Injectable()
-export class MtnMomoProvider implements PaymentProvider {
-  readonly name = 'mtn';
-  async initiate(): Promise<PaymentInitResult> {
-    throw new Error('MTN MoMo provider is not wired in the MVP (PAYMENT_PROVIDER=simulator)');
+export class PaymentProviderError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
   }
 }
