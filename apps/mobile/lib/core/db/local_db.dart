@@ -43,6 +43,25 @@ int entityRank(String entity) {
   return i < 0 ? 999 : i;
 }
 
+/// A server row to apply locally (pull).
+class RemoteRow {
+  RemoteRow(this.table, this.data, {required this.syncVersion, this.deleted = false});
+  final String table;
+  final Map<String, dynamic> data;
+  final int syncVersion;
+  final bool deleted;
+}
+
+/// Server acknowledgement of a pushed change.
+class PushAck {
+  PushAck(this.entity, this.id, this.pushedRev, this.syncVersion, {this.serverData});
+  final String entity;
+  final String id;
+  final int pushedRev;
+  final int syncVersion;
+  final Map<String, dynamic>? serverData;
+}
+
 class OutboxEntry {
   OutboxEntry({
     required this.seq,
@@ -434,87 +453,140 @@ class LocalDb {
   /// Applies a server row. Dirty local fields win until pushed (the server then
   /// resolves per-field last-write-wins).
   Future<void> applyRemote(String table, Map<String, dynamic> remote,
-      {required int syncVersion, bool deleted = false}) async {
-    final id = remote['id'].toString();
+      {required int syncVersion, bool deleted = false}) =>
+      applyRemoteAll([RemoteRow(table, remote, syncVersion: syncVersion, deleted: deleted)]);
+
+  /// Applies a page of server rows in ONE transaction: existing rows are read
+  /// with `id IN (...)` and all writes go in one [Batch] — a pull of 500 changes
+  /// costs a handful of platform-channel calls and one commit, not 1 000 calls
+  /// and 500 commits (measured: integration_test/offline_sync_test.dart).
+  Future<void> applyRemoteAll(List<RemoteRow> rows) async {
+    if (rows.isEmpty) return;
     await _db.transaction((txn) async {
-      final rows = await txn.query(table, where: 'id = ?', whereArgs: [id], limit: 1);
-      final existing = rows.isEmpty ? null : rows.first;
-      final data = Map<String, dynamic>.from(_clean(remote));
-      var dirty = 0;
-      String? dirtyFields;
-      var clientRev = (remote['client_rev'] as num?)?.toInt() ?? 0;
-      if (existing != null && (existing['dirty'] as int? ?? 0) == 1) {
-        final local = Map<String, dynamic>.from(jsonDecode(existing['data'] as String) as Map);
-        final fields = existing['dirty_fields'] == null
-            ? <String>[]
-            : (jsonDecode(existing['dirty_fields'] as String) as List).cast<String>();
-        for (final f in fields) {
-          if (local.containsKey(f)) data[f] = local[f];
-        }
-        dirty = 1;
-        dirtyFields = existing['dirty_fields'] as String?;
-        clientRev = existing['client_rev'] as int? ?? clientRev;
+      final existing = <String, Map<String, Map<String, Object?>>>{};
+      for (final table in {for (final r in rows) r.table}) {
+        existing[table] =
+            await _rowsById(txn, table, [for (final r in rows) if (r.table == table) r.data['id'].toString()]);
       }
-      // Rule: a locally confirmed reminder wins over `manque`/`envoye`.
-      if (table == 'reminders' && existing != null) {
-        final local = jsonDecode(existing['data'] as String) as Map;
-        if (local['status'] == 'confirme' &&
-            (data['status'] == 'manque' || data['status'] == 'envoye')) {
-          data['status'] = 'confirme';
-        }
+      final batch = txn.batch();
+      for (final r in rows) {
+        final id = r.data['id'].toString();
+        batch.insert(r.table, _mergeRemote(r, existing[r.table]![id]), conflictAlgorithm: ConflictAlgorithm.replace);
       }
-      final deletedAt = deleted ? (data['deleted_at'] ?? Dates.nowIso()).toString() : data['deleted_at'] as String?;
-      data['deleted_at'] = deletedAt;
-      await txn.insert(
-        table,
-        {
-          'id': id,
-          ..._columns(table, data),
-          'data': jsonEncode(data),
-          'created_at': data['created_at']?.toString(),
-          'updated_at': data['updated_at']?.toString(),
-          'deleted_at': deletedAt,
-          'sync_version': syncVersion,
-          'client_rev': clientRev,
-          'dirty': dirty,
-          'dirty_fields': dirtyFields,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await batch.commit(noResult: true);
     });
-    _notify(table);
+    for (final t in {for (final r in rows) r.table}) {
+      _notify(t);
+    }
+  }
+
+  /// Local rows of [table] by id (chunks of 500: SQLite bound-variable limit).
+  static Future<Map<String, Map<String, Object?>>> _rowsById(
+      DatabaseExecutor db, String table, List<String> ids) async {
+    final out = <String, Map<String, Object?>>{};
+    final unique = ids.toSet().toList();
+    for (var i = 0; i < unique.length; i += 500) {
+      final chunk = unique.sublist(i, min(i + 500, unique.length));
+      final marks = List.filled(chunk.length, '?').join(',');
+      final rows = await db.query(table, where: 'id IN ($marks)', whereArgs: chunk);
+      for (final row in rows) {
+        out[row['id'] as String] = row;
+      }
+    }
+    return out;
+  }
+
+  /// Row values for a server row. Dirty local fields win until pushed (the
+  /// server then resolves per-field last-write-wins).
+  static Map<String, Object?> _mergeRemote(RemoteRow r, Map<String, Object?>? existing) {
+    final table = r.table;
+    final remote = r.data;
+    final id = remote['id'].toString();
+    final data = Map<String, dynamic>.from(_clean(remote));
+    var dirty = 0;
+    String? dirtyFields;
+    var clientRev = (remote['client_rev'] as num?)?.toInt() ?? 0;
+    if (existing != null && (existing['dirty'] as int? ?? 0) == 1) {
+      final local = Map<String, dynamic>.from(jsonDecode(existing['data'] as String) as Map);
+      final fields = existing['dirty_fields'] == null
+          ? <String>[]
+          : (jsonDecode(existing['dirty_fields'] as String) as List).cast<String>();
+      for (final f in fields) {
+        if (local.containsKey(f)) data[f] = local[f];
+      }
+      dirty = 1;
+      dirtyFields = existing['dirty_fields'] as String?;
+      clientRev = existing['client_rev'] as int? ?? clientRev;
+    }
+    // Rule: a locally confirmed reminder wins over `manque`/`envoye`.
+    if (table == 'reminders' && existing != null) {
+      final local = jsonDecode(existing['data'] as String) as Map;
+      if (local['status'] == 'confirme' && (data['status'] == 'manque' || data['status'] == 'envoye')) {
+        data['status'] = 'confirme';
+      }
+    }
+    final deletedAt =
+        r.deleted ? (data['deleted_at'] ?? Dates.nowIso()).toString() : data['deleted_at'] as String?;
+    data['deleted_at'] = deletedAt;
+    return {
+      'id': id,
+      ..._columns(table, data),
+      'data': jsonEncode(data),
+      'created_at': data['created_at']?.toString(),
+      'updated_at': data['updated_at']?.toString(),
+      'deleted_at': deletedAt,
+      'sync_version': r.syncVersion,
+      'client_rev': clientRev,
+      'dirty': dirty,
+      'dirty_fields': dirtyFields,
+    };
   }
 
   /// Marks a pushed change as applied. Only clears the dirty flag when no newer
   /// local edit happened meanwhile.
   Future<void> markPushed(String entity, String id, int pushedRev, int syncVersion,
-      {Map<String, dynamic>? serverData}) async {
+      {Map<String, dynamic>? serverData}) =>
+      markPushedAll([PushAck(entity, id, pushedRev, syncVersion, serverData: serverData)]);
+
+  /// Acknowledges a whole push batch in ONE transaction and one [Batch]
+  /// (see [applyRemoteAll]).
+  Future<void> markPushedAll(List<PushAck> acks) async {
+    if (acks.isEmpty) return;
     await _db.transaction((txn) async {
-      if (entity != '_action') {
-        final rows = await txn.query(entity, where: 'id = ?', whereArgs: [id], limit: 1);
-        if (rows.isNotEmpty) {
-          final row = rows.first;
+      final existing = <String, Map<String, Map<String, Object?>>>{};
+      for (final entity in {for (final a in acks) a.entity}) {
+        if (entity == '_action') continue;
+        existing[entity] = await _rowsById(txn, entity, [for (final a in acks) if (a.entity == entity) a.id]);
+      }
+      final batch = txn.batch();
+      for (final a in acks) {
+        final row = existing[a.entity]?[a.id];
+        if (row != null) {
           final currentRev = row['client_rev'] as int? ?? 0;
-          final values = <String, Object?>{'sync_version': syncVersion};
-          if (currentRev <= pushedRev) {
+          final values = <String, Object?>{'sync_version': a.syncVersion};
+          if (currentRev <= a.pushedRev) {
             values['dirty'] = 0;
             values['dirty_fields'] = null;
+            final serverData = a.serverData;
             if (serverData != null) {
               final merged = <String, dynamic>{
                 ...Map<String, dynamic>.from(jsonDecode(row['data'] as String) as Map),
                 ..._clean(serverData),
               };
               values['data'] = jsonEncode(merged);
-              values.addAll(_columns(entity, merged));
+              values.addAll(_columns(a.entity, merged));
             }
           }
-          await txn.update(entity, values, where: 'id = ?', whereArgs: [id]);
+          batch.update(a.entity, values, where: 'id = ?', whereArgs: [a.id]);
         }
+        batch.delete('outbox',
+            where: 'entity = ? AND entity_id = ? AND client_rev <= ?', whereArgs: [a.entity, a.id, a.pushedRev]);
       }
-      await txn.delete('outbox',
-          where: 'entity = ? AND entity_id = ? AND client_rev <= ?', whereArgs: [entity, id, pushedRev]);
+      await batch.commit(noResult: true);
     });
-    _notify(entity);
+    for (final e in {for (final a in acks) a.entity}) {
+      _notify(e);
+    }
     _notify('outbox');
   }
 

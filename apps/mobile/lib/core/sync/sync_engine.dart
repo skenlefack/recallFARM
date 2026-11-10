@@ -52,6 +52,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _retry;
   int _failures = 0;
   bool _running = false;
+  bool _disposed = false;
   bool _wasOnline = true;
   StreamSubscription<String>? _dbSub;
 
@@ -74,6 +75,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _disposed = true;
     _timer?.cancel();
     _retry?.cancel();
     _dbSub?.cancel();
@@ -102,7 +104,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     if (now && !_wasOnline) unawaited(sync());
     if (!now) {
       phase = SyncPhase.offline;
-      notifyListeners();
+      _notify();
     }
     _wasOnline = now;
   }
@@ -111,11 +113,18 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     final c = await db.pendingCount();
     if (c != pending) {
       pending = c;
-      notifyListeners();
+      _notify();
     }
   }
 
+  /// A sync still in flight when the engine is disposed (app closed, account
+  /// switched) must neither notify nor schedule a retry.
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
   void _scheduleRetry() {
+    if (_disposed) return;
     _failures++;
     final seconds = min(15 * 60, 30 * pow(2, _failures - 1).toInt());
     _retry?.cancel();
@@ -131,12 +140,12 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!connectivity.osOnline) {
       phase = SyncPhase.offline;
-      notifyListeners();
+      _notify();
       return false;
     }
     _running = true;
     phase = SyncPhase.syncing;
-    notifyListeners();
+    _notify();
     try {
       await _push();
       await _replayActions();
@@ -165,7 +174,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       _running = false;
       pending = await db.pendingCount();
-      notifyListeners();
+      _notify();
     }
   }
 
@@ -193,13 +202,15 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
       final res = await api.post('/sync/push', body);
       final handled = <String>{};
 
+      final acks = <PushAck>[];
       for (final a in ApiClient.asList(res['applied'])) {
         final id = a['id']?.toString();
         final entry = byId[id];
         if (id == null || entry == null) continue;
         handled.add(id);
-        await db.markPushed(entry.entity, id, entry.clientRev, (a['sync_version'] as num?)?.toInt() ?? 0);
+        acks.add(PushAck(entry.entity, id, entry.clientRev, (a['sync_version'] as num?)?.toInt() ?? 0));
       }
+      await db.markPushedAll(acks); // one transaction per batch of 200
       for (final c in ApiClient.asList(res['conflicts'])) {
         final id = c['id']?.toString();
         final entry = byId[id];
@@ -272,6 +283,8 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
         'limit': AppConfig.pullLimit,
       });
       final changes = res['changes'] is List ? res['changes'] as List : const [];
+      final rows = <RemoteRow>[];
+      final alerts = <Map<String, dynamic>>[];
       for (final raw in changes) {
         if (raw is! Map) continue;
         final c = Map<String, dynamic>.from(raw);
@@ -284,10 +297,11 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
         _normaliseMoney(data);
         final Object? version = c['sync_version'] ?? data['sync_version'];
         final deleted = c['op'] == 'delete' || data['deleted_at'] != null;
-        await db.applyRemote(entity, data,
-            syncVersion: version is num ? version.toInt() : 0, deleted: deleted);
-        if (entity == 'alerts' && !deleted) onAlertPulled?.call(data);
+        rows.add(RemoteRow(entity, data, syncVersion: version is num ? version.toInt() : 0, deleted: deleted));
+        if (entity == 'alerts' && !deleted) alerts.add(data);
       }
+      await db.applyRemoteAll(rows); // one transaction per page
+      alerts.forEach(onAlertPulled ?? (_) {});
       final sv = res['server_version'];
       if (sv is num) since = sv.toInt();
       if (sv is String) since = int.tryParse(sv) ?? since;
