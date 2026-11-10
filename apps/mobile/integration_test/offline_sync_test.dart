@@ -128,6 +128,8 @@ void main() {
     final attrs = (batchRow['data'] as Map)['attributes'] as Map;
     expect(attrs['note_cycle'], kCycles, reason: 'derniere modification hors ligne gagnee');
     expect(await env.db.pendingCount(), 0);
+    expect((await env.db.rejectedEntries()).map((e) => '${e.entity} ${e.payload['path'] ?? ''} ${e.lastError}'), isEmpty,
+        reason: 'aucune ecriture ni action rejetee par le serveur (revue M4)');
     expect(cuts, greaterThanOrEqualTo(kCycles ~/ 5), reason: 'coupures apres envoi reellement simulees');
 
     final report = {
@@ -177,6 +179,8 @@ void main() {
     sw.stop();
     expect(drained, isTrue, reason: 'file videe (${env.sync.lastError})');
     expect(await env.db.pendingCount(), 0);
+    expect((await env.db.rejectedEntries()).map((e) => '${e.entity} ${e.payload['path'] ?? ''} ${e.lastError}'), isEmpty,
+        reason: 'aucune ecriture ni action rejetee par le serveur (revue M4)');
     final serverLogs = (await _pullAll(env.api, 'daily_logs'))
         .where((c) => (c['data'] as Map)['subject_id'] == batchId)
         .length;

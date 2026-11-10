@@ -96,6 +96,8 @@ void main() {
     // ---- Synchronisation : rien ne reste dans la file, le serveur a tout
     expect(await env.drain(), greaterThan(0), reason: 'outbox videe');
     expect(await env.db.pendingCount(), 0);
+    expect((await env.db.rejectedEntries()).map((e) => '${e.entity} ${e.payload['path'] ?? ''} ${e.lastError}'), isEmpty,
+        reason: 'aucune ecriture ni action rejetee par le serveur (revue M4)');
     final serverBatches = await env.api.get('/sync/pull', query: {'since': 0, 'entities': 'batches,daily_logs', 'limit': 500});
     final ids = [for (final c in serverBatches['changes'] as List) (c as Map)['id'].toString()];
     expect(ids, contains(batchId), reason: 'lot pousse au serveur');
