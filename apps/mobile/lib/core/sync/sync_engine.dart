@@ -52,6 +52,11 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _retry;
   int _failures = 0;
   bool _running = false;
+  int _batchSize = AppConfig.pushBatchSize;
+  int _pullLimit = AppConfig.pullLimit;
+
+  /// Current push batch size (adapts to the network, see [nextPushBatchSize]).
+  int get pushBatchSize => _batchSize;
   bool _disposed = false;
   bool _wasOnline = true;
   StreamSubscription<String>? _dbSub;
@@ -133,7 +138,22 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Runs a full sync cycle. Safe to call concurrently (single flight).
   Future<bool> sync({bool manual = false}) async {
-    if (_running) return false;
+    if (_running || _disposed) return false;
+    final run = _run(manual: manual);
+    _inFlight = run;
+    return run;
+  }
+
+  Future<bool>? _inFlight;
+
+  /// Completes when no sync is running (call before closing the database:
+  /// app shutdown, sign-out, tests).
+  Future<void> idle() async {
+    final f = _inFlight;
+    if (f != null) await f;
+  }
+
+  Future<bool> _run({required bool manual}) async {
     if (!session.isAuthenticated) {
       await _refreshPending();
       return false;
@@ -173,8 +193,10 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     } finally {
       _running = false;
-      pending = await db.pendingCount();
-      _notify();
+      if (!_disposed) {
+        pending = await db.pendingCount();
+        _notify();
+      }
     }
   }
 
@@ -184,7 +206,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     while (true) {
       final all = await db.pendingChanges();
       if (all.isEmpty) return;
-      final chunk = all.take(AppConfig.pushBatchSize).toList();
+      final chunk = all.take(_batchSize).toList();
       final byId = {for (final e in chunk) e.entityId: e};
       final body = {
         'device_id': session.deviceId,
@@ -199,7 +221,14 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
             }
         ],
       };
-      final res = await api.post('/sync/push', body);
+      final Map<String, dynamic> res;
+      try {
+        res = await api.post('/sync/push', body);
+        _batchSize = nextPushBatchSize(_batchSize, timedOut: false);
+      } on ApiException catch (e) {
+        if (e.isNetwork) _batchSize = nextPushBatchSize(_batchSize, timedOut: true);
+        rethrow;
+      }
       final handled = <String>{};
 
       final acks = <PushAck>[];
@@ -277,11 +306,20 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     var since = int.tryParse(await db.getKv(_kCursor) ?? '') ?? 0;
     final entities = kSyncedEntities.join(',');
     for (var page = 0; page < 50; page++) {
-      final res = await api.get('/sync/pull', query: {
-        'since': since,
-        'entities': entities,
-        'limit': AppConfig.pullLimit,
-      });
+      final Map<String, dynamic> res;
+      try {
+        res = await api.get('/sync/pull', query: {
+          'since': since,
+          'entities': entities,
+          'limit': _pullLimit,
+        });
+        _pullLimit = nextPageSize(_pullLimit, timedOut: false, minimum: 50, maximum: AppConfig.pullLimit);
+      } on ApiException catch (e) {
+        if (e.isNetwork) {
+          _pullLimit = nextPageSize(_pullLimit, timedOut: true, minimum: 50, maximum: AppConfig.pullLimit);
+        }
+        rethrow;
+      }
       final changes = res['changes'] is List ? res['changes'] as List : const [];
       final rows = <RemoteRow>[];
       final alerts = <Map<String, dynamic>>[];
@@ -363,4 +401,19 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
       await db.setKv(_kLastMe, now.toUtc().toIso8601String());
     }
   }
+}
+
+/// Push batch size after a push: halved after a network failure (2G: each
+/// request must finish within the timeouts, and what was sent is kept when the
+/// link drops), doubled back after a success, between 25 and
+/// [AppConfig.pushBatchSize].
+int nextPushBatchSize(int current, {required bool timedOut}) =>
+    nextPageSize(current, timedOut: timedOut, minimum: 25, maximum: AppConfig.pushBatchSize);
+
+/// Generic adaptive page size (push batches, pull pages): halved after a
+/// network failure, doubled after a success, kept within [minimum, maximum].
+/// The pull cursor is saved after every page, so smaller pages keep progress.
+int nextPageSize(int current, {required bool timedOut, required int minimum, required int maximum}) {
+  final next = timedOut ? current ~/ 2 : current * 2;
+  return next.clamp(minimum, maximum);
 }

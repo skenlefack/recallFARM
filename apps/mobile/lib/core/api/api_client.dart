@@ -1,5 +1,7 @@
 import 'dart:async';
-import 'dart:io' show HttpDate;
+import 'dart:convert';
+import 'dart:io' show HttpDate, gzip;
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
@@ -79,6 +81,12 @@ class ApiClient {
           options.headers['Authorization'] = 'Bearer $t';
         }
         options.headers['Accept-Language'] = language;
+        final zipped = gzipJsonBody(options.data);
+        if (zipped != null) {
+          // 2G: a push of 200 changes is ~10x smaller (API body parser inflates it).
+          options.data = zipped;
+          options.headers['Content-Encoding'] = 'gzip';
+        }
         handler.next(options);
       },
       onResponse: (response, handler) {
@@ -164,6 +172,19 @@ class ApiClient {
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }
+  }
+
+  /// JSON bodies at least this large are sent gzip-compressed.
+  static const int gzipThreshold = 1024;
+
+  /// Gzip-compressed UTF-8 JSON of [data] when it is a JSON object/array of at
+  /// least [gzipThreshold] bytes; null otherwise (sent as is).
+  static Uint8List? gzipJsonBody(Object? data) {
+    // TypedData: already bytes (e.g. the gzip body re-sent after a 401 refresh).
+    if (data is TypedData || (data is! Map && data is! List)) return null;
+    final raw = utf8.encode(jsonEncode(data));
+    if (raw.length < gzipThreshold) return null;
+    return Uint8List.fromList(gzip.encode(raw));
   }
 
   static Map<String, dynamic> asMap(dynamic d) =>
