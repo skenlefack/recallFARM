@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, HttpCode, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
+import { timingSafeEqual } from 'crypto';
 import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { DataSource } from 'typeorm';
 import { AccessService } from '../common/access.service';
@@ -39,8 +40,16 @@ export class InboundController {
   ) {}
 
   private checkSecret(secret?: string) {
-    const expected = config().inboundSecret;
-    if (expected && secret !== expected) throw Errors.unauthenticated('Secret d’intégration invalide');
+    const cfg = config();
+    const expected = cfg.inboundSecret;
+    if (!expected) {
+      // Open only in development: in production an unset secret closes the endpoints.
+      if (cfg.production) throw Errors.unauthenticated('Secret d’intégration non configuré');
+      return;
+    }
+    const given = Buffer.from(secret ?? '');
+    const want = Buffer.from(expected);
+    if (given.length !== want.length || !timingSafeEqual(given, want)) throw Errors.unauthenticated('Secret d’intégration invalide');
   }
 
   @Public()

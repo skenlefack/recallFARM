@@ -57,6 +57,21 @@ describe('template helpers', () => {
     expect(() => resolveEnv('${env:ABSENT}', {})).toThrow(/ABSENT/);
   });
 
+  it('never expands ${env:...} found inside inserted values (secret leak by SMS)', () => {
+    const env = process.env;
+    process.env = { ...env, RF_TEST_SECRET: 'TOP-SECRET', RF_TOKEN: 'tok' };
+    try {
+      const text = 'Lot ${env:RF_TEST_SECRET}';
+      expect(renderText('RF: {{text}}', { text })).toBe('RF: Lot ${env:RF_TEST_SECRET}');
+      expect(renderText('/send?k=${env:RF_TOKEN}&text={{text}}', { text })).toBe('/send?k=tok&text=Lot ${env:RF_TEST_SECRET}');
+      expect(render({ m: 'x {{text}}' }, { text })).toEqual({ m: 'x Lot ${env:RF_TEST_SECRET}' });
+      expect(renderText('/send?text={{text}}', { text: 'a&to=1' }, encodeURIComponent)).toBe('/send?text=a%26to%3D1');
+      expect(renderText('{{text}}', { text: 'a b' }, encodeURIComponent)).toBe('a%20b');
+    } finally {
+      process.env = env;
+    }
+  });
+
   it('reads dot paths including array indexes', () => {
     const doc = { data: { items: [{ id: 'm1' }] }, n: 0 };
     expect(getPath(doc, 'data.items.0.id')).toBe('m1');
@@ -124,7 +139,7 @@ describe('providers configuration validation', () => {
       'payment.initiate.result.ref: requis',
       'payment.webhook: payment_id ou ref requis',
       'status_map.OK: confirme, echoue ou en_attente',
-      'inbound_auth: obligatoire pour recevoir des paiements',
+      'inbound_auth: obligatoire des que le connecteur recoit des appels',
       'sms.send.method: invalide',
       'sms.send.format',
       'sms.send.timeout_ms',
@@ -137,6 +152,17 @@ describe('providers configuration validation', () => {
       'routing.payment.Bad-Code: code de moyen invalide',
     ])
       expect(joined).toContain(fragment);
+  });
+
+  it('requires inbound_auth for any connector that receives calls (sms, dlr, ussd)', () => {
+    const base = { base_url: 'https://h.example', sms: { send: { url: '/s' } } };
+    expect(validateProvidersConfig({ connectors: { ag: base } })).toEqual([]);
+    const withInbound = { connectors: { ag: { ...base, sms: { ...base.sms, inbound: { from: 'f', text: 't' } } } } };
+    expect(validateProvidersConfig(withInbound).join()).toContain('inbound_auth: obligatoire');
+    const ussd = { connectors: { ag: { ...base, ussd: { inbound: { session_id: 's', phone: 'p', text: 't' }, response: { type: 'text' } } } } };
+    expect(validateProvidersConfig(ussd).join()).toContain('inbound_auth: obligatoire');
+    const authed = { connectors: { ag: { ...withInbound.connectors.ag, inbound_auth: { type: 'header', name: 'x', value: 'y' } } } };
+    expect(validateProvidersConfig(authed)).toEqual([]);
   });
 
   it('rejects non-objects and invalid JSON', () => {
@@ -190,6 +216,13 @@ describe('ConnectorHttp', () => {
     await http.call({ url: 'https://h.example/q', method: 'GET', auth: { type: 'query', name: 'key', value: 'k1' } }, {});
     expect(f.calls[1].url).toBe('https://h.example/q?key=k1');
     expect(f.calls[1].body).toBeUndefined();
+  });
+
+  it('percent-encodes values inserted in the URL', async () => {
+    const f = fakeFetch([{ body: {} }]);
+    const http = new ConnectorHttp('a', { base_url: 'https://h.example' }, f.fn);
+    await http.call({ url: '/send?to={{to}}&text={{text}}', method: 'GET' }, { to: '237', text: 'Lot A&B&to=999' });
+    expect(f.calls[0].url).toBe('https://h.example/send?to=237&text=Lot%20A%26B%26to%3D999');
   });
 
   it('applies the success rule on HTTP codes and on a business field', async () => {
@@ -269,6 +302,7 @@ describe('verifyInbound', () => {
     const a = { type: 'hmac_sha256' as const, header: 'x-signature', secret: '${env:OPERATEUR_WEBHOOK_SECRET}', prefix: 'sha256=' };
     expect(verifyInbound(a, { headers: { 'x-signature': `sha256=${sig}` }, query: {}, rawBody: body })).toBe(true);
     expect(verifyInbound(a, { headers: { 'x-signature': sig }, query: {}, rawBody: body })).toBe(true);
+    expect(verifyInbound(a, { headers: { 'x-signature': `sha256=${sig.toUpperCase()}` }, query: {}, rawBody: body })).toBe(true);
     expect(verifyInbound(a, { headers: { 'x-signature': `sha256=${sig}` }, query: {}, rawBody: Buffer.from('{}') })).toBe(false);
     expect(verifyInbound(a, { headers: {}, query: {}, rawBody: body })).toBe(false);
     expect(verifyInbound(a, { headers: { 'x-signature': sig }, query: {} })).toBe(false);
@@ -339,7 +373,7 @@ describe('ConnectorPaymentProvider (mobile money through any aggregator)', () =>
     const p = new ConnectorPaymentProvider(new ConnectorRegistry(example, f.fn));
     expect(p.methods()).toEqual(['orange_money', 'mtn_momo']);
     const res = await p.initiate(payment('orange_money'));
-    expect(res).toEqual({ provider_ref: 'TX-9', ussd_push: true });
+    expect(res).toEqual({ provider_ref: 'TX-9', ussd_push: true, connector: 'agregateur_exemple' });
     expect(JSON.parse(f.calls[0].body!)).toEqual({
       amount: 2500,
       currency: 'XAF',
@@ -355,7 +389,7 @@ describe('ConnectorPaymentProvider (mobile money through any aggregator)', () =>
     const f = fakeFetch([{ body: { access_token: 'T' } }, { body: { status: 'PENDING', data: { financialTransactionId: 'FT-1', payUrl: 'https://pay.example/1' } } }]);
     const p = new ConnectorPaymentProvider(new ConnectorRegistry(example, f.fn));
     const res = await p.initiate(payment('mtn_momo'));
-    expect(res).toEqual({ provider_ref: 'FT-1', ussd_push: true, redirect_url: 'https://pay.example/1' });
+    expect(res).toEqual({ provider_ref: 'FT-1', ussd_push: true, connector: 'operateur_oauth_exemple', redirect_url: 'https://pay.example/1' });
     expect(f.calls[1].headers['x-reference-id']).toBe('0b6f8a52-3d1e-4c8a-9f1e-2a4b6c8d0e1f');
     expect(f.calls[1].body).toContain('amount=2500');
     expect(f.calls[1].body).toContain('payer=690000001');
@@ -364,9 +398,13 @@ describe('ConnectorPaymentProvider (mobile money through any aggregator)', () =>
   it('raises a typed error when routing, the aggregator or the reference fails', async () => {
     const none = new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([]).fn));
     await expect(none.initiate(payment('wave'))).rejects.toMatchObject({ code: 'not_configured' });
+    await expect(none.initiate(payment('wave'))).rejects.toMatchObject({ definitive: true });
     const refused = new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ status: 402 }]).fn));
-    await expect(refused.initiate(payment('orange_money'))).rejects.toMatchObject({ code: 'http_402' });
+    await expect(refused.initiate(payment('orange_money'))).rejects.toMatchObject({ code: 'http_402', definitive: true, connector: 'agregateur_exemple' });
+    const down = new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ status: 503 }]).fn));
+    await expect(down.initiate(payment('orange_money'))).rejects.toMatchObject({ code: 'http_503', definitive: false });
     const noRef = new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ body: {} }]).fn));
     await expect(noRef.initiate(payment('orange_money'))).rejects.toBeInstanceOf(PaymentProviderError);
+    await expect(new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ body: {} }]).fn)).initiate(payment('orange_money'))).rejects.toMatchObject({ definitive: false });
   });
 });

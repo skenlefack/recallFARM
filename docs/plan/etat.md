@@ -51,8 +51,8 @@ Aucun. Aucun agent n'est actif.
 
 | Lot | Raison | Decision attendue |
 |-----|--------|-------------------|
-| P1.1 SMS et USSD reels | Fournisseur non choisi ; ADR-001 et questionnaire prets | **D-07** agregateur SMS/paiement, **D-03** code court USSD |
-| P1.2 Mobile money reel | Meme fournisseur | **D-07** (Orange Money / MTN MoMo / agregateur unique) |
+| P1.1 SMS et USSD reels | **Debloque cote code (2026-11-10)** : connecteurs parametrables (ADR-002). Reste : USSD sessions / 160 car. (revue M5), puis brancher l'agregateur retenu | D-07, D-03 (choix commercial seulement) |
+| P1.2 Mobile money reel | **Debloque cote code** : connecteur de paiement. Reste : statut, remboursement, rapprochement quotidien, checkout idempotent (revue M6) | D-07 (choix commercial seulement) |
 
 Consequence : **P1.6 Recette du pilote** ne peut pas demarrer (elle exige SMS et paiements reels).
 
@@ -91,7 +91,7 @@ dressage/pension/devis (EF-DRE-01 a 05), biosecurite (EF-BIO-01, 03), WhatsApp (
 
 | ID | Sujet | Bloque |
 |----|-------|--------|
-| D-01 | Hebergement (pays, fournisseur) | Recette publique P0.2, pilote |
+| D-01 | Hebergement | **Decide (provisoire)** : serveur RecallVet chez Infomaniak, recallfarm.com ; Cameroun en production reelle |
 | D-02 | Drift vs sqflite_sqlcipher | — (sqlcipher utilise par defaut) |
 | D-03 | Code court USSD | **P1.1** |
 | D-04 | Fournisseur WhatsApp Business | P2.10 |

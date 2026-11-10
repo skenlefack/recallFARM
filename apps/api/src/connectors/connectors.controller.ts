@@ -54,6 +54,13 @@ export class ConnectorsController {
     return v;
   }
 
+  /** Inbound number normalised to E.164 and validated (no paid reply to a malformed number). */
+  private phone(body: unknown, path: string, label: string, spec: ConnectorSpec): string {
+    const e164 = toE164(this.field(body, path, label), spec.national_prefix);
+    if (!/^\+[1-9]\d{7,14}$/.test(e164)) throw Errors.validation({ [label]: 'numero invalide' });
+    return e164;
+  }
+
   @Public()
   @SkipThrottle()
   @HttpCode(200)
@@ -63,7 +70,7 @@ export class ConnectorsController {
   async inboundSms(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>) {
     const spec = this.authorise(name, req);
     if (!spec.sms?.inbound) throw Errors.notFound('Reception SMS');
-    const from = toE164(this.field(body, spec.sms.inbound.from, 'from'), spec.national_prefix);
+    const from = this.phone(body, spec.sms.inbound.from, 'from', spec);
     const text = getString(body, spec.sms.inbound.text) ?? '';
     return this.inbound.handleSms(from, text);
   }
@@ -80,7 +87,7 @@ export class ConnectorsController {
     if (!dlr) throw Errors.notFound('Accuses de reception');
     const ref = this.field(body, dlr.ref, 'ref');
     const raw = getString(body, dlr.status) ?? '';
-    const status = dlr.status_map[raw];
+    const status = Object.hasOwn(dlr.status_map, raw) ? dlr.status_map[raw] : undefined;
     if (!status) return { received: true, applied: false };
     const updated = await this.messaging.applyDeliveryReport(ref, status, getString(body, dlr.error));
     return { received: true, applied: updated > 0 };
@@ -97,7 +104,7 @@ export class ConnectorsController {
     if (!spec.ussd) throw Errors.notFound('USSD');
     const m = spec.ussd.inbound;
     const sessionId = this.field(body, m.session_id, 'session_id');
-    const phone = toE164(this.field(body, m.phone, 'phone'), spec.national_prefix);
+    const phone = this.phone(body, m.phone, 'phone', spec);
     const text = getString(body, m.text) ?? '';
     const { response } = await this.inbound.handleUssd(sessionId, phone, text);
     if (spec.ussd.response.type === 'text') {
@@ -120,7 +127,7 @@ export class ConnectorsController {
     if (!w) throw Errors.notFound('Paiement');
     const ack = w.ack ?? { received: true };
     const raw = getString(body, w.status) ?? '';
-    const status = w.status_map[raw];
+    const status = Object.hasOwn(w.status_map, raw) ? w.status_map[raw] : undefined;
     if (!status || status === 'en_attente') {
       if (!status) this.logger.warn(`${name}: statut de paiement non reconnu "${raw}" (ignore)`);
       return ack;
@@ -129,11 +136,20 @@ export class ConnectorsController {
     const ref = getString(body, w.ref);
     if (!paymentId && !ref) throw Errors.validation({ reference: 'reference du paiement absente' });
     const fees = Number(getPath(body, w.fees_minor));
-    await this.billing.applyResult({
-      ...(paymentId && /^[0-9a-f-]{36}$/i.test(paymentId) ? { payment_id: paymentId } : { provider_ref: ref ?? paymentId }),
-      status,
-      ...(Number.isInteger(fees) && w.fees_minor ? { fees_minor: fees } : {}),
-    });
+    const amount = w.amount_minor ? Number(getPath(body, w.amount_minor)) : undefined;
+    await this.billing.applyResult(
+      {
+        ...(paymentId && /^[0-9a-f-]{36}$/i.test(paymentId) ? { payment_id: paymentId } : { provider_ref: ref ?? paymentId }),
+        status,
+        ...(Number.isInteger(fees) && w.fees_minor ? { fees_minor: fees } : {}),
+      },
+      {
+        connector: name,
+        body,
+        ...(amount !== undefined ? { amount_minor: Number.isInteger(amount) ? amount : NaN } : {}),
+        ...(w.currency ? { currency: getString(body, w.currency) ?? '' } : {}),
+      },
+    );
     return ack;
   }
 

@@ -113,15 +113,31 @@ export class BillingService {
     try {
       init = await this.provider.initiate(payment);
     } catch (e) {
-      const code = e instanceof PaymentProviderError ? e.code : 'network';
+      const known = e instanceof PaymentProviderError;
+      const code = known ? e.code : (e as Error).name === 'TimeoutError' ? 'timeout' : 'network';
+      const connector = known && e.connector ? { connector: e.connector } : {};
       this.logger.warn(`payment ${payment.id}: initiation failed (${code}) ${(e as Error).message}`);
-      payment.status = 'echoue';
-      payment.raw = { ...payment.raw, error_code: code };
+      if (known && e.definitive) {
+        // Explicit refusal by the aggregator: nothing can have been debited.
+        payment.status = 'echoue';
+        payment.raw = { ...payment.raw, error_code: code, ...connector };
+        await repo.save(payment);
+        throw Errors.business('PAY-INIT', 'Le paiement n’a pas pu être lancé. Réessayez dans quelques minutes.', { payment_id: payment.id, error_code: code });
+      }
+      // Unknown outcome (timeout, network, 5xx): the payer may still validate the request on the phone.
+      // The payment stays pending so that a later confirmation is applied, never lost.
+      payment.status = 'en_attente';
+      payment.raw = { ...payment.raw, error_code: code, ...connector };
       await repo.save(payment);
-      throw Errors.business('PAY-INIT', 'Le paiement n’a pas pu être lancé. Réessayez dans quelques minutes.', { payment_id: payment.id, error_code: code });
+      throw Errors.business('PAY-PENDING', 'Paiement en cours de vérification. Ne relancez pas : vous serez prévenu dès sa confirmation.', {
+        payment_id: payment.id,
+        status: 'en_attente',
+        error_code: code,
+      });
     }
     payment.provider_ref = init.provider_ref;
     payment.status = 'en_attente';
+    if (init.connector) payment.raw = { ...payment.raw, connector: init.connector };
     await repo.save(payment);
     return {
       payment_id: payment.id,
@@ -167,32 +183,64 @@ export class BillingService {
     return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
   }
 
-  /** Applies a provider result (webhook, simulator or dev endpoint). Idempotent. */
-  async applyResult(input: { payment_id?: string; provider_ref?: string; status: string; fees_minor?: number }) {
-    const repo = this.ds.getRepository(Payment);
-    const p = input.payment_id
-      ? await repo.findOne({ where: { id: input.payment_id } })
-      : input.provider_ref
-        ? await repo.findOne({ where: { provider_ref: input.provider_ref } })
-        : null;
-    if (!p) throw Errors.notFound('Paiement');
+  /**
+   * Applies a provider result (webhook, simulator or dev endpoint). Idempotent and safe under
+   * concurrent webhooks (row lock). A confirmation always wins over a failure: money taken must
+   * give the subscription. With `from`, the payment must have been initiated by that connector
+   * and, when given, the amount and currency must match; the webhook body is kept for audit.
+   */
+  async applyResult(
+    input: { payment_id?: string; provider_ref?: string; status: string; fees_minor?: number },
+    from?: { connector: string; amount_minor?: number; currency?: string; body?: unknown },
+  ) {
+    if (!input.payment_id && !input.provider_ref) throw Errors.notFound('Paiement');
     const ok = ['confirme', 'success', 'successful', 'paid'].includes(input.status.toLowerCase());
-    if (p.status === 'confirme' || p.status === 'echoue') return this.serialize(p);
-    if (!ok) {
-      p.status = 'echoue';
-      await repo.save(p);
+    const warnings: string[] = [];
+    try {
+      const p = await this.ds.transaction(async (m) => {
+        const repo = m.getRepository(Payment);
+        const found = await repo.findOne({
+          where: input.payment_id ? { id: input.payment_id } : { provider_ref: input.provider_ref! },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!found) throw Errors.notFound('Paiement');
+        const raw = (found.raw ?? {}) as { connector?: string; events?: unknown[] };
+        if (from) {
+          if (raw.connector !== from.connector) throw Errors.notFound('Paiement');
+          const events = Array.isArray(raw.events) ? raw.events : [];
+          found.raw = { ...found.raw, events: [...events, { at: new Date().toISOString(), status: input.status, body: from.body ?? null }].slice(-20) };
+          const amountMismatch = from.amount_minor !== undefined && from.amount_minor !== Number(found.amount_minor);
+          const currencyMismatch = from.currency !== undefined && from.currency !== found.currency;
+          if (ok && (amountMismatch || currencyMismatch)) {
+            await repo.save(found);
+            warnings.push(`payment ${found.id}: confirmation refusee (montant ou devise differents)`);
+            return found;
+          }
+        }
+        if (found.status === 'confirme') {
+          if (!ok) warnings.push(`payment ${found.id}: echec recu apres confirmation (ignore)`);
+          if (from) await repo.save(found);
+          return found;
+        }
+        if (!ok) {
+          found.status = 'echoue';
+          await repo.save(found);
+          return found;
+        }
+        if (found.status === 'echoue') warnings.push(`payment ${found.id}: confirmation tardive apres echec, abonnement active`);
+        found.status = 'confirme';
+        found.paid_at = new Date();
+        found.fees_minor = input.fees_minor ?? null;
+        const sub = await this.activate(m.getRepository(Subscription), found);
+        found.subscription_id = sub.id;
+        await repo.save(found);
+        this.logger.log(`payment ${found.id} confirmed → ${found.payer_type}:${found.payer_id} ${found.plan}`);
+        return found;
+      });
       return this.serialize(p);
+    } finally {
+      warnings.forEach((w) => this.logger.warn(w));
     }
-    await this.ds.transaction(async (m) => {
-      p.status = 'confirme';
-      p.paid_at = new Date();
-      p.fees_minor = input.fees_minor ?? null;
-      const sub = await this.activate(m.getRepository(Subscription), p);
-      p.subscription_id = sub.id;
-      await m.getRepository(Payment).save(p);
-    });
-    this.logger.log(`payment ${p.id} confirmed → ${p.payer_type}:${p.payer_id} ${p.plan}`);
-    return this.serialize(p);
   }
 
   private async activate(repo: import('typeorm').Repository<Subscription>, p: Payment): Promise<Subscription> {

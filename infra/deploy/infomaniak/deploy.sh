@@ -39,7 +39,7 @@ set -euo pipefail
 cd "$REMOTE_DIR"
 if [ ! -f .env ]; then
   cp .env.example .env
-  for k in POSTGRES_PASSWORD REDIS_PASSWORD JWT_ACCESS_SECRET JWT_REFRESH_SECRET PAYMENT_WEBHOOK_SECRET; do
+  for k in POSTGRES_PASSWORD REDIS_PASSWORD JWT_ACCESS_SECRET JWT_REFRESH_SECRET PAYMENT_WEBHOOK_SECRET INBOUND_SECRET; do
     sed -i "s|^$k=.*|$k=$(openssl rand -hex 24)|" .env
   done
   sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=https://$DOMAIN,https://www.$DOMAIN|" .env

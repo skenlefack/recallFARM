@@ -115,6 +115,9 @@ export interface PaymentSpec {
     /** Aggregator status → our status. Unlisted or "en_attente" statuses are acknowledged and ignored. */
     status_map: Record<string, 'confirme' | 'echoue' | 'en_attente'>;
     fees_minor?: JsonPath;
+    /** When given, a confirmation is refused if the amount (minor units) or currency differ from the request. */
+    amount_minor?: JsonPath;
+    currency?: JsonPath;
     /** Body returned to the aggregator (default {"received": true}). */
     ack?: unknown;
   };
