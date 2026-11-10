@@ -6,7 +6,6 @@ import '../../core/db/local_db.dart';
 import '../../core/i18n/strings.dart';
 import '../../core/theme/tokens.dart';
 import '../../core/theme/typography.dart';
-import '../../core/util/dates.dart';
 import '../../core/util/ids.dart';
 import '../../core/widgets/common.dart';
 import 'onboarding_scaffold.dart';
@@ -44,7 +43,6 @@ class ConsentStore {
         'granted': e.value,
         'text_version': kConsentTextVersion,
         'channel': 'app',
-        'granted_at': Dates.nowIso(),
       });
     }
     await db.setKvJson('consents', current);
