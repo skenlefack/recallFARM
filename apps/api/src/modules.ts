@@ -33,6 +33,7 @@ import { InboundController } from './notifications/inbound.controller';
 import { MessagingService } from './notifications/messaging.service';
 import { NotificationsScheduler } from './notifications/notifications.scheduler';
 import { InboundService } from './notifications/inbound.service';
+import { UssdSessionService } from './notifications/ussd-session.service';
 import {
   ConnectorMessageProvider,
   HttpSmsProvider,
@@ -162,7 +163,7 @@ export class InboxModule {}
 /** Scheduler (J-7/J-1/J/J+3, quiet hours, caps) and inbound SMS / USSD. */
 @Module({
   imports: [HealthModule, JournalModule],
-  providers: [NotificationsScheduler, InboundService],
+  providers: [NotificationsScheduler, InboundService, UssdSessionService],
   controllers: [InboundController, ConnectorsController],
   exports: [NotificationsScheduler],
 })

@@ -53,8 +53,8 @@ export interface RequestSpec {
 }
 
 export interface SmsSendSpec extends RequestSpec {
-  /** Paths read in the response. */
-  result?: { ref?: JsonPath; cost_minor?: JsonPath };
+  /** Paths read in the response. A cost is kept only with a currency (`currency` path, or `cost.currency`). */
+  result?: { ref?: JsonPath; cost_minor?: JsonPath; currency?: JsonPath };
 }
 
 export interface CostSpec {

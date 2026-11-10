@@ -42,6 +42,17 @@ export class KvService implements OnModuleDestroy {
     return true;
   }
 
+  async get(key: string): Promise<string | null> {
+    if (this.redis) return this.redis.get(key);
+    return this.memGet(key);
+  }
+
+  /** SET key value PX ttl (overwrites). */
+  async set(key: string, value: string, ttlMs: number): Promise<void> {
+    if (this.redis) await this.redis.set(key, value, 'PX', ttlMs);
+    else this.mem.set(key, { v: value, exp: Date.now() + ttlMs });
+  }
+
   async del(key: string): Promise<void> {
     if (this.redis) await this.redis.del(key);
     else this.mem.delete(key);

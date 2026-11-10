@@ -4,7 +4,7 @@ import { resolve } from 'path';
 import { ConnectorPaymentProvider, PaymentProviderError } from '../billing/payment.providers';
 import { reloadConfig } from '../config';
 import { Payment } from '../database/entities';
-import { ConnectorMessageProvider } from '../notifications/providers';
+import { ConnectorMessageProvider, parseMinor, SimulatorSmsProvider } from '../notifications/providers';
 import { ConnectorHttp, FetchFn, inspectInbound, parseTimestamp, verifyInbound } from './connector-http';
 import { ConnectorConfigError, ConnectorRegistry, parseProvidersConfig } from './connector-registry';
 import { ConnectorSpec, ProvidersConfig } from './connector.types';
@@ -511,7 +511,8 @@ describe('ConnectorMessageProvider (SMS through any aggregator)', () => {
     expect(res).toEqual({ status: 'envoye', provider_ref: 'MSG-1', cost_minor: 25, currency: 'XAF' });
     const sent = JSON.parse(calls[0].body!);
     expect(sent).toMatchObject({ from: 'RecallFarm', to: '237690000001', message: 'Rappel vaccin' });
-    expect(sent.client_ref).toMatch(/^[0-9a-f]{16}$/);
+    // Without a journal id (admin test), a fresh UUID is used as idempotency key.
+    expect(sent.client_ref).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(calls[0].url).toBe('https://api.agregateur.example/v1/sms/messages');
   });
 
@@ -519,6 +520,39 @@ describe('ConnectorMessageProvider (SMS through any aggregator)', () => {
     const { p } = provider([{ body: { data: { id: 'MSG-2' } } }]);
     const res = await p.send('+237690000001', 'a'.repeat(200));
     expect(res.cost_minor).toBe(30);
+  });
+
+  it('sends our journal id as {{message_id}}, the provider idempotency key (m6)', async () => {
+    const { p, calls } = provider([{ body: { data: { id: 'MSG-3' } } }]);
+    await p.send('+237690000001', 'x', { message_id: '0b7c6f2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f' });
+    expect(JSON.parse(calls[0].body!).client_ref).toBe('0b7c6f2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f');
+  });
+
+  it('keeps a cost only with its currency, and only an integer or a string of digits (m3)', async () => {
+    expect([parseMinor(25), parseMinor('25'), parseMinor(' 7 ')]).toEqual([25, 25, 7]);
+    for (const bad of ['', true, 1.5, -3, '2.5', '12a', null, undefined, {}]) expect(parseMinor(bad)).toBeUndefined();
+    const registry = new ConnectorRegistry(example, fakeFetch([{ body: { data: { id: 'A', cost: '' } } }, { body: { data: { id: 'B', cost: 40, cur: 'EUR' } } }, { body: { data: { id: 'C', cost: 9 } } }]).fn);
+    const { client, spec } = registry.get('agregateur_exemple')!;
+    // Empty cost string: not "0", the per-segment fallback applies.
+    expect(await new ConnectorMessageProvider(client, spec.sms!).send('+237690000001', 'x')).toMatchObject({ cost_minor: 15, currency: 'XAF' });
+    // Currency read in the response wins over the configured one.
+    const withCurrency = { ...spec.sms!, send: { ...spec.sms!.send, result: { ...spec.sms!.send.result, currency: 'data.cur' } } };
+    expect(await new ConnectorMessageProvider(client, withCurrency).send('+237690000001', 'x')).toMatchObject({ cost_minor: 40, currency: 'EUR' });
+    // No currency anywhere: no cost recorded.
+    const noCurrency = { ...spec.sms!, cost: undefined };
+    expect(await new ConnectorMessageProvider(client, noCurrency).send('+237690000001', 'x')).toEqual({ status: 'envoye', provider_ref: 'C' });
+  });
+
+  it('simulator: records a cost only when SMS_SIM_CURRENCY is set (no currency in code, m4)', async () => {
+    const sim = new SimulatorSmsProvider();
+    process.env.SMS_SIM_CURRENCY = '';
+    reloadConfig();
+    expect(await sim.send('+237690000001', 'x')).toEqual({ status: 'envoye', provider_ref: expect.stringMatching(/^SIMSMS-/) });
+    process.env.SMS_SIM_CURRENCY = 'XOF';
+    reloadConfig();
+    expect(await sim.send('+237690000001', 'a'.repeat(161))).toMatchObject({ cost_minor: 30, currency: 'XOF' });
+    delete process.env.SMS_SIM_CURRENCY;
+    reloadConfig();
   });
 
   it('reports HTTP and network failures without throwing', async () => {

@@ -39,7 +39,8 @@ export function loadConfig() {
     smsSenderId: env.SMS_SENDER_ID || 'RecallFarm',
     /** Cost recorded by the SMS simulator per segment (ISO 4217 minor units). */
     smsSimCostMinor: int(env.SMS_SIM_COST_MINOR, 15),
-    smsSimCurrency: env.SMS_SIM_CURRENCY || 'XAF',
+    /** ISO 4217 code of the simulated cost; empty = no cost recorded (no currency in code). */
+    smsSimCurrency: env.SMS_SIM_CURRENCY || '',
     whatsappProvider: (env.WHATSAPP_PROVIDER || 'simulator') as 'simulator' | 'connector',
     paymentProvider: (env.PAYMENT_PROVIDER || 'simulator') as 'simulator' | 'connector',
     /** Public base URL of the API, used for aggregator callbacks (…/v1/connectors/:name/payment). */

@@ -1,18 +1,21 @@
 import { Body, Controller, Get, HttpCode, Inject, Logger, Param, Post, Query, Req, Res } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiProperty, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Matches } from 'class-validator';
 import type { Request, Response } from 'express';
 import { AuthUser, CurrentUser, hasPlatformRole, Public } from '../common/auth';
 import { Errors } from '../common/errors';
+import { KvService } from '../common/kv.service';
 import { BillingService } from '../billing/billing.service';
 import { InboundService } from '../notifications/inbound.service';
 import { MessagingService } from '../notifications/messaging.service';
 import { ConnectorMessageProvider } from '../notifications/providers';
+import { UssdSessionService } from '../notifications/ussd-session.service';
 import { CONNECTOR_REGISTRY, ConnectorRegistry } from './connector-registry';
-import { verifyInbound } from './connector-http';
+import { inspectInbound } from './connector-http';
 import { ConnectorSpec } from './connector.types';
-import { getPath, getString, render, toE164 } from './template';
+import { getPath, getString, toE164 } from './template';
+import { renderUssdResponse, ussdOptions } from './ussd';
 
 export class ConnectorTestSmsDto {
   @ApiProperty({ example: '+237690000001' }) @Matches(/^\+[1-9]\d{7,14}$/) phone: string;
@@ -20,10 +23,18 @@ export class ConnectorTestSmsDto {
 
 type InboundReq = Request & { rawBody?: Buffer };
 
+/** Value supplied by the caller, made safe for one log line (m10): no control characters, 40 characters at most. */
+export function logSafe(v: string): string {
+  // eslint-disable-next-line no-control-regex
+  const clean = v.replace(/[\u0000-\u001f\u007f]+/g, ' ');
+  return clean.length > 40 ? `${clean.slice(0, 40)}…` : clean;
+}
+
 /**
  * Callbacks of the declarative aggregators (ADR-002). Each connector gets its own URLs:
  * /v1/connectors/:name/{sms,dlr,ussd,payment}. Payload mapping and authentication come
- * from the connector file.
+ * from the connector file. SMS and delivery reports are also accepted as GET with query
+ * parameters (common with HTTP gateways, m15); JSON and form bodies are read, text/plain is not.
  */
 @ApiTags('connectors')
 @Controller()
@@ -35,17 +46,37 @@ export class ConnectorsController {
     private readonly inbound: InboundService,
     private readonly messaging: MessagingService,
     private readonly billing: BillingService,
+    private readonly sessions: UssdSessionService,
+    private readonly kv: KvService,
   ) {}
 
-  /** Finds the connector and checks the caller (shared secret or HMAC). */
-  private authorise(name: string, req: InboundReq): ConnectorSpec {
+  /**
+   * Finds the connector and checks the caller (shared secret or HMAC, constant time). An unknown
+   * connector gets the same 401 as a wrong secret, so names cannot be enumerated (m9). With a signing
+   * time, a signature is accepted once (anti-replay, m8).
+   */
+  private async authorise(name: string, req: InboundReq): Promise<ConnectorSpec> {
+    const refused = Errors.unauthenticated('Authentification du connecteur invalide');
     const found = this.registry.get(name);
-    if (!found) throw Errors.notFound('Connecteur');
-    if (!verifyInbound(found.spec.inbound_auth, { headers: req.headers, query: req.query as Record<string, unknown>, rawBody: req.rawBody })) {
-      this.logger.warn(`${name}: appel entrant refuse (authentification)`);
-      throw Errors.unauthenticated('Authentification du connecteur invalide');
+    if (!found) {
+      this.logger.warn(`appel entrant refuse : connecteur inconnu "${logSafe(name)}"`);
+      throw refused;
+    }
+    const check = inspectInbound(found.spec.inbound_auth, { headers: req.headers, query: req.query as Record<string, unknown>, rawBody: req.rawBody });
+    if (!check.ok) {
+      this.logger.warn(`${name}: appel entrant refuse (${check.reason})`);
+      throw refused;
+    }
+    if (check.replay_key && !(await this.kv.setNx(`replay:${name}:${check.replay_key}`, '1', check.replay_ttl_ms ?? 600_000))) {
+      this.logger.warn(`${name}: appel entrant refuse (signature deja utilisee : rejeu)`);
+      throw refused;
     }
     return found.spec;
+  }
+
+  /** Body of a POST, or the query parameters of a GET. */
+  private payload(req: InboundReq, body: unknown): unknown {
+    return req.method === 'GET' ? req.query : body;
   }
 
   private field(body: unknown, path: string, label: string): string {
@@ -64,11 +95,21 @@ export class ConnectorsController {
   @Public()
   @SkipThrottle()
   @HttpCode(200)
+  @Get('connectors/:name/sms')
+  @ApiOperation({ summary: 'SMS entrant en GET (parametres d’URL), pour les passerelles qui n’envoient pas de corps' })
+  inboundSmsGet(@Param('name') name: string, @Req() req: InboundReq) {
+    return this.inboundSms(name, req, {});
+  }
+
+  @Public()
+  @SkipThrottle()
+  @HttpCode(200)
   @Post('connectors/:name/sms')
   @ApiOperation({ summary: 'SMS entrant envoye par un agregateur (format decrit par le connecteur)' })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
-  async inboundSms(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>) {
-    const spec = this.authorise(name, req);
+  async inboundSms(@Param('name') name: string, @Req() req: InboundReq, @Body() rawBody: Record<string, unknown>) {
+    const spec = await this.authorise(name, req);
+    const body = this.payload(req, rawBody);
     if (!spec.sms?.inbound) throw Errors.notFound('Reception SMS');
     const from = this.phone(body, spec.sms.inbound.from, 'from', spec);
     const text = getString(body, spec.sms.inbound.text) ?? '';
@@ -78,18 +119,32 @@ export class ConnectorsController {
   @Public()
   @SkipThrottle()
   @HttpCode(200)
+  @Get('connectors/:name/dlr')
+  @ApiOperation({ summary: 'Accuse de reception en GET (parametres d’URL)' })
+  @ApiQuery({ name: 'channel', required: false, enum: ['sms', 'whatsapp'] })
+  dlrGet(@Param('name') name: string, @Req() req: InboundReq, @Query('channel') channel?: string) {
+    return this.dlr(name, req, {}, channel);
+  }
+
+  @Public()
+  @SkipThrottle()
+  @HttpCode(200)
   @Post('connectors/:name/dlr')
-  @ApiOperation({ summary: 'Accuse de reception d’un SMS (DLR)' })
+  @ApiOperation({ summary: 'Accuse de reception d’un SMS ou d’un message WhatsApp (?channel=whatsapp)' })
+  @ApiQuery({ name: 'channel', required: false, enum: ['sms', 'whatsapp'] })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
-  async dlr(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>) {
-    const spec = this.authorise(name, req);
-    const dlr = spec.sms?.dlr ?? spec.whatsapp?.dlr;
+  async dlr(@Param('name') name: string, @Req() req: InboundReq, @Body() rawBody: Record<string, unknown>, @Query('channel') channel?: string) {
+    const spec = await this.authorise(name, req);
+    const body = this.payload(req, rawBody);
+    // Each channel has its own format and its own messages (m5).
+    const ch = channel === 'whatsapp' ? 'whatsapp' : 'sms';
+    const dlr = spec[ch]?.dlr;
     if (!dlr) throw Errors.notFound('Accuses de reception');
     const ref = this.field(body, dlr.ref, 'ref');
     const raw = getString(body, dlr.status) ?? '';
     const status = Object.hasOwn(dlr.status_map, raw) ? dlr.status_map[raw] : undefined;
     if (!status) return { received: true, applied: false };
-    const updated = await this.messaging.applyDeliveryReport(ref, status, getString(body, dlr.error));
+    const updated = await this.messaging.applyDeliveryReport(name, ch, ref, status, getString(body, dlr.error));
     return { received: true, applied: updated > 0 };
   }
 
@@ -97,22 +152,21 @@ export class ConnectorsController {
   @SkipThrottle()
   @HttpCode(200)
   @Post('connectors/:name/ussd')
-  @ApiOperation({ summary: 'Etape de session USSD (menu du pack pays)' })
+  @ApiOperation({ summary: 'Etape de session USSD (menu du pack pays, saisie cumulee ou derniere saisie, ecrans pagines)' })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
   async ussd(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>, @Res({ passthrough: true }) res: Response) {
-    const spec = this.authorise(name, req);
+    const spec = await this.authorise(name, req);
     if (!spec.ussd) throw Errors.notFound('USSD');
     const m = spec.ussd.inbound;
     const sessionId = this.field(body, m.session_id, 'session_id');
+    if (sessionId.length > 100) throw Errors.validation({ session_id: '100 caracteres au plus' });
     const phone = this.phone(body, m.phone, 'phone', spec);
-    const text = getString(body, m.text) ?? '';
-    const { response } = await this.inbound.handleUssd(sessionId, phone, text);
-    if (spec.ussd.response.type === 'text') {
-      res.type('text/plain');
-      return response;
-    }
-    const cont = response.startsWith('CON ');
-    return render(spec.ussd.response.body, { message: response.replace(/^(CON|END) /, ''), continue: cont, session_id: sessionId });
+    const text = (getString(body, m.text) ?? '').slice(0, 200);
+    const screen = await this.sessions.hop(name, sessionId, phone, text, ussdOptions(spec.ussd));
+    const out = renderUssdResponse(spec.ussd.response, screen, sessionId);
+    for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v);
+    res.type(out.contentType);
+    return out.body;
   }
 
   @Public()
@@ -122,14 +176,14 @@ export class ConnectorsController {
   @ApiOperation({ summary: 'Resultat asynchrone d’un paiement mobile money' })
   @ApiBody({ schema: { type: 'object', additionalProperties: true } })
   async payment(@Param('name') name: string, @Req() req: InboundReq, @Body() body: Record<string, unknown>) {
-    const spec = this.authorise(name, req);
+    const spec = await this.authorise(name, req);
     const w = spec.payment?.webhook;
     if (!w) throw Errors.notFound('Paiement');
     const ack = w.ack ?? { received: true };
     const raw = getString(body, w.status) ?? '';
     const status = Object.hasOwn(w.status_map, raw) ? w.status_map[raw] : undefined;
     if (!status || status === 'en_attente') {
-      if (!status) this.logger.warn(`${name}: statut de paiement non reconnu "${raw}" (ignore)`);
+      if (!status) this.logger.warn(`${name}: statut de paiement non reconnu "${logSafe(raw)}" (ignore)`);
       return ack;
     }
     const paymentId = getString(body, w.payment_id);
@@ -173,12 +227,15 @@ export class ConnectorsController {
     if (!found || !spec) throw Errors.notFound('Connecteur');
     const provider = new ConnectorMessageProvider(found.client, spec);
     const text = 'RecallFarm : message de test du connecteur. Aucune action requise.';
-    const res = await provider.send(dto.phone, text);
-    await this.messaging.record(
-      { channel: ch, phone: dto.phone, text, template_code: 'test_connecteur', user_id: user.id },
-      res.status,
-      { provider_ref: res.provider_ref ?? null, error_code: res.error_code ?? null, sent_at: res.status === 'envoye' ? new Date() : null, cost_minor: res.cost_minor ?? null, currency: res.currency ?? null },
-    );
-    return { connector: name, channel: ch, ...res };
+    const m = await this.messaging.sendWith(provider, { channel: ch, phone: dto.phone, text, template_code: 'test_connecteur', user_id: user.id });
+    return {
+      connector: name,
+      channel: ch,
+      message_id: m.id,
+      status: m.status,
+      ...(m.provider_ref ? { provider_ref: m.provider_ref } : {}),
+      ...(m.error_code ? { error_code: m.error_code } : {}),
+      ...(m.cost_minor !== null && m.currency ? { cost_minor: Number(m.cost_minor), currency: m.currency } : {}),
+    };
   }
 }
