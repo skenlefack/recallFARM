@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
@@ -134,6 +134,24 @@ class LocalDb {
   static String rawKey(String storedKey) =>
       "x'${base64Url.decode(storedKey).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}'";
 
+  /// Re-encrypts [db] with [rawKey]. Replaceable in tests to simulate a
+  /// failure (disk full: SQLITE_FULL, app killed...).
+  @visibleForTesting
+  static Future<void> Function(Database db, String rawKey) rekey = defaultRekey;
+
+  static Future<void> defaultRekey(Database db, String rawKey) => db.rawQuery('PRAGMA rekey = "$rawKey"');
+
+  /// Opens the encrypted store. Key handling (dossier 04 §2, review B1):
+  /// - new database: created with the raw key;
+  /// - marker `raw`: opened with the raw key (falls back to the passphrase if
+  ///   the marker is wrong);
+  /// - legacy database (passphrase, before P0.1): opened with the passphrase,
+  ///   then `PRAGMA rekey`. If the rekey fails, the app keeps working on the
+  ///   passphrase connection and retries at the next launch.
+  /// The marker is written only after a verification read succeeded with the
+  /// raw key on a fresh connection. Every open uses `singleInstance: false`:
+  /// sqflite would otherwise hand back an already-open connection without
+  /// checking the key.
   static Future<LocalDb> open({FlutterSecureStorage? storage, String? path}) async {
     final secure = storage ?? const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
     var key = await secure.read(key: _keyName);
@@ -142,46 +160,86 @@ class LocalDb {
       key = base64Url.encode(List<int>.generate(32, (_) => rnd.nextInt(256)));
       await secure.write(key: _keyName, value: key);
     }
+    final passphrase = key;
     final dbPath = path ?? p.join(await getDatabasesPath(), _dbName);
     final marker = keyModeMarker(dbPath);
-    final raw = rawKey(key);
+    final raw = rawKey(passphrase);
 
-    Future<Database> openWith(String password) => openDatabase(
-          dbPath,
-          password: password,
-          version: _version,
-          onCreate: (db, version) async => _createSchema(db),
-        );
-
-    final exists = await databaseExists(dbPath);
-    final rawMode = !exists || await secure.read(key: marker) == 'raw';
-    Database db;
-    if (rawMode) {
-      try {
-        db = await openWith(raw);
-      } on DatabaseException {
-        // Marker written but rekey never happened (should not occur): legacy key.
-        db = await _migrateToRawKey(openWith, key, raw);
-      }
-    } else {
-      try {
-        db = await _migrateToRawKey(openWith, key, raw);
-      } on DatabaseException {
-        // Killed after the rekey but before the marker was saved: already raw.
-        db = await openWith(raw);
-      }
+    if (!await databaseExists(dbPath)) {
+      final db = await _openVerified(dbPath, raw);
+      if (db == null) throw StateError('cannot create the encrypted database');
+      await secure.write(key: marker, value: 'raw');
+      return LocalDb._(db);
     }
-    await secure.write(key: marker, value: 'raw');
-    return LocalDb._(db);
+
+    if (await secure.read(key: marker) == 'raw') {
+      final db = await _openVerified(dbPath, raw);
+      if (db != null) return LocalDb._(db);
+      // Marker without a successful rekey (should not happen): treat as legacy.
+      await secure.delete(key: marker);
+    }
+
+    final legacy = await _openVerified(dbPath, passphrase);
+    if (legacy == null) {
+      // Killed after the rekey but before the marker was saved: already raw.
+      final db = await _openVerified(dbPath, raw);
+      if (db == null) throw StateError('encrypted database: neither key opens it');
+      await secure.write(key: marker, value: 'raw');
+      return LocalDb._(db);
+    }
+    return LocalDb._(await _migrateToRawKey(legacy, dbPath, passphrase, raw, () => secure.write(key: marker, value: 'raw')));
   }
 
-  /// Opens a database keyed with the legacy passphrase and re-encrypts it in
-  /// place with the raw key (one transaction inside SQLCipher: all or nothing).
+  /// Opens a NEW connection with [password] and proves it with a read;
+  /// null when the key does not open the file (the connection is closed).
+  static Future<Database?> _openVerified(String dbPath, String password) async {
+    Database? db;
+    try {
+      db = await openDatabase(
+        dbPath,
+        password: password,
+        version: _version,
+        singleInstance: false,
+        onCreate: (db, version) async => _createSchema(db),
+      );
+      await db.rawQuery('SELECT count(*) FROM sqlite_master');
+      return db;
+    } on DatabaseException {
+      if (db != null && db.isOpen) await db.close();
+      return null;
+    }
+  }
+
+  /// Re-encrypts a legacy database with the raw key. On any failure the
+  /// passphrase connection is kept (no data loss, no marker) and the rekey is
+  /// retried at the next launch.
   static Future<Database> _migrateToRawKey(
-      Future<Database> Function(String) openWith, String passphrase, String raw) async {
-    final db = await openWith(passphrase);
-    await db.rawQuery('PRAGMA rekey = "$raw"');
-    return db;
+      Database legacy, String dbPath, String passphrase, String raw, Future<void> Function() writeMarker) async {
+    try {
+      await rekey(legacy, raw);
+    } on Exception catch (e) {
+      debugPrint('LocalDb: rekey failed, keeping the passphrase until next launch: $e');
+      return legacy;
+    }
+    await legacy.close();
+    final check = await _openVerified(dbPath, raw);
+    if (check != null) {
+      await writeMarker();
+      return check;
+    }
+    debugPrint('LocalDb: rekey reported success but the raw key does not open the file; passphrase kept');
+    final back = await _openVerified(dbPath, passphrase);
+    if (back == null) throw StateError('encrypted database: neither key opens it after rekey');
+    return back;
+  }
+
+  /// Test seam: wraps an already-open database (e.g. sqflite_common_ffi) and
+  /// creates the schema when empty.
+  @visibleForTesting
+  static Future<LocalDb> forTesting(Database db) async {
+    final tables = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='kv'");
+    if (tables.isEmpty) await _createSchema(db);
+    return LocalDb._(db);
   }
 
   static Future<void> _createSchema(Database db) async {
@@ -471,7 +529,7 @@ class LocalDb {
       final batch = txn.batch();
       for (final r in rows) {
         final id = r.data['id'].toString();
-        batch.insert(r.table, _mergeRemote(r, existing[r.table]![id]), conflictAlgorithm: ConflictAlgorithm.replace);
+        batch.insert(r.table, mergeRemote(r, existing[r.table]![id]), conflictAlgorithm: ConflictAlgorithm.replace);
       }
       await batch.commit(noResult: true);
     });
@@ -498,7 +556,8 @@ class LocalDb {
 
   /// Row values for a server row. Dirty local fields win until pushed (the
   /// server then resolves per-field last-write-wins).
-  static Map<String, Object?> _mergeRemote(RemoteRow r, Map<String, Object?>? existing) {
+  @visibleForTesting
+  static Map<String, Object?> mergeRemote(RemoteRow r, Map<String, Object?>? existing) {
     final table = r.table;
     final remote = r.data;
     final id = remote['id'].toString();

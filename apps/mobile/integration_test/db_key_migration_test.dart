@@ -56,4 +56,47 @@ void main() {
     await deleteDatabase(path);
     await deleteDatabase(p.join(dir, 'it_migration_seed.db'));
   });
+
+  // Review B1: disk full (SQLITE_FULL) during the rekey must not brick the app.
+  testWidgets('rekey en echec : app ouverte sur l ancienne cle, donnees lisibles, marqueur absent, reessai', (tester) async {
+    final dir = await getDatabasesPath();
+    final path = p.join(dir, 'it_rekey_fail.db');
+    await deleteDatabase(path);
+    await secure.delete(key: LocalDb.keyModeMarker(path));
+    final seed = await LocalDb.open(path: p.join(dir, 'it_rekey_seed.db'));
+    await seed.close();
+    final passphrase = (await secure.read(key: 'rf_db_key_v1'))!;
+    final legacy = await openDatabase(path, password: passphrase, version: 1, singleInstance: false,
+        onCreate: (db, _) => db.execute('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT)'));
+    await legacy.insert('kv', {'key': 'k', 'value': 'saisie hors ligne'});
+    await legacy.close();
+
+    var calls = 0;
+    LocalDb.rekey = (db, raw) async {
+      calls++;
+      throw Exception('SQLITE_FULL: database or disk is full (simule)');
+    };
+    addTearDown(() => LocalDb.rekey = LocalDb.defaultRekey);
+
+    // Two launches in a row with a failing rekey: the app opens every time.
+    for (var launch = 1; launch <= 2; launch++) {
+      final db = await LocalDb.open(path: path);
+      expect(await db.getKv('k'), 'saisie hors ligne', reason: 'lancement $launch');
+      await db.setKv('k$launch', 'ecrit au lancement $launch');
+      await db.close();
+      expect(await secure.read(key: LocalDb.keyModeMarker(path)), isNull, reason: 'pas de marqueur sans rekey');
+    }
+    expect(calls, 2, reason: 'rekey retente a chaque lancement');
+
+    // Space is back: the next launch migrates, nothing lost.
+    LocalDb.rekey = LocalDb.defaultRekey;
+    final db = await LocalDb.open(path: path);
+    expect(await db.getKv('k'), 'saisie hors ligne');
+    expect(await db.getKv('k2'), 'ecrit au lancement 2');
+    await db.close();
+    expect(await secure.read(key: LocalDb.keyModeMarker(path)), 'raw');
+
+    await deleteDatabase(path);
+    await deleteDatabase(p.join(dir, 'it_rekey_seed.db'));
+  });
 }
