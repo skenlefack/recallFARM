@@ -1,0 +1,75 @@
+{
+  "pack": "global.core",
+  "version": "1.0.0",
+  "level": "global",
+  "requires": {},
+  "objects": [
+    { "kind": "species_profile", "code": "volaille", "management": "lot", "categories": ["chair", "pondeuse", "poulette", "reproducteur"] },
+    { "kind": "species_profile", "code": "chien", "management": "individuel", "gestation_days": 63, "categories": ["adulte", "chiot", "reproducteur"] },
+    { "kind": "species_profile", "code": "porcin", "management": "mixte", "gestation_days": 114, "categories": ["truie", "verrat", "porcelet", "engraissement"] },
+    { "kind": "species_profile", "code": "petits_ruminants", "management": "mixte", "gestation_days": 150, "categories": ["brebis", "chevre", "belier", "bouc", "jeune"] },
+    { "kind": "species_profile", "code": "bovin", "management": "individuel", "gestation_days": 283, "categories": ["vache", "taureau", "genisse", "veau"] },
+    { "kind": "species_profile", "code": "lapin", "management": "mixte", "gestation_days": 31, "categories": ["lapine", "male", "lapereau"] },
+
+    { "kind": "disease", "code": "newcastle", "species": ["volaille"], "notifiable": true, "zoonosis": false, "woah_code": "ND" },
+    { "kind": "disease", "code": "gumboro", "species": ["volaille"], "notifiable": false, "zoonosis": false },
+    { "kind": "disease", "code": "marek", "species": ["volaille"], "notifiable": false, "zoonosis": false },
+    { "kind": "disease", "code": "bronchite_infectieuse", "species": ["volaille"], "notifiable": false, "zoonosis": false },
+    { "kind": "disease", "code": "variole_aviaire", "species": ["volaille"], "notifiable": false, "zoonosis": false },
+    { "kind": "disease", "code": "influenza_aviaire", "species": ["volaille"], "notifiable": true, "zoonosis": true, "woah_code": "HPAI" },
+    { "kind": "disease", "code": "rage", "species": ["chien"], "notifiable": true, "zoonosis": true, "woah_code": "RAB" },
+    { "kind": "disease", "code": "chppil", "species": ["chien"], "notifiable": false, "zoonosis": false, "label_note": "maladie de Carré, hépatite, parvovirose, parainfluenza, leptospirose" },
+    { "kind": "disease", "code": "parvovirose", "species": ["chien"], "notifiable": false, "zoonosis": false },
+    { "kind": "disease", "code": "vermifugation", "species": ["chien", "volaille"], "notifiable": false, "zoonosis": false, "act": true },
+    { "kind": "disease", "code": "peste_porcine_africaine", "species": ["porcin"], "notifiable": true, "zoonosis": false, "woah_code": "ASF" },
+    { "kind": "disease", "code": "ppr", "species": ["petits_ruminants"], "notifiable": true, "zoonosis": false, "woah_code": "PPR" },
+
+    { "kind": "unit", "code": "kg" }, { "kind": "unit", "code": "g" }, { "kind": "unit", "code": "l" },
+    { "kind": "unit", "code": "ml" }, { "kind": "unit", "code": "dose" }, { "kind": "unit", "code": "piece" },
+    { "kind": "unit", "code": "plateau_30" }, { "kind": "unit", "code": "tete" },
+
+    { "kind": "currency", "code": "XAF", "minor_unit": 0, "symbol": "FCFA" },
+    { "kind": "currency", "code": "XOF", "minor_unit": 0, "symbol": "FCFA" },
+    { "kind": "currency", "code": "EUR", "minor_unit": 2, "symbol": "€" },
+
+    { "kind": "stock_item", "code": "aliment_ponte", "category": "aliment", "unit": "kg", "species": ["volaille"] },
+    { "kind": "stock_item", "code": "aliment_chair_demarrage", "category": "aliment", "unit": "kg", "species": ["volaille"] },
+    { "kind": "stock_item", "code": "aliment_chair_croissance", "category": "aliment", "unit": "kg", "species": ["volaille"] },
+    { "kind": "stock_item", "code": "croquettes_chien", "category": "aliment", "unit": "kg", "species": ["chien"] },
+    { "kind": "stock_item", "code": "vaccin_newcastle", "category": "vaccin", "unit": "dose", "species": ["volaille"] },
+    { "kind": "stock_item", "code": "vaccin_gumboro", "category": "vaccin", "unit": "dose", "species": ["volaille"] },
+    { "kind": "stock_item", "code": "vaccin_rage", "category": "vaccin", "unit": "dose", "species": ["chien"] },
+    { "kind": "stock_item", "code": "vermifuge", "category": "medicament", "unit": "dose", "species": ["chien", "volaille"] },
+
+    { "kind": "plan", "code": "decouverte", "rank": 0,
+      "features": ["carnet", "rappels_locaux", "journal", "stocks", "ventes", "marche", "export_donnees"],
+      "quotas": { "farms": 1, "cameras": 0, "sms_per_month": 0 } },
+    { "kind": "plan", "code": "pro", "rank": 1,
+      "features": ["carnet", "rappels_locaux", "rappels_sms", "rappels_whatsapp", "journal", "stocks", "ventes", "marche", "export_donnees", "certificat_qr", "genealogie", "tresorerie", "simulateur", "facturation"],
+      "quotas": { "farms": 3, "cameras": 2, "sms_per_month": 60 } },
+    { "kind": "plan", "code": "structure", "rank": 2,
+      "features": ["carnet", "rappels_locaux", "rappels_sms", "rappels_whatsapp", "journal", "stocks", "ventes", "marche", "export_donnees", "certificat_qr", "genealogie", "tresorerie", "simulateur", "facturation", "multi_utilisateurs", "mode_agent", "import_masse", "campagnes", "studio_org", "tableau_bord_org"],
+      "quotas": { "farms": 1000, "cameras": 10, "sms_per_month": 5000 } },
+    { "kind": "plan", "code": "institution", "rank": 3,
+      "features": ["*"],
+      "quotas": { "farms": 100000, "cameras": 50, "sms_per_month": 100000 } }
+  ],
+  "i18n": {
+    "fr": {
+      "volaille": "Volaille", "chien": "Chien", "porcin": "Porcins", "petits_ruminants": "Petits ruminants", "bovin": "Bovins", "lapin": "Lapins",
+      "newcastle": "Newcastle", "gumboro": "Gumboro", "marek": "Marek", "bronchite_infectieuse": "Bronchite infectieuse", "variole_aviaire": "Variole aviaire",
+      "influenza_aviaire": "Influenza aviaire", "rage": "Rage", "chppil": "CHPPiL", "parvovirose": "Parvovirose", "vermifugation": "Vermifugation",
+      "peste_porcine_africaine": "Peste porcine africaine", "ppr": "Peste des petits ruminants",
+      "aliment_ponte": "Aliment ponte", "aliment_chair_demarrage": "Aliment chair démarrage", "aliment_chair_croissance": "Aliment chair croissance",
+      "croquettes_chien": "Croquettes", "vaccin_newcastle": "Vaccin Newcastle", "vaccin_gumboro": "Vaccin Gumboro", "vaccin_rage": "Vaccin antirabique", "vermifuge": "Vermifuge",
+      "decouverte": "Découverte", "pro": "Pro", "structure": "Structure", "institution": "Institution"
+    },
+    "en": {
+      "volaille": "Poultry", "chien": "Dog", "porcin": "Pigs", "petits_ruminants": "Small ruminants", "bovin": "Cattle", "lapin": "Rabbits",
+      "newcastle": "Newcastle disease", "gumboro": "Gumboro", "marek": "Marek's disease", "bronchite_infectieuse": "Infectious bronchitis", "variole_aviaire": "Fowl pox",
+      "influenza_aviaire": "Avian influenza", "rage": "Rabies", "chppil": "DHPPiL", "parvovirose": "Parvovirus", "vermifugation": "Deworming",
+      "peste_porcine_africaine": "African swine fever", "ppr": "Peste des petits ruminants",
+      "decouverte": "Discovery", "pro": "Pro", "structure": "Organisation", "institution": "Institution"
+    }
+  }
+}

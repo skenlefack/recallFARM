@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "lot chair placé le 2026-10-08, Marek fait au couvoir, Newcastle J7 fait",
+      "protocol": "volaille_chair_cm",
+      "subject": { "type": "batch", "start_date": "2026-10-08", "created_at": "2026-10-08" },
+      "events": [
+        { "protocol_step": "marek_j1", "disease": "marek", "event_date": "2026-10-09" },
+        { "protocol_step": "newcastle_bi_j7", "disease": "newcastle", "event_date": "2026-10-15" }
+      ],
+      "today": "2026-10-27",
+      "expected": [
+        { "step": "gumboro_j12", "disease": "gumboro", "due_date": "2026-10-20", "status": "en_retard", "priority": "normale", "kind": "protocole" },
+        { "step": "newcastle_rappel_j19", "disease": "newcastle", "due_date": "2026-10-27", "status": "aujourdhui", "priority": "haute", "kind": "protocole" },
+        { "step": "gumboro_rappel_j21", "disease": "gumboro", "due_date": "2026-10-29", "status": "a_venir", "priority": "normale", "kind": "protocole" }
+      ]
+    },
+    {
+      "name": "chien adulte : rage faite le 2025-10-30, rappel annuel",
+      "protocol": "chien_cm",
+      "subject": { "type": "dog", "birth_date": "2023-06-10", "created_at": "2026-01-15" },
+      "events": [
+        { "protocol_step": "rage_m3", "disease": "rage", "event_date": "2023-09-08" },
+        { "protocol_step": null, "disease": "rage", "event_date": "2025-10-30" }
+      ],
+      "today": "2026-10-27",
+      "expected": [
+        { "step": "rage_recurrent", "disease": "rage", "due_date": "2026-10-30", "status": "a_venir", "priority": "haute", "kind": "recurrent" }
+      ]
+    },
+    {
+      "name": "chiot enregistré à la naissance, rien de fait",
+      "protocol": "chien_cm",
+      "subject": { "type": "dog", "birth_date": "2026-09-01", "created_at": "2026-09-02" },
+      "events": [],
+      "today": "2026-10-27",
+      "expected": [
+        { "step": "chppil_s8", "disease": "chppil", "due_date": "2026-10-27", "status": "aujourdhui", "priority": "haute", "kind": "protocole" },
+        { "step": "chppil_s12", "disease": "chppil", "due_date": "2026-11-24", "status": "a_venir", "priority": "haute", "kind": "protocole" },
+        { "step": "rage_m3", "disease": "rage", "due_date": "2026-11-30", "status": "a_venir", "priority": "haute", "kind": "protocole" }
+      ]
+    },
+    {
+      "name": "lot enregistré en cours de vie : étapes passées depuis plus de 30 jours ignorées",
+      "protocol": "volaille_chair_cm",
+      "subject": { "type": "batch", "start_date": "2026-08-01", "created_at": "2026-10-27" },
+      "events": [],
+      "today": "2026-10-27",
+      "expected": []
+    }
+  ],
+  "notification_plan": {
+    "reminder_due_date": "2026-10-30",
+    "entitlements": ["rappels_sms"],
+    "expected": [
+      { "offset": -7, "send_date": "2026-10-23", "channels": ["app"] },
+      { "offset": -1, "send_date": "2026-10-29", "channels": ["app", "sms"] },
+      { "offset": 0, "send_date": "2026-10-30", "channels": ["app", "sms"] },
+      { "offset": 3, "send_date": "2026-11-02", "channels": ["app", "sms"] }
+    ],
+    "expected_without_sms": [
+      { "offset": -7, "send_date": "2026-10-23", "channels": ["app"] },
+      { "offset": -1, "send_date": "2026-10-29", "channels": ["app"] },
+      { "offset": 0, "send_date": "2026-10-30", "channels": ["app"] },
+      { "offset": 3, "send_date": "2026-11-02", "channels": ["app"] }
+    ]
+  }
+}

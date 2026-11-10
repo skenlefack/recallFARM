@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "note": "Les packs de base sont ceux de packages/params/packs. Chaque cas ajoute un pack org et/ou des réglages ferme.",
+  "cases": [
+    {
+      "name": "org tente de modifier la périodicité rage (verrouillée) et ajoute une étape",
+      "farm": { "country": "CM", "speculations": ["chien"] },
+      "org_pack": {
+        "pack": "org.demo", "version": "0.1.0", "level": "org",
+        "objects": [
+          { "kind": "vaccination_protocol", "code": "chien_cm",
+            "recurring": { "every_days": 730 },
+            "steps": [ { "code": "vermifuge_s6", "disease": "vermifugation", "offset_days": 42, "route": "orale" } ] }
+        ]
+      },
+      "expect": {
+        "kind_code": "vaccination_protocol:chien_cm",
+        "recurring.every_days": 365,
+        "step_codes": ["chppil_s8", "chppil_s12", "rage_m3", "vermifuge_s6"],
+        "rejected": [ { "kind": "vaccination_protocol", "code": "chien_cm", "property": "recurring.every_days", "by_pack": "org.demo@0.1.0", "reason": "verrouillee" } ]
+      }
+    },
+    {
+      "name": "seuil de mortalité ferme dans les bornes puis hors bornes",
+      "farm": { "country": "CM", "speculations": ["volaille"] },
+      "farm_settings": { "alert_rule:mortalite_journaliere": { "params": { "seuil_mortalite_jour_pct": 2 } } },
+      "expect": {
+        "kind_code": "alert_rule:mortalite_journaliere",
+        "params.seuil_mortalite_jour_pct": 2,
+        "rejected": []
+      }
+    },
+    {
+      "name": "seuil hors bornes ignoré",
+      "farm": { "country": "CM", "speculations": ["volaille"] },
+      "farm_settings": { "alert_rule:mortalite_journaliere": { "params": { "seuil_mortalite_jour_pct": 10 } } },
+      "expect": {
+        "kind_code": "alert_rule:mortalite_journaliere",
+        "params.seuil_mortalite_jour_pct": 1,
+        "rejected": [ { "kind": "alert_rule", "code": "mortalite_journaliere", "property": "params.seuil_mortalite_jour_pct", "by_pack": "ferme", "reason": "bornee" } ]
+      }
+    },
+    {
+      "name": "décalage d'étape borné (delta ±2) : +1 accepté, +5 refusé",
+      "farm": { "country": "CM", "speculations": ["volaille"] },
+      "org_pack": {
+        "pack": "org.demo", "version": "0.1.0", "level": "org",
+        "objects": [
+          { "kind": "vaccination_protocol", "code": "volaille_chair_cm",
+            "steps": [ { "code": "gumboro_j12", "offset_days": 13 }, { "code": "newcastle_bi_j7", "offset_days": 12 } ] }
+        ]
+      },
+      "expect": {
+        "kind_code": "vaccination_protocol:volaille_chair_cm",
+        "step_offsets": { "gumboro_j12": 13, "newcastle_bi_j7": 7 },
+        "rejected": [ { "kind": "vaccination_protocol", "code": "volaille_chair_cm", "property": "steps.newcastle_bi_j7.offset_days", "by_pack": "org.demo@0.1.0", "reason": "bornee" } ]
+      }
+    },
+    {
+      "name": "param_version reflète la pile",
+      "farm": { "country": "CM", "speculations": ["volaille", "chien"] },
+      "expect": { "param_version": "global.core@1.0.0+filiere.volaille@1.0.0+filiere.canin@1.0.0+pays.CM@1.0.0" }
+    }
+  ]
+}

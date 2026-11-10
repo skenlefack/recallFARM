@@ -1,0 +1,10 @@
+# Used by BuildKit for apps/web/Dockerfile (context = repo root)
+**/node_modules
+**/.git
+apps/web/dist
+apps/web/dist-mock
+apps/web/dev-dist
+apps/api
+apps/mobile
+docs
+infra

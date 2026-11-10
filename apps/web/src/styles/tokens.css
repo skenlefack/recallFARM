@@ -1,0 +1,128 @@
+/* RecallFarm design tokens — extracted from docs/design/{Main,Admin,Studio}.dc.html.
+   Single source of truth: every colour, radius, shadow and font family used by the web app. */
+:root {
+  /* Fonts */
+  --font-display: 'Bricolage Grotesque', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* Brand blues */
+  --blue-950: #041F3A;   /* camera feed bg */
+  --blue-900: #062B4F;   /* ink / navy page bg */
+  --blue-880: #073058;   /* band, trust section */
+  --blue-850: #0A3A66;   /* tiles on navy */
+  --blue-800: #0E4578;   /* chip on navy */
+  --blue-780: #15497A;
+  --blue-760: #1B5486;   /* hairlines on navy */
+  --blue-740: #1F5C92;
+  --blue-700: #2A679E;   /* outlines on navy */
+  --blue-650: #3474AD;
+  --blue-600: #04477F;   /* admin logo zone / gradient start */
+  --blue-580: #0558A0;
+  --blue-550: #0567B5;   /* active text */
+  --blue-500: #0780D8;   /* primary */
+  --blue-450: #1E9BE4;
+  --blue-400: #3DBFF6;
+  --blue-350: #3C9DE4;
+  --blue-300: #4FA9EA;
+  --blue-250: #6BB8EE;
+  --blue-200: #8FE3FF;   /* live / cyan accent */
+  --blue-150: #BFE3FB;
+  --blue-100: #C3D9EC;
+  --blue-90:  #D3E4F3;
+  --blue-80:  #A9C8E4;
+  --blue-70:  #86A9C9;
+  --blue-50:  #EAF5FE;
+  --blue-20:  #F2F8FD;
+
+  /* Lime (accent) */
+  --lime-500: #C8F169;
+  --lime-400: #E2FF9E;
+  --lime-300: #DCF79A;
+  --lime-600: #A9D25A;
+  --lime-700: #7FA346;
+  --lime-800: #4F6B3A;
+  --green-ok: #3F7A12;
+  --green-ink: #2F6B3F;
+  --green-online: #3DDC84;
+  --mint: #7FD38F;
+
+  /* Sand (light sections) */
+  --sand-100: #F3F1EA;
+  --sand-200: #E7E3D8;
+  --sand-300: #DED9CC;
+  --sand-400: #B9B2A1;
+  --stone-600: #4F5D57;
+  --stone-800: #2B3631;
+
+  /* States */
+  --amber-500: #F4B04F;
+  --amber-600: #E0951A;
+  --amber-700: #B86E00;
+  --amber-800: #9A5B00;
+  --amber-50:  #FFF4E0;
+  --amber-ink-bg: #2A1D14;
+  --amber-ink-track: #3D2C1D;
+  --amber-ink-text: #F4D3A0;
+  --amber-ink-strong: #FBE3BE;
+  --coral-500: #FF7D5C;
+  --coral-600: #FF5A36;
+  --coral-700: #D4462A;
+  --coral-50:  #FFF0EB;
+
+  /* Admin light surface */
+  --ink: #0B2540;
+  --text-2: #3E5A74;
+  --text-3: #5B7690;
+  --text-4: #7D93A8;
+  --line: #E6EDF5;
+  --line-2: #E6EDF4;
+  --line-strong: #C9D8E6;
+  --line-soft: #DCE6F0;
+  --surface: #FFFFFF;
+  --surface-2: #F5F8FC;
+  --surface-3: #F4F8FC;
+  --surface-4: #F1F5FA;
+  --surface-info: #EEF4FA;
+
+  /* Gradients */
+  --grad-header: linear-gradient(90deg, #04477F 0%, #04477F var(--logo-zone, 248px), #0567B5 30%, #0780D8 55%, #1E9BE4 80%, #3DBFF6 100%);
+  --grad-sidebar: linear-gradient(180deg, #04477F 0%, #0558A0 45%, #0567B5 75%, #0780D8 100%);
+  --grad-tile-icon: linear-gradient(135deg, #0780D8, #3DBFF6);
+  --grad-avatar: linear-gradient(135deg, #C8F169, #7FD38F);
+  --grad-coverage: linear-gradient(90deg, #FF7D5C, #F4B04F, #7FA346, #C8F169);
+
+  /* Radii */
+  --r-xs: 4px;
+  --r-sm: 10px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 18px;
+  --r-2xl: 22px;
+  --r-3xl: 24px;
+  --r-4xl: 28px;
+  --r-pill: 999px;
+
+  /* Shadows */
+  --sh-card: 0 1px 2px rgba(6, 43, 79, 0.06), 0 10px 28px rgba(6, 43, 79, 0.10);
+  --sh-header: 0 4px 18px rgba(4, 71, 127, 0.25);
+  --sh-sidebar: 6px 0 18px rgba(4, 71, 127, 0.18);
+  --sh-tile: 0 8px 18px rgba(2, 24, 48, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.20);
+  --sh-tile-active: 0 10px 22px rgba(2, 24, 48, 0.45);
+  --sh-org-card: 0 8px 18px rgba(2, 24, 48, 0.30);
+  --sh-primary: 0 6px 16px rgba(7, 128, 216, 0.30);
+  --sh-icon-btn: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  --sh-badge: 0 2px 6px rgba(0, 0, 0, 0.25);
+  --sh-seg: 0 1px 3px rgba(6, 43, 79, 0.12);
+  --sh-dialog: 0 24px 64px rgba(2, 24, 48, 0.35);
+
+  /* Focus */
+  --focus-ring: 0 0 0 3px #FFFFFF, 0 0 0 5px #0780D8;
+  --focus-ring-dark: 0 0 0 3px #062B4F, 0 0 0 5px #C8F169;
+
+  /* Layout */
+  --site-max: 1200px;
+  --admin-sidebar: 248px;
+  --studio-sidebar: 236px;
+  --studio-aside: 340px;
+}

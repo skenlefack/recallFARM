@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RecallFarm — maquette de l'application</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --brand:#17663B; --brand-d:#0E4527; --brand-2:#2E9A5C;
+  --recall:#C8770C; --recall-bg:#FBEFD9;
+  --canin:#0E6E78; --canin-bg:#E1F1F2;
+  --bg:#F5F7F4; --card:#FFFFFF; --line:#E4E9E2; --line-2:#D3DBD0;
+  --ink:#182720; --muted:#63736A; --faint:#8A968D;
+  --danger:#B23A2E; --outer:#E8EDE6;
+  --radius:14px; --font:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --brand:#3FB874; --brand-d:#8FE6B4; --brand-2:#57C489;
+  --recall:#F0A83A; --recall-bg:#3A2E12;
+  --canin:#4FC6D2; --canin-bg:#123236;
+  --bg:#121714; --card:#1B221D; --line:#2A332C; --line-2:#39443B;
+  --ink:#E7EEE8; --muted:#9AA89F; --faint:#7A867D;
+  --danger:#F0857A; --outer:#0C0F0D;
+}}
+:root[data-theme="dark"]{
+  --brand:#3FB874; --brand-d:#8FE6B4; --brand-2:#57C489;
+  --recall:#F0A83A; --recall-bg:#3A2E12;
+  --canin:#4FC6D2; --canin-bg:#123236;
+  --bg:#121714; --card:#1B221D; --line:#2A332C; --line-2:#39443B;
+  --ink:#E7EEE8; --muted:#9AA89F; --faint:#7A867D;
+  --danger:#F0857A; --outer:#0C0F0D;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--font);background:var(--outer);color:var(--ink);min-height:100dvh;display:grid;place-items:center;-webkit-font-smoothing:antialiased}
+.frame{width:min(432px,100%);height:min(920px,100dvh);background:var(--bg);display:flex;flex-direction:column;overflow:hidden;position:relative;border:1px solid var(--line-2)}
+@media(min-width:520px){.frame{border-radius:26px;box-shadow:0 18px 50px rgba(0,0,0,.22)}}
+.appmain{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px 14px 26px}
+.appmain::-webkit-scrollbar{width:0}
+
+/* top bar */
+.topbar{flex:none;background:var(--brand);color:#fff;padding:12px 14px;display:flex;align-items:center;gap:10px}
+:root[data-theme="dark"] .topbar,@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .topbar{color:#08130C}}
+.brand{font-weight:800;font-size:18px;letter-spacing:-.02em;display:flex;align-items:center;gap:7px}
+.brand .dot{width:20px;height:20px;border-radius:6px;background:#fff;color:var(--brand);display:grid;place-items:center;font-size:13px;font-weight:800}
+.spacer{flex:1}
+.chip{background:rgba(255,255,255,.18);color:#fff;border:0;font-family:inherit;font-weight:600;font-size:12.5px;padding:6px 11px;border-radius:20px;cursor:pointer;display:flex;align-items:center;gap:6px}
+.pillnet{font-size:11px;font-weight:600;display:flex;align-items:center;gap:5px;background:rgba(255,255,255,.16);padding:5px 9px;border-radius:20px}
+.pillnet i{width:7px;height:7px;border-radius:50%;background:#8FE6B4;display:inline-block}
+.backbar{flex:none;background:var(--brand);color:#fff;padding:12px 14px;display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px}
+.backbar button{background:transparent;border:0;color:inherit;font-size:22px;line-height:1;cursor:pointer;padding:0 4px 0 0}
+
+/* tab bar */
+.tabbar{flex:none;display:flex;background:var(--card);border-top:1px solid var(--line);padding:6px 2px calc(6px + env(safe-area-inset-bottom))}
+.tab{flex:1;background:none;border:0;font-family:inherit;color:var(--faint);display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 2px;cursor:pointer;font-size:11px;font-weight:600}
+.tab svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.9}
+.tab.active{color:var(--brand)}
+
+/* generic */
+.screen{display:none;animation:fade .18s ease}
+.screen.on{display:block}
+@keyframes fade{from{opacity:.4}to{opacity:1}}
+h2.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.eyebrow{color:var(--muted);font-size:12.5px;font-weight:600;margin:2px 0 2px}
+.h1{font-size:22px;font-weight:800;letter-spacing:-.02em;margin:2px 0 12px}
+.h2{font-size:16px;font-weight:700;margin:20px 0 10px;letter-spacing:-.01em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+.mt{margin-top:12px}
+.row{display:flex;gap:10px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.muted{color:var(--muted)}
+.small{font-size:12.5px}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:4px 9px;border-radius:20px;background:var(--line);color:var(--muted)}
+.badge.recall{background:var(--recall-bg);color:var(--recall)}
+.badge.canin{background:var(--canin-bg);color:var(--canin)}
+.badge.green{background:rgba(46,154,92,.14);color:var(--brand)}
+
+/* recall hero */
+.hero{background:linear-gradient(180deg,var(--brand),var(--brand-d));color:#fff;border-radius:18px;padding:16px}
+:root[data-theme="dark"] .hero,@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .hero{color:#07120B}}
+.hero .lab{font-size:12.5px;font-weight:700;opacity:.9;display:flex;align-items:center;gap:6px}
+.recallitem{background:rgba(255,255,255,.14);border-radius:12px;padding:11px 12px;margin-top:10px;display:flex;align-items:center;gap:11px}
+.recallitem .when{margin-left:auto;font-weight:800;font-size:13px;background:rgba(255,255,255,.22);padding:4px 9px;border-radius:9px;white-space:nowrap}
+.avatar{width:34px;height:34px;border-radius:9px;background:rgba(255,255,255,.2);display:grid;place-items:center;font-weight:800;font-size:13px}
+
+/* KPI */
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:12px}
+.kpi .v{font-size:21px;font-weight:800;letter-spacing:-.02em}
+.kpi .l{font-size:11.5px;color:var(--muted);font-weight:600;margin-top:2px}
+
+/* quick actions */
+.qa{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}
+.qa button{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:12px 6px;font-family:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--ink);font-weight:600;font-size:11.5px;line-height:1.25;text-align:center}
+.qa .ic{width:38px;height:38px;border-radius:11px;background:rgba(46,154,92,.13);color:var(--brand);display:grid;place-items:center}
+.qa .ic svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.9}
+.qa .ic.rec{background:var(--recall-bg);color:var(--recall)}
+.qa .ic.can{background:var(--canin-bg);color:var(--canin)}
+
+/* list */
+.list{display:flex;flex-direction:column;gap:9px}
+.item{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer}
+.item .tt{font-weight:700;font-size:14.5px}
+.item .st{color:var(--muted);font-size:12.5px;margin-top:2px}
+.item .rt{margin-left:auto;text-align:right}
+.thumb{width:42px;height:42px;border-radius:11px;background:rgba(46,154,92,.13);color:var(--brand);display:grid;place-items:center;font-weight:800;flex:none}
+.thumb.can{background:var(--canin-bg);color:var(--canin)}
+.chev{color:var(--faint);flex:none}
+
+/* forms */
+.field{margin-bottom:13px}
+.field label{display:block;font-size:12.5px;font-weight:700;margin-bottom:6px}
+.field input,.field select,.field textarea{width:100%;font-family:inherit;font-size:15px;color:var(--ink);background:var(--card);border:1px solid var(--line-2);border-radius:11px;padding:11px 12px}
+.field textarea{min-height:70px;resize:vertical}
+.field .hint{font-size:11.5px;color:var(--faint);margin-top:5px}
+.seg{display:flex;gap:7px;flex-wrap:wrap}
+.seg button{flex:1;min-width:calc(33% - 7px);font-family:inherit;font-size:13px;font-weight:600;padding:9px;border:1px solid var(--line-2);background:var(--card);color:var(--ink);border-radius:10px;cursor:pointer}
+.seg button.sel{border-color:var(--brand);background:rgba(46,154,92,.12);color:var(--brand)}
+.fieldset{border:1px dashed var(--line-2);border-radius:13px;padding:12px;margin-bottom:13px}
+.fieldset .fl{font-size:12px;font-weight:800;color:var(--muted);margin-bottom:10px}
+
+.btn{width:100%;font-family:inherit;font-weight:800;font-size:15px;padding:14px;border-radius:12px;border:0;cursor:pointer;background:var(--brand);color:#fff}
+:root[data-theme="dark"] .btn,@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .btn{color:#07120B}}
+.btn.rec{background:var(--recall)}
+.btn.ghost{background:transparent;color:var(--brand);border:1px solid var(--line-2)}
+.btn.sm{width:auto;font-size:13px;padding:9px 14px;border-radius:10px}
+
+/* pricing */
+.plan{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:15px;margin-bottom:12px}
+.plan.hot{border:2px solid var(--brand)}
+.plan .nm{font-weight:800;font-size:16px}
+.plan .pr{font-size:24px;font-weight:800;letter-spacing:-.02em;margin:6px 0 2px}
+.plan .pr span{font-size:12.5px;color:var(--muted);font-weight:600}
+.plan ul{list-style:none;padding:0;margin:10px 0 0;font-size:12.8px}
+.plan li{display:flex;gap:8px;padding:4px 0;color:var(--ink)}
+.plan li svg{width:16px;height:16px;flex:none;stroke:var(--brand);fill:none;stroke-width:2.4;margin-top:2px}
+.tag{position:absolute;top:12px;right:14px;font-size:10.5px;font-weight:800;background:var(--brand);color:#fff;padding:3px 9px;border-radius:20px}
+
+/* QR mock */
+.qr{width:118px;height:118px;background:
+   conic-gradient(#000 0 0) ,var(--ink);margin:0 auto;border-radius:8px;
+   background:
+     linear-gradient(90deg,var(--ink) 50%,transparent 0) 0 0/12px 12px,
+     linear-gradient(var(--ink) 50%,transparent 0) 0 0/12px 12px,var(--card);
+   border:6px solid var(--card);outline:1px solid var(--line-2)}
+
+/* onboarding */
+.ob{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-top:6px}
+.ob button{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:16px 12px;font-family:inherit;cursor:pointer;text-align:left;color:var(--ink)}
+.ob .ic{width:40px;height:40px;border-radius:11px;background:rgba(46,154,92,.13);color:var(--brand);display:grid;place-items:center;margin-bottom:9px}
+.ob .ic svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.9}
+.ob .ic.can{background:var(--canin-bg);color:var(--canin)}
+.ob .nm{font-weight:700;font-size:14px}
+.ob .ds{font-size:11.5px;color:var(--muted);margin-top:2px}
+.obhead{text-align:center;padding:22px 8px 8px}
+.obhead .lg{width:56px;height:56px;border-radius:16px;background:var(--brand);color:#fff;display:grid;place-items:center;margin:0 auto 12px;font-size:26px;font-weight:800}
+
+/* inspiration */
+.insp{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px;margin-bottom:10px}
+.insp .src{font-weight:800;font-size:13.5px;color:var(--brand)}
+.insp .what{font-size:12.5px;color:var(--muted);margin:3px 0 7px}
+.insp .app{font-size:13px}
+
+/* menu list */
+.mrow{display:flex;align-items:center;gap:12px;padding:14px;background:var(--card);border:1px solid var(--line);border-radius:13px;margin-bottom:9px;cursor:pointer;font-weight:600;font-size:14px}
+.mrow .mi{width:34px;height:34px;border-radius:10px;background:rgba(46,154,92,.13);color:var(--brand);display:grid;place-items:center;flex:none}
+.mrow .mi svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.9}
+.switch{margin-left:auto;width:42px;height:24px;border-radius:20px;background:var(--line-2);position:relative;flex:none}
+.switch.on{background:var(--brand)}
+.switch::after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:3px;left:3px;transition:.15s}
+.switch.on::after{left:21px}
+
+/* toast */
+.toast{position:absolute;left:50%;bottom:78px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);padding:11px 18px;border-radius:24px;font-weight:700;font-size:13.5px;opacity:0;pointer-events:none;transition:.22s;z-index:9;display:flex;gap:8px;align-items:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.divider{height:1px;background:var(--line);margin:14px 0}
+</style>
+</head>
+<body>
+
+<div class="frame">
+  <h2 class="sr-only">Maquette de RecallFarm, application de gestion d'élevage et d'activité canine pour l'Afrique francophone : écrans, formulaires et mise en relation.</h2>
+
+  <!-- TOP BARS -->
+  <div class="topbar" id="topbar">
+    <div class="brand"><span class="dot">R</span>RecallFarm</div>
+    <div class="spacer"></div>
+    <button class="chip" onclick="go('scr-onboard')" id="specChip">Aviculture ▾</button>
+    <span class="pillnet"><i></i>Hors ligne</span>
+  </div>
+  <div class="backbar" id="backbar" style="display:none">
+    <button onclick="back()" aria-label="Retour">‹</button>
+    <span id="backTitle">Retour</span>
+  </div>
+
+  <main class="appmain" id="main">
+
+    <!-- ONBOARDING -->
+    <section class="screen" id="scr-onboard">
+      <div class="obhead">
+        <div class="lg">R</div>
+        <div class="h1" style="margin-bottom:4px">Quelle est votre activité ?</div>
+        <p class="muted small" style="margin:0">On adapte les fiches, les vaccins et les formulaires à votre spéculation. Vous pourrez en gérer plusieurs.</p>
+      </div>
+      <div class="ob" id="obGrid"></div>
+    </section>
+
+    <!-- HOME -->
+    <section class="screen on" id="scr-home">
+      <div class="eyebrow">Bonjour 👋 · <span id="homeSpec">Aviculture</span> · Ferme de Mfou</div>
+      <div class="hero">
+        <div class="lab">🔔 Rappels du jour</div>
+        <div class="recallitem">
+          <div class="avatar" id="r1a">B02</div>
+          <div><div style="font-weight:700;font-size:13.5px" id="r1t">Vaccin Newcastle — bande B02</div>
+          <div style="font-size:12px;opacity:.9" id="r1s">197 sujets · rappel programmé</div></div>
+          <div class="when">Aujourd'hui</div>
+        </div>
+        <div class="recallitem">
+          <div class="avatar">🐕</div>
+          <div><div style="font-weight:700;font-size:13.5px">Rappel antirabique — « Rex »</div>
+          <div style="font-size:12px;opacity:.9">Chien de M. Bella · rappel annuel</div></div>
+          <div class="when">Dans 3 j</div>
+        </div>
+        <button class="btn" style="margin-top:12px;background:rgba(255,255,255,.22)" onclick="go('scr-sante')">Voir tous les rappels</button>
+      </div>
+
+      <div class="h2">Aperçu</div>
+      <div class="grid3" id="homeKpis"></div>
+
+      <div class="h2">Actions rapides</div>
+      <div class="qa" id="homeQa"></div>
+
+      <div class="h2">Inspiré de ce qui marche en Afrique</div>
+      <div class="card small" style="display:flex;gap:8px;flex-wrap:wrap">
+        <span class="badge green">Gratuit pour démarrer</span>
+        <span class="badge">Mode agent / coopérative</span>
+        <span class="badge">WhatsApp &amp; SMS</span>
+        <span class="badge">Mobile Money</span>
+        <span class="badge recall">Fonctionne hors ligne</span>
+        <button class="btn ghost sm" style="margin-top:4px" onclick="go('scr-insp')">Voir les inspirations</button>
+      </div>
+    </section>
+
+    <!-- CHEPTEL -->
+    <section class="screen" id="scr-cheptel">
+      <div class="h1">Cheptel</div>
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn" onclick="openAnimalForm()">+ Ajouter</button>
+        <button class="btn ghost" onclick="go('scr-journal')">Journal du jour</button>
+      </div>
+      <div class="list" id="cheptelList"></div>
+    </section>
+
+    <!-- FORM : ajouter animal / bande (adaptatif) -->
+    <section class="screen" id="scr-form-animal">
+      <div id="animalFormBody"></div>
+      <button class="btn" onclick="save('Enregistré','scr-cheptel')">Enregistrer</button>
+    </section>
+
+    <!-- JOURNAL QUOTIDIEN -->
+    <section class="screen" id="scr-journal">
+      <div class="h1">Journal quotidien</div>
+      <div class="card">
+        <div class="field"><label>Date</label><input type="date" value="2026-09-16"></div>
+        <div class="field"><label>Bande / lot</label><select><option>B01 — Pondeuses</option><option selected>B02 — Pondeuses</option><option>B03 — Chair</option></select></div>
+        <div class="grid2">
+          <div class="field"><label>Effectif présent</label><input inputmode="numeric" value="197"></div>
+          <div class="field"><label>Mortalité du jour</label><input inputmode="numeric" value="1"></div>
+          <div class="field"><label>Œufs pondus</label><input inputmode="numeric" value="150"></div>
+          <div class="field"><label>Aliment (kg)</label><input inputmode="decimal" value="24"></div>
+        </div>
+        <div class="field"><label>Observations</label><textarea placeholder="RAS"></textarea></div>
+        <div class="badge recall">Taux de ponte calculé : 76,1 %</div>
+      </div>
+      <div class="mt"></div>
+      <button class="btn" onclick="save('Journal enregistré','scr-home')">Enregistrer le jour</button>
+    </section>
+
+    <!-- SANTÉ & VACCINATION -->
+    <section class="screen" id="scr-sante">
+      <div class="h1">Santé &amp; vaccination</div>
+      <button class="btn rec" onclick="go('scr-form-vaccin')">+ Enregistrer une vaccination / un soin</button>
+      <div class="h2">Rappels à venir</div>
+      <div class="list">
+        <div class="item" onclick="go('scr-cert')"><div class="thumb">B02</div><div><div class="tt">Newcastle — bande B02</div><div class="st">197 sujets · voie oculaire</div></div><div class="rt"><span class="badge recall">Aujourd'hui</span></div></div>
+        <div class="item can" onclick="go('scr-cert')"><div class="thumb can">🐕</div><div><div class="tt">Rage — « Rex »</div><div class="st">Rappel annuel obligatoire</div></div><div class="rt"><span class="badge recall">3 j</span></div></div>
+        <div class="item"><div class="thumb">🐑</div><div><div class="tt">PPR — lot ovins L1</div><div class="st">32 têtes</div></div><div class="rt"><span class="badge">12 j</span></div></div>
+      </div>
+      <div class="h2">Historique récent</div>
+      <div class="list">
+        <div class="item"><div class="thumb">💉</div><div><div class="tt">Déparasitage — B01</div><div class="st">10/09/2026 · 5 000 FCFA</div></div><div class="chev">›</div></div>
+        <div class="item can"><div class="thumb can">🐕</div><div><div class="tt">CHPPiL — « Luna »</div><div class="st">02/09/2026 · certificat émis</div></div><div class="chev">›</div></div>
+      </div>
+    </section>
+
+    <!-- FORM VACCINATION -->
+    <section class="screen" id="scr-form-vaccin">
+      <div class="h1">Vaccination / soin</div>
+      <div class="card">
+        <div class="field"><label>Sujet concerné</label><select><option>Bande / lot (élevage)</option><option>Animal individuel</option><option>Chien</option></select></div>
+        <div class="field"><label>Type d'intervention</label>
+          <div class="seg"><button class="sel">Vaccination</button><button>Traitement</button><button>Déparasitage</button><button>Vitamines</button></div>
+        </div>
+        <div class="field"><label>Maladie / cible</label><select><option>Rage (chien)</option><option selected>Newcastle</option><option>Gumboro</option><option>PPR</option><option>PPCB</option><option>Dermatose nodulaire</option></select></div>
+        <div class="grid2">
+          <div class="field"><label>Produit</label><input value="Vaccin ND HB1"></div>
+          <div class="field"><label>Dose / voie</label><input value="1 goutte / oculaire"></div>
+          <div class="field"><label>Date</label><input type="date" value="2026-09-16"></div>
+          <div class="field"><label>Prochain rappel</label><input type="date" value="2026-10-14"></div>
+          <div class="field"><label>Coût (FCFA)</label><input inputmode="numeric" value="15000"></div>
+          <div class="field"><label>Réalisé par</label><input value="Vétérinaire"></div>
+        </div>
+        <div class="badge recall">Un rappel sera envoyé par WhatsApp + SMS à J-7, J-1 et le jour J</div>
+      </div>
+      <div class="mt"></div>
+      <button class="btn rec" onclick="save('Vaccination enregistrée · rappel programmé','scr-sante')">Enregistrer &amp; programmer le rappel</button>
+    </section>
+
+    <!-- CERTIFICAT -->
+    <section class="screen" id="scr-cert">
+      <div class="h1">Certificat de vaccination</div>
+      <div class="card" style="text-align:center">
+        <div class="badge canin" style="margin-bottom:10px">Certificat antirabique</div>
+        <div class="qr"></div>
+        <div style="font-weight:800;margin-top:12px">« Rex » — Berger allemand</div>
+        <div class="muted small">Puce 250269••••1234 · propriétaire M. Bella</div>
+        <div class="divider"></div>
+        <div class="small" style="text-align:left;line-height:1.9">
+          Vaccin : Rabisin · Lot 8842<br>Date : 16/09/2026 · Rappel : 16/09/2027<br>Vétérinaire : Dr Ali · Yaoundé
+        </div>
+        <button class="btn ghost" style="margin-top:12px" onclick="toast('Certificat partagé (PDF)')">Partager le certificat</button>
+      </div>
+    </section>
+
+    <!-- REPRODUCTION -->
+    <section class="screen" id="scr-repro">
+      <div class="h1">Reproduction</div>
+      <div class="card">
+        <div class="field"><label>Femelle</label><input placeholder="Identifiant / nom"></div>
+        <div class="field"><label>Événement</label>
+          <div class="seg"><button class="sel">Chaleurs</button><button>Saillie / IA</button><button>Mise bas</button></div></div>
+        <div class="grid2">
+          <div class="field"><label>Date</label><input type="date" value="2026-09-16"></div>
+          <div class="field"><label>Mâle / semence</label><input placeholder="Référence"></div>
+        </div>
+        <div class="field"><label>Mise bas prévue</label><input type="date"></div>
+        <div class="field"><label>Notes</label><textarea></textarea></div>
+        <div class="badge">Alerte mise-bas automatique</div>
+      </div>
+      <div class="mt"></div><button class="btn" onclick="save('Enregistré','scr-home')">Enregistrer</button>
+    </section>
+
+    <!-- VENTES -->
+    <section class="screen" id="scr-ventes">
+      <div class="h1">Vente / production</div>
+      <div class="card">
+        <div class="field"><label>Produit</label><select><option>Œufs (plateau)</option><option>Poulet vif</option><option>Chiot</option><option>Fumier</option><option>Lait</option></select></div>
+        <div class="grid2">
+          <div class="field"><label>Quantité</label><input inputmode="decimal" value="50"></div>
+          <div class="field"><label>Prix unitaire (FCFA)</label><input inputmode="numeric" value="2500"></div>
+        </div>
+        <div class="field"><label>Client</label><input placeholder="Nom / boutique"></div>
+        <div class="field"><label>Paiement</label>
+          <div class="seg"><button class="sel">Mobile Money</button><button>Espèces</button><button>Crédit</button></div></div>
+        <div class="badge green">Montant : 125 000 FCFA</div>
+      </div>
+      <div class="mt"></div><button class="btn" onclick="save('Vente enregistrée','scr-home')">Enregistrer la vente</button>
+    </section>
+
+    <!-- DÉPENSES -->
+    <section class="screen" id="scr-depenses">
+      <div class="h1">Dépense</div>
+      <div class="card">
+        <div class="field"><label>Catégorie</label><select><option>Aliment</option><option>Poussins</option><option>Vétérinaire / médicaments</option><option>Main d'œuvre</option><option>Énergie / eau</option><option>Transport</option><option>Divers</option></select></div>
+        <div class="field"><label>Description</label><input placeholder="Ex. Aliment ponte 50 kg × 10"></div>
+        <div class="grid2">
+          <div class="field"><label>Quantité</label><input inputmode="decimal" value="10"></div>
+          <div class="field"><label>Montant (FCFA)</label><input inputmode="numeric" value="225000"></div>
+        </div>
+        <div class="field"><label>Mode de paiement</label>
+          <div class="seg"><button class="sel">Mobile Money</button><button>Espèces</button><button>Virement</button></div></div>
+      </div>
+      <div class="mt"></div><button class="btn" onclick="save('Dépense enregistrée','scr-home')">Enregistrer</button>
+    </section>
+
+    <!-- DRESSAGE -->
+    <section class="screen" id="scr-dressage">
+      <div class="h1">Dressage &amp; éducation</div>
+      <div class="grid3">
+        <div class="kpi"><div class="v">22</div><div class="l">Clients</div></div>
+        <div class="kpi"><div class="v">18</div><div class="l">Séances (sem.)</div></div>
+        <div class="kpi"><div class="v">5</div><div class="l">En pension</div></div>
+      </div>
+      <div class="row mt">
+        <button class="btn" onclick="go('scr-form-seance')">+ Nouvelle séance</button>
+        <button class="btn ghost" onclick="save('Client ajouté','scr-dressage')">+ Client</button>
+      </div>
+      <div class="h2">Programmes</div>
+      <div class="card small" style="display:flex;gap:8px;flex-wrap:wrap">
+        <span class="badge canin">Éducation chiot</span><span class="badge canin">Obéissance</span>
+        <span class="badge canin">Protection / mordant</span><span class="badge canin">Détection</span>
+        <span class="badge canin">Pistage</span><span class="badge canin">Chasse</span>
+        <span class="badge canin">Réhabilitation</span>
+      </div>
+      <div class="h2">Chiens en cours</div>
+      <div class="list">
+        <div class="item can" onclick="go('scr-chien')"><div class="thumb can">🐕</div><div><div class="tt">« Rex » · Berger allemand</div><div class="st">Protection · niveau 2/4 · M. Bella</div></div><div class="rt small muted">Séance jeu.</div></div>
+        <div class="item can"><div class="thumb can">🐕</div><div><div class="tt">« Nala » · Malinois</div><div class="st">Détection · niveau 1/4 · Douanes</div></div><div class="rt small muted">Pension J3</div></div>
+      </div>
+      <button class="btn ghost mt" onclick="save('Facture envoyée (Mobile Money)','scr-dressage')">Facturer un client</button>
+    </section>
+
+    <!-- FORM SÉANCE -->
+    <section class="screen" id="scr-form-seance">
+      <div class="h1">Nouvelle séance</div>
+      <div class="card">
+        <div class="field"><label>Client &amp; chien</label><select><option>M. Bella — « Rex »</option><option>Douanes — « Nala »</option><option>Mme Sow — « Luna »</option></select></div>
+        <div class="field"><label>Programme</label><select><option>Protection / mordant</option><option>Obéissance</option><option>Détection</option><option>Éducation chiot</option><option>Pistage</option></select></div>
+        <div class="grid2">
+          <div class="field"><label>Date</label><input type="date" value="2026-09-18"></div>
+          <div class="field"><label>Durée (min)</label><input inputmode="numeric" value="45"></div>
+        </div>
+        <div class="field"><label>Lieu</label>
+          <div class="seg"><button class="sel">Centre</button><button>Domicile</button><button>Terrain</button></div></div>
+        <div class="field"><label>Progression / exercices validés</label><textarea placeholder="Rappel au pied, assis-couché à distance…"></textarea></div>
+        <div class="field"><label>Niveau atteint</label>
+          <div class="seg"><button>1</button><button class="sel">2</button><button>3</button><button>4</button></div></div>
+        <div class="badge recall">Rappel de séance envoyé au client (WhatsApp)</div>
+      </div>
+      <div class="mt"></div><button class="btn" onclick="save('Séance enregistrée','scr-dressage')">Enregistrer la séance</button>
+    </section>
+
+    <!-- CHIEN (fiche) -->
+    <section class="screen" id="scr-chien">
+      <div class="h1">Fiche chien</div>
+      <div class="card">
+        <div style="display:flex;gap:12px;align-items:center">
+          <div class="thumb can" style="width:56px;height:56px;font-size:24px">🐕</div>
+          <div><div style="font-weight:800;font-size:17px">« Rex »</div><div class="muted small">Berger allemand · mâle · 3 ans</div></div>
+        </div>
+        <div class="divider"></div>
+        <div class="grid2 small">
+          <div><div class="muted">Identification</div><div style="font-weight:700">Puce 250269••1234</div></div>
+          <div><div class="muted">Statut</div><div style="font-weight:700">Chien de travail</div></div>
+          <div><div class="muted">Propriétaire</div><div style="font-weight:700">M. Bella</div></div>
+          <div><div class="muted">Rage</div><div style="font-weight:700;color:var(--recall)">Rappel dans 3 j</div></div>
+        </div>
+        <div class="row mt">
+          <button class="btn rec sm" onclick="go('scr-form-vaccin')">Vacciner</button>
+          <button class="btn ghost sm" onclick="go('scr-cert')">Certificat</button>
+          <button class="btn ghost sm" onclick="go('scr-repro')">Saillie</button>
+        </div>
+      </div>
+      <div class="h2">Carnet de santé</div>
+      <div class="list">
+        <div class="item"><div class="thumb can">💉</div><div><div class="tt">Rage — Rabisin</div><div class="st">16/09/2025 · rappel 16/09/2026</div></div><div class="chev">›</div></div>
+        <div class="item"><div class="thumb can">💊</div><div><div class="tt">Déparasitage (tiques)</div><div class="st">01/08/2026</div></div><div class="chev">›</div></div>
+      </div>
+      <div class="h2">Généalogie &amp; consanguinité</div>
+      <div class="card">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span class="badge green">Consanguinité 3,1 %</span>
+          <span class="badge">Père : « Titan »</span><span class="badge">Mère : « Bella »</span>
+        </div>
+        <p class="small muted" style="margin:8px 0 0">Pedigree sur 3 générations enregistré. Un accouplement à risque est signalé avant la saillie.</p>
+        <div class="row mt">
+          <button class="btn ghost sm" onclick="go('scr-conso')">Vérifier un accouplement</button>
+          <button class="btn ghost sm" onclick="go('scr-cameras')">Caméra du box</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- MARCHÉ / MISE EN RELATION -->
+    <section class="screen" id="scr-marche">
+      <div class="h1">Marché &amp; mise en relation</div>
+      <p class="muted small" style="margin-top:-6px">Trouvez un pro près de vous. Un rappel manqué peut déclencher une demande en un clic — le prestataire reçoit une demande qualifiée.</p>
+      <div class="seg" style="margin:12px 0">
+        <button class="sel">Vétérinaires</button><button>Dresseurs</button><button>Pensions</button><button>Acheteurs</button><button>Intrants</button>
+      </div>
+      <div class="list">
+        <div class="item"><div class="thumb">🩺</div><div><div class="tt">Dr Ali — clinique vétérinaire</div><div class="st">Yaoundé · rage, volaille · ★ 4,8</div></div><button class="btn sm" onclick="go('scr-form-service')">Demander</button></div>
+        <div class="item"><div class="thumb">💉</div><div><div class="tt">Inséminateur — B. Nguema</div><div class="st">Bovins · à 6 km</div></div><button class="btn sm" onclick="go('scr-form-service')">Demander</button></div>
+        <div class="item can"><div class="thumb can">🦮</div><div><div class="tt">Centre canin K9 Cameroun</div><div class="st">Dressage, détection · ★ 4,7</div></div><button class="btn sm" onclick="go('scr-form-service')">Demander</button></div>
+        <div class="item"><div class="thumb">🌾</div><div><div class="tt">Provenderie du Centre</div><div class="st">Aliment ponte, poussins · livraison</div></div><button class="btn sm" onclick="go('scr-form-service')">Commander</button></div>
+      </div>
+      <div class="card mt small"><b>Mode agent</b> — les coopératives peuvent affecter un animateur qui gère les demandes d'un portefeuille d'éleveurs, comme les réseaux d'agents qui ont fait le succès de l'agritech en Afrique de l'Est.</div>
+    </section>
+
+    <!-- FORM SERVICE -->
+    <section class="screen" id="scr-form-service">
+      <div class="h1">Demander un service</div>
+      <div class="card">
+        <div class="field"><label>Prestataire</label><input value="Dr Ali — clinique vétérinaire" readonly></div>
+        <div class="field"><label>Besoin</label><select><option>Vaccination antirabique</option><option>Visite sanitaire</option><option>Insémination</option><option>Consultation</option><option>Dressage</option></select></div>
+        <div class="field"><label>Animal / lot concerné</label><input placeholder="Ex. « Rex » ou bande B02"></div>
+        <div class="grid2">
+          <div class="field"><label>Date souhaitée</label><input type="date" value="2026-09-20"></div>
+          <div class="field"><label>Lieu</label><input value="Mfou"></div>
+        </div>
+        <div class="field"><label>Message</label><textarea placeholder="Détails utiles au prestataire"></textarea></div>
+        <div class="badge">Envoi par l'application + WhatsApp</div>
+      </div>
+      <div class="mt"></div><button class="btn" onclick="save('Demande envoyée au prestataire','scr-marche')">Envoyer la demande</button>
+    </section>
+
+    <!-- ABONNEMENT -->
+    <section class="screen" id="scr-abo">
+      <div class="h1">Formules</div>
+      <div class="seg" style="margin-bottom:12px"><button class="sel" onclick="togPeriod(this,'m')">Mensuel</button><button onclick="togPeriod(this,'a')">Annuel · 2 mois offerts</button></div>
+
+      <div class="plan">
+        <div class="nm">Découverte</div>
+        <div class="pr">0 FCFA</div>
+        <ul>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>1 exploitation, hors ligne</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Cahier de base + rappels essentiels</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Fiches chien + contenus audio</li>
+        </ul>
+      </div>
+
+      <div class="plan hot">
+        <span class="tag">Le plus choisi</span>
+        <div class="nm">Pro</div>
+        <div class="pr" data-m="2 500 FCFA" data-a="25 000 FCFA">2 500 FCFA<span> / mois</span></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Tous les modules : santé, stock, repro, trésorerie</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Rappels SMS + WhatsApp, certificats QR</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Dressage &amp; pension, facturation</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Jusqu'à 3 exploitations</li>
+        </ul>
+        <button class="btn" style="margin-top:12px" onclick="toast('Abonnement Pro — paiement Mobile Money')">Choisir Pro</button>
+      </div>
+
+      <div class="plan">
+        <div class="nm">Structure / Organisation</div>
+        <div class="pr" data-m="dès 15 000 FCFA" data-a="dès 150 000 FCFA">dès 15 000 FCFA<span> / mois</span></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Multi-utilisateurs + mode agent</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Campagnes de masse &amp; carte de couverture (rage)</li>
+          <li><svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>Unités K9, remontée de surveillance, API</li>
+        </ul>
+      </div>
+      <div class="card small">Option <b>Institution</b> (service vétérinaire, unité de sécurité) : licence à la vente + maintenance, ou abonnement entreprise — sur devis, avec marque blanche.</div>
+    </section>
+
+    <!-- PLUS -->
+    <section class="screen" id="scr-plus">
+      <div class="h1">Plus</div>
+      <div class="mrow" onclick="go('scr-abo')"><div class="mi"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.4H22l-6 4.4 2.3 7.2-6.3-4.5-6.3 4.5L4 13.8 -2 9.4"/></svg></div>Formules &amp; abonnement<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow" onclick="go('scr-dressage')"><div class="mi"><svg viewBox="0 0 24 24"><path d="M4 12h16M4 6h16M4 18h16"/></svg></div>Dressage &amp; pension<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow" onclick="go('scr-surv')"><div class="mi"><svg viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></div>Surveillance &amp; carte de la rage<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow" onclick="toast('Salle de formation audio')"><div class="mi"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></div>Formations audio (langues locales)<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow" onclick="go('scr-insp')"><div class="mi"><svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 00-4 10c1 1 1 2 1 3h6c0-1 0-2 1-3a6 6 0 00-4-10z"/><path d="M9 21h6"/></svg></div>Ce qui marche en Afrique<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow" onclick="go('scr-cameras')"><div class="mi"><svg viewBox="0 0 24 24"><path d="M3 7h13v10H3z"/><path d="M16 10l5-3v10l-5-3z"/></svg></div>Caméras &amp; surveillance à distance<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow" onclick="go('scr-conso')"><div class="mi"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M12 7.5v4M12 11.5l-6 5M12 11.5l6 5"/></svg></div>Généalogie &amp; consanguinité<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="h2">Réglages</div>
+      <div class="mrow" onclick="tog(this)"><div class="mi"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H5l-1 4z"/></svg></div>Rappels WhatsApp<span class="switch on" id="sw1"></span></div>
+      <div class="mrow" onclick="tog(this)"><div class="mi"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M8 10h8M8 14h5"/></svg></div>Rappels SMS / USSD<span class="switch on" id="sw2"></span></div>
+      <div class="mrow" onclick="tog(this)"><div class="mi"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0114 0M8 12a4 4 0 018 0"/></svg></div>Mode hors ligne<span class="switch on" id="sw3"></span></div>
+      <div class="mrow" onclick="toggleTheme()"><div class="mi"><svg viewBox="0 0 24 24"><path d="M12 3v2M12 19v2M5 12H3M21 12h-2M6 6l1 1M17 17l1 1M6 18l1-1M17 7l1-1"/><circle cx="12" cy="12" r="4"/></svg></div>Thème clair / sombre<span class="chev" style="margin-left:auto">›</span></div>
+      <div class="mrow"><div class="mi"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M4 9h16"/></svg></div>Langue<span class="small muted" style="margin-left:auto">Français ▾</span></div>
+    </section>
+
+    <!-- SURVEILLANCE -->
+    <section class="screen" id="scr-surv">
+      <div class="h1">Surveillance &amp; rage</div>
+      <div class="grid2">
+        <div class="kpi"><div class="v" style="color:var(--recall)">61 %</div><div class="l">Couverture antirabique (zone)</div></div>
+        <div class="kpi"><div class="v">7</div><div class="l">Morsures signalées (30 j)</div></div>
+        <div class="kpi"><div class="v">340</div><div class="l">Éleveurs suivis</div></div>
+        <div class="kpi"><div class="v">2</div><div class="l">Campagnes actives</div></div>
+      </div>
+      <div class="card mt" style="height:150px;position:relative;overflow:hidden;padding:0">
+        <div style="position:absolute;inset:0;background:
+          radial-gradient(circle at 30% 40%, rgba(200,119,12,.35), transparent 22%),
+          radial-gradient(circle at 62% 60%, rgba(200,119,12,.5), transparent 18%),
+          radial-gradient(circle at 48% 30%, rgba(46,154,92,.3), transparent 20%),
+          repeating-linear-gradient(0deg,var(--line) 0 1px,transparent 1px 26px),
+          repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 26px)"></div>
+        <span class="badge recall" style="position:absolute;bottom:10px;left:10px">Carte de couverture par zone</span>
+      </div>
+      <button class="btn mt" onclick="toast('Campagne de masse programmée')">Lancer une campagne de vaccination</button>
+      <button class="btn ghost mt" onclick="toast('Export au format de surveillance (RESCAM)')">Exporter les données de surveillance</button>
+    </section>
+
+    <!-- INSPIRATIONS -->
+    <section class="screen" id="scr-insp">
+      <div class="h1">Ce qui marche en Afrique</div>
+      <p class="muted small" style="margin-top:-6px">RecallFarm s'appuie sur des modèles éprouvés du continent plutôt que sur un logiciel de ferme occidental.</p>
+      <div class="insp"><div class="src">DigiCow (Kenya)</div><div class="what">Gratuit pour le petit éleveur, lien direct vers vétérinaires et inséminateurs, salle de formation audio.</div><div class="app">→ Formule Découverte gratuite, marché de mise en relation, contenus audio en langues locales.</div></div>
+      <div class="insp"><div class="src">Hello Tractor (Nigeria)</div><div class="what">Réseau d'agents locaux, réservation de service, données et produit financier.</div><div class="app">→ Mode agent/coopérative, demande de service en un clic, finance intégrée (v2).</div></div>
+      <div class="insp"><div class="src">M-Pesa &amp; mobile money</div><div class="what">Le paiement mobile est le canal financier réel du continent.</div><div class="app">→ Abonnement et encaissements par Orange Money, MTN MoMo, Wave, M-Pesa…</div></div>
+      <div class="insp"><div class="src">Réalité « feature phone »</div><div class="what">Beaucoup d'éleveurs n'ont pas de smartphone ; le réseau est intermittent.</div><div class="app">→ Hors ligne d'abord, rappels par SMS/USSD, serveur vocal.</div></div>
+      <div class="insp"><div class="src">Agrégation par la coopérative</div><div class="what">La disposition à payer individuelle est faible ; l'agrégateur solvable paie.</div><div class="app">→ Formule Structure vendue aux coopératives, cliniques et projets.</div></div>
+    </section>
+
+    <!-- CAMÉRAS / SURVEILLANCE À DISTANCE -->
+    <section class="screen" id="scr-cameras">
+      <div class="h1">Caméras &amp; surveillance à distance</div>
+      <p class="muted small" style="margin-top:-6px">Suivez votre élevage en direct, où que vous soyez. Alertes en cas de mouvement, d'intrusion ou d'anomalie (Wi-Fi ou 4G, fonctionne en basse résolution).</p>
+      <div class="row" style="margin:12px 0;gap:8px">
+        <span class="pillnet" style="background:var(--recall-bg);color:var(--recall)"><i style="background:#C8770C"></i>3 caméras en ligne</span>
+        <span class="pillnet" style="background:var(--line);color:var(--muted)">1 hors ligne</span>
+      </div>
+      <div class="grid2">
+        <div style="border-radius:12px;overflow:hidden;position:relative;height:96px;background:linear-gradient(135deg,#1a2b22,#0e1712)" onclick="toast('Flux en direct — Poulailler 1')">
+          <div style="position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,255,255,.03) 0 2px,transparent 2px 5px)"></div>
+          <span style="position:absolute;top:6px;left:6px;font-size:9px;font-weight:800;color:#fff;background:rgba(178,58,46,.92);padding:2px 6px;border-radius:6px">● LIVE</span>
+          <span style="position:absolute;bottom:6px;left:6px;font-size:10px;color:#cfe">Poulailler 1</span><span style="position:absolute;bottom:6px;right:6px;font-size:9px;color:#9ab">02:14</span>
+        </div>
+        <div style="border-radius:12px;overflow:hidden;position:relative;height:96px;background:linear-gradient(135deg,#20241a,#0e1712)" onclick="toast('Flux en direct — Maternité')">
+          <div style="position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,255,255,.03) 0 2px,transparent 2px 5px)"></div>
+          <span style="position:absolute;top:6px;left:6px;font-size:9px;font-weight:800;color:#fff;background:rgba(178,58,46,.92);padding:2px 6px;border-radius:6px">● LIVE</span>
+          <span style="position:absolute;bottom:6px;left:6px;font-size:10px;color:#cfe">Maternité</span><span style="position:absolute;bottom:6px;right:6px;font-size:9px;color:#9ab">02:14</span>
+        </div>
+        <div style="border-radius:12px;overflow:hidden;position:relative;height:96px;background:linear-gradient(135deg,#141414,#0a0a0a)" onclick="toast('Caméra Parc — hors ligne')">
+          <span style="position:absolute;inset:0;display:grid;place-items:center;color:#667;font-size:11px">Hors ligne</span>
+          <span style="position:absolute;bottom:6px;left:6px;font-size:10px;color:#889">Parc</span>
+        </div>
+        <div style="border-radius:12px;overflow:hidden;position:relative;height:96px;background:linear-gradient(135deg,#122223,#0e1712)" onclick="toast('Flux en direct — Box chiens')">
+          <div style="position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,255,255,.03) 0 2px,transparent 2px 5px)"></div>
+          <span style="position:absolute;top:6px;left:6px;font-size:9px;font-weight:800;color:#fff;background:rgba(178,58,46,.92);padding:2px 6px;border-radius:6px">● LIVE</span>
+          <span style="position:absolute;bottom:6px;left:6px;font-size:10px;color:#cfe">Box chiens</span><span style="position:absolute;bottom:6px;right:6px;font-size:9px;color:#9ab">02:14</span>
+        </div>
+      </div>
+      <button class="btn mt" onclick="toast('Assistant d’installation caméra (Wi-Fi / 4G)')">+ Installer une caméra</button>
+      <div class="card small mt" style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge green">Enregistrement des clips</span><span class="badge recall">Alerte mouvement</span><span class="badge">Vision nocturne</span><span class="badge">Réservé formule Pro/Structure</span></div>
+      <div class="h2">Alertes récentes</div>
+      <div class="list">
+        <div class="item" onclick="toast('Clip de 20 s')"><div class="thumb" style="background:var(--recall-bg);color:var(--recall)">⚠️</div><div><div class="tt">Mouvement détecté — Maternité</div><div class="st">02:14 · clip de 20 s disponible</div></div><div class="chev">›</div></div>
+        <div class="item"><div class="thumb">🔌</div><div><div class="tt">Caméra « Parc » hors ligne</div><div class="st">Vérifier l'alimentation / le réseau</div></div><div class="chev">›</div></div>
+      </div>
+    </section>
+
+    <!-- GÉNÉALOGIE & CONSANGUINITÉ -->
+    <section class="screen" id="scr-conso">
+      <div class="h1">Généalogie &amp; consanguinité</div>
+      <p class="muted small" style="margin-top:-6px">Suivez le pedigree de vos reproducteurs et évitez les accouplements consanguins (baisse de fertilité, malformations, mortalité). Disponible pour chiens, lapins, porcs, ruminants et bovins.</p>
+      <div class="card">
+        <div style="font-weight:800;color:var(--muted);font-size:12px;margin-bottom:8px">VÉRIFIER UN ACCOUPLEMENT</div>
+        <div class="field"><label>Mâle / père</label><select id="cMale"><option>« Rex »</option><option>« Titan »</option><option>« Simba »</option></select></div>
+        <div class="field"><label>Femelle / mère</label><select id="cFemale"><option>« Bella »</option><option>« Luna »</option><option>« Nala »</option></select></div>
+        <button class="btn" onclick="checkConso()">Calculer la consanguinité</button>
+        <div id="consoResult" style="margin-top:12px"></div>
+      </div>
+      <div class="h2">Pedigree (3 générations)</div>
+      <div class="card small">
+        <div style="font-weight:700">« Rex »</div>
+        <div style="margin-left:10px;border-left:2px solid var(--line);padding-left:10px;margin-top:6px;line-height:1.9">
+          <div>Père : « Titan » <span class="muted">(× « Duchesse »)</span></div>
+          <div>Mère : « Bella » <span class="muted">(× « Roi »)</span></div>
+        </div>
+        <div class="badge green mt">Ascendants enregistrés · aucune boucle détectée</div>
+      </div>
+    </section>
+
+  </main>
+
+  <div class="toast" id="toast"><svg width="16" height="16" viewBox="0 0 24 24" style="stroke:#fff;fill:none;stroke-width:2.6"><path d="M5 13l4 4L19 7"/></svg><span id="toastMsg">Enregistré</span></div>
+
+  <!-- TAB BAR -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-scr="scr-home" onclick="tab(this)"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Accueil</button>
+    <button class="tab" data-scr="scr-cheptel" onclick="tab(this)"><svg viewBox="0 0 24 24"><circle cx="6" cy="10" r="2"/><circle cx="12" cy="7" r="2"/><circle cx="18" cy="10" r="2"/><path d="M6 14c-2 0-3 2-3 4h18c0-2-1-4-3-4-2 0-3 2-6 2s-4-2-6-2z"/></svg>Cheptel</button>
+    <button class="tab" data-scr="scr-sante" onclick="tab(this)"><svg viewBox="0 0 24 24"><path d="M12 21s-7-4.5-9-9a5 5 0 019-3 5 5 0 019 3c-2 4.5-9 9-9 9z"/><path d="M12 8v6M9 11h6"/></svg>Santé</button>
+    <button class="tab" data-scr="scr-marche" onclick="tab(this)"><svg viewBox="0 0 24 24"><path d="M4 8h16l-1 12H5z"/><path d="M8 8a4 4 0 018 0"/></svg>Marché</button>
+    <button class="tab" data-scr="scr-plus" onclick="tab(this)"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>Plus</button>
+  </nav>
+</div>
+
+<script>
+const SPECS={
+ volaille:{label:'Aviculture',ic:'🐔',ds:'Pondeuses & chair, par bande',form:'bande',
+   kpis:[['76 %','Taux de ponte'],['2,1 %','Mortalité'],['160 g','Aliment/œuf']],
+   qa:[['Pointer le jour','scr-journal','def'],['Vacciner','scr-form-vaccin','rec'],['Vendre','scr-ventes','def'],['Alimentation','scr-depenses','def'],['Reproduction','scr-repro','def'],['Caméras','scr-cameras','def']]},
+ ruminants:{label:'Petits ruminants',ic:'🐑',ds:'Ovins & caprins, par lot',form:'lot',
+   kpis:[['48','Effectif'],['1,5 %','Mortalité'],['12','Mises bas']],
+   qa:[['Vacciner (PPR)','scr-form-vaccin','rec'],['Reproduction','scr-repro','def'],['Vendre','scr-ventes','def'],['Journal','scr-journal','def'],['Alimentation','scr-depenses','def'],['Dépenses','scr-depenses','def']]},
+ bovins:{label:'Bovins',ic:'🐄',ds:'Lait & viande, individuel',form:'individuel',
+   kpis:[['9 L','Lait / jour'],['23','Effectif'],['6','Gestantes']],
+   qa:[['Traite','scr-journal','def'],['Vacciner','scr-form-vaccin','rec'],['Reproduction','scr-repro','def'],['Vendre','scr-ventes','def'],['Santé','scr-sante','def'],['Dépenses','scr-depenses','def']]},
+ porcins:{label:'Porcins',ic:'🐖',ds:'Naissage & engraissement',form:'lot',
+   kpis:[['60','Effectif'],['4','Portées'],['3 %','Mortalité']],
+   qa:[['Vacciner','scr-form-vaccin','rec'],['Reproduction','scr-repro','def'],['Vendre','scr-ventes','def'],['Journal','scr-journal','def'],['Alimentation','scr-depenses','def'],['Dépenses','scr-depenses','def']]},
+ lapins:{label:'Cuniculture',ic:'🐇',ds:'Élevage de lapins, par lot',form:'lot',
+   kpis:[['120','Effectif'],['9','Portées'],['4 %','Mortalité']],
+   qa:[['Reproduction','scr-repro','def'],['Vacciner','scr-form-vaccin','rec'],['Vendre','scr-ventes','def'],['Journal','scr-journal','def'],['Alimentation','scr-depenses','def'],['Dépenses','scr-depenses','def']]},
+ chien:{label:'Élevage canin',ic:'🐕',ds:'Naissage & chiens, individuel',form:'chien',
+   kpis:[['14','Chiens'],['3','Rappels rage'],['2','Portées']],
+   qa:[['Ajouter un chien','scr-form-animal','can'],['Vacciner (rage)','scr-form-vaccin','rec'],['Portée / saillie','scr-repro','can'],['Vendre un chiot','scr-ventes','def'],['Fiches chiens','scr-chien','can'],['Consanguinité','scr-conso','can']]},
+ dressage:{label:'Dressage / éducation',ic:'🦮',ds:'Éducation, protection, détection',form:'chien',
+   kpis:[['22','Clients'],['18','Séances (sem.)'],['5','En pension']],
+   qa:[['Nouvelle séance','scr-form-seance','can'],['Nouveau client','scr-dressage','can'],['Pension','scr-dressage','can'],['Vacciner (rage)','scr-form-vaccin','rec'],['Facturer','scr-dressage','def'],['Fiches chiens','scr-chien','can']]},
+ pension:{label:'Pension canine',ic:'🏠',ds:'Garde & suivi des pensionnaires',form:'chien',
+   kpis:[['9','En pension'],['3','Arrivées'],['2','Départs']],
+   qa:[['Admission','scr-form-animal','can'],['Facturer','scr-dressage','def'],['Vacciner','scr-form-vaccin','rec'],['Fiches chiens','scr-chien','can'],['Dépenses','scr-depenses','def'],['Marché','scr-marche','def']]},
+ veterinaire:{label:'Vétérinaire',ic:'🩺',ds:'Patients, rappels, prestations',form:'individuel',
+   kpis:[['12','Rappels'],['5','RDV du jour'],['★4,8','Note']],
+   qa:[['Nouveau patient','scr-form-animal','def'],['Vacciner','scr-form-vaccin','rec'],['Rappels','scr-sante','def'],['Certificat','scr-cert','def'],['Marché','scr-marche','def'],['Facturer','scr-ventes','def']]},
+ cooperative:{label:'Coopérative',ic:'🤝',ds:'Portefeuille d’éleveurs & campagnes',form:'lot',
+   kpis:[['340','Éleveurs'],['61 %','Couv. rage'],['2','Campagnes']],
+   qa:[['Campagne','scr-surv','rec'],['Surveillance','scr-surv','def'],['Éleveurs','scr-cheptel','def'],['Mode agent','scr-marche','def'],['Formations','scr-plus','def'],['Tableau de bord','scr-home','def']]},
+};
+const ICON={
+ seed:'<path d="M12 3v18"/><path d="M12 9c-4 0-6-2-6-5 3 0 6 1 6 5zM12 9c4 0 6-2 6-5-3 0-6 1-6 5z"/>',
+ paw:'<circle cx="6" cy="10" r="2"/><circle cx="12" cy="7" r="2"/><circle cx="18" cy="10" r="2"/><path d="M6 14c-2 0-3 2-3 4h18c0-2-1-4-3-4-2 0-3 2-6 2s-4-2-6-2z"/>',
+ dog:'<path d="M4 8l2-3 3 2h6l3-2 2 3v6a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M9 13h.01M15 13h.01"/>',
+ vac:'<path d="M12 21s-7-4.5-9-9a5 5 0 019-3 5 5 0 019 3c-2 4.5-9 9-9 9z"/>',
+ money:'<circle cx="12" cy="12" r="8"/><path d="M12 8v8M9 10h4a2 2 0 010 4H9"/>',
+ shop:'<path d="M4 8h16l-1 12H5z"/><path d="M8 8a4 4 0 018 0"/>',
+ leaf:'<path d="M5 19c8 2 14-4 14-14C11 5 5 11 5 19z"/>',
+ wallet:'<path d="M3 7h18v12H3z"/><path d="M16 12h3"/>',
+ clip:'<path d="M8 4h8v3H8z"/><path d="M6 6h12v14H6z"/>',
+ vet:'<path d="M12 21s-7-4.5-9-9a5 5 0 019-3 5 5 0 019 3c-2 4.5-9 9-9 9z"/><path d="M12 8v6M9 11h6"/>',
+ group:'<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5"/><path d="M16 6a3 3 0 010 6"/>',
+ chart:'<path d="M4 20V4M4 20h16M8 16v-4M12 16V8M16 16v-7"/>'
+};
+const QAICON={
+ 'scr-journal':ICON.clip,'scr-form-vaccin':ICON.vac,'scr-ventes':ICON.money,'scr-depenses':ICON.wallet,
+ 'scr-repro':ICON.paw,'scr-form-animal':ICON.dog,'scr-chien':ICON.dog,'scr-dressage':ICON.paw,
+ 'scr-form-seance':ICON.clip,'scr-sante':ICON.vac,'scr-marche':ICON.shop,'scr-cert':ICON.vac,
+ 'scr-surv':ICON.chart,'scr-home':ICON.chart,'scr-plus':ICON.group
+};
+let active='volaille', histo=[], cur='scr-home';
+const SUB=new Set(['scr-form-animal','scr-form-vaccin','scr-cert','scr-repro','scr-ventes','scr-depenses','scr-form-seance','scr-chien','scr-form-service','scr-abo','scr-surv','scr-insp','scr-dressage','scr-journal','scr-onboard','scr-cameras','scr-conso']);
+const TITLES={'scr-form-animal':'Cheptel','scr-form-vaccin':'Santé','scr-cert':'Certificat','scr-repro':'Reproduction','scr-ventes':'Vente','scr-depenses':'Dépense','scr-form-seance':'Dressage','scr-chien':'Fiche chien','scr-form-service':'Marché','scr-abo':'Formules','scr-surv':'Surveillance','scr-insp':'Inspirations','scr-dressage':'Dressage','scr-journal':'Journal','scr-onboard':'Activité','scr-cameras':'Caméras','scr-conso':'Consanguinité'};
+function checkConso(){
+  var m=document.getElementById('cMale').value, f=document.getElementById('cFemale').value;
+  var pairs={'« Rex »|« Bella »':3.1,'« Titan »|« Bella »':12.5,'« Rex »|« Luna »':0.8,'« Simba »|« Nala »':6.3,'« Titan »|« Luna »':0.4,'« Simba »|« Bella »':1.6};
+  var v=pairs[m+'|'+f]; if(v===undefined){ v=Math.round(((m.length*7+f.length*11)%15)*10)/10; }
+  var ok=v<6.25;
+  document.getElementById('consoResult').innerHTML='<div class="card" style="border:0;background:'+(ok?'rgba(46,154,92,.12)':'var(--recall-bg)')+'">'
+   +'<div style="font-weight:800;font-size:16px;color:'+(ok?'var(--brand)':'var(--recall)')+'">Coefficient de consanguinité : '+v.toFixed(1)+' %</div>'
+   +'<div class="small" style="margin-top:4px">'+(ok?'✔ Accouplement acceptable (seuil recommandé &lt; 6,25 %).':'⚠ Consanguinité élevée — accouplement déconseillé. Choisissez un reproducteur non apparenté.')+'</div></div>';
+}
+
+function el(id){return document.getElementById(id)}
+function go(id){histo.push(cur);show(id)}
+function back(){const p=histo.pop()||'scr-home';show(p,true)}
+function show(id,isBack){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));
+  el(id).classList.add('on');cur=id;
+  el('main').scrollTop=0;
+  const sub=SUB.has(id);
+  el('topbar').style.display=sub?'none':'flex';
+  el('backbar').style.display=sub?'flex':'none';
+  el('tabbar').style.display=id==='scr-onboard'?'none':'flex';
+  if(sub)el('backTitle').textContent=TITLES[id]||'Retour';
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.scr===id));
+}
+function tab(b){histo=[];show(b.dataset.scr,true)}
+function toast(msg){el('toastMsg').textContent=msg;const t=el('toast');t.classList.add('show');clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),1900)}
+function save(msg,dest){toast(msg);setTimeout(()=>{histo=[];show(dest,true)},650)}
+
+function renderHome(){
+  const s=SPECS[active];
+  el('specChip').textContent=s.label+' ▾';
+  el('homeSpec').textContent=s.label;
+  el('homeKpis').innerHTML=s.kpis.map(k=>`<div class="kpi"><div class="v">${k[0]}</div><div class="l">${k[1]}</div></div>`).join('');
+  el('homeQa').innerHTML=s.qa.map(a=>`<button onclick="go('${a[1]}')"><span class="ic ${a[2]==='rec'?'rec':a[2]==='can'?'can':''}"><svg viewBox="0 0 24 24">${QAICON[a[1]]||ICON.clip}</svg></span>${a[0]}</button>`).join('');
+  // recall hero adapt (garde le chien en 2e ligne)
+  if(s.form==='chien'){el('r1a').textContent='🐕';el('r1t').textContent='Rappel antirabique — « Luna »';el('r1s').textContent='Rappel annuel · propriétaire Mme Sow';}
+  else{el('r1a').textContent='B02';el('r1t').textContent='Vaccin Newcastle — bande B02';el('r1s').textContent='197 sujets · rappel programmé';}
+}
+function renderCheptel(){
+  const s=SPECS[active];let items='';
+  if(s.form==='chien'){
+    items=[['🐕','« Rex » · Berger allemand','Travail · rage 3 j','can'],['🐕','« Luna » · Malinois','Compagnie · à jour','can'],['🐕','« Bella » · Boerboel','Reproductrice · portée en cours','can']]
+      .map(i=>`<div class="item can" onclick="go('scr-chien')"><div class="thumb can">${i[0]}</div><div><div class="tt">${i[1]}</div><div class="st">${i[2]}</div></div><div class="chev">›</div></div>`).join('');
+  }else if(s.form==='individuel'){
+    items=[['#12','Vache « Douce »','Lactation · 9 L/j'],['#08','Taureau « Roi »','Reproducteur'],['#21','Génisse','Gestante']]
+      .map(i=>`<div class="item"><div class="thumb">${i[0]}</div><div><div class="tt">${i[1]}</div><div class="st">${i[2]}</div></div><div class="chev">›</div></div>`).join('');
+  }else{
+    items=[['B01',s.label+' — lot 1','197 sujets · en cours'],['B02',s.label+' — lot 2','200 sujets · rappel today'],['B03',s.label+' — lot 3','150 sujets']]
+      .map(i=>`<div class="item"><div class="thumb">${i[0]}</div><div><div class="tt">${i[1]}</div><div class="st">${i[2]}</div></div><div class="chev">›</div></div>`).join('');
+  }
+  el('cheptelList').innerHTML=items;
+}
+function openAnimalForm(){renderAnimalForm();go('scr-form-animal')}
+function renderAnimalForm(){
+  const s=SPECS[active];let body='';
+  const head=`<div class="h1">Ajouter — ${s.label}</div>`;
+  if(s.form==='chien'){
+    body=head+`<div class="card">
+      <div class="field"><label>Nom du chien</label><input placeholder="Ex. Rex"></div>
+      <div class="grid2">
+        <div class="field"><label>Race</label><input placeholder="Berger allemand"></div>
+        <div class="field"><label>Sexe</label><select><option>Mâle</option><option>Femelle</option></select></div>
+        <div class="field"><label>Date de naissance</label><input type="date"></div>
+        <div class="field"><label>Robe / gabarit</label><input placeholder="Noir & feu"></div>
+      </div>
+      <div class="field"><label>Identification</label><input placeholder="Puce / tatouage / photo"></div>
+      <div class="field"><label>Statut</label>
+        <div class="seg"><button class="sel">Compagnie</button><button>Reproducteur</button><button>Travail</button><button>Dressage</button></div></div>
+      <div class="field"><label>Propriétaire / détenteur</label><input placeholder="Nom du client"></div>
+      <div class="fieldset"><div class="fl">Santé — rage obligatoire</div>
+        <div class="grid2"><div class="field" style="margin:0"><label>Dernière rage</label><input type="date"></div>
+        <div class="field" style="margin:0"><label>Prochain rappel</label><input type="date"></div></div></div>
+    </div>`;
+  }else if(s.form==='individuel'){
+    body=head+`<div class="card">
+      <div class="field"><label>Identifiant</label><input placeholder="Boucle / nom"></div>
+      <div class="grid2">
+        <div class="field"><label>Espèce</label><input value="${s.label}" readonly></div>
+        <div class="field"><label>Sexe</label><select><option>Femelle</option><option>Mâle</option></select></div>
+        <div class="field"><label>Race</label><input></div>
+        <div class="field"><label>Naissance / entrée</label><input type="date"></div>
+      </div>
+      <div class="field"><label>Statut</label><div class="seg"><button class="sel">Production</button><button>Reproducteur</button><button>Jeune</button></div></div>
+      <div class="field"><label>Bâtiment / parc</label><input></div>
+    </div>`;
+  }else{
+    body=head+`<div class="card">
+      <div class="field"><label>Code du lot / bande</label><input placeholder="B04"></div>
+      <div class="grid2">
+        <div class="field"><label>Type</label><input value="${s.label}" readonly></div>
+        <div class="field"><label>Souche / race</label><input placeholder="ISA Brown"></div>
+        <div class="field"><label>Effectif initial</label><input inputmode="numeric" placeholder="200"></div>
+        <div class="field"><label>Date de mise en place</label><input type="date"></div>
+        <div class="field"><label>Provenance</label><input placeholder="Couvoir"></div>
+        <div class="field"><label>Bâtiment / parc</label><input placeholder="Poulailler 1"></div>
+      </div>
+      <div class="field"><label>Coût d'achat (FCFA)</label><input inputmode="numeric" placeholder="320000"></div>
+    </div>`;
+  }
+  el('animalFormBody').innerHTML=body;
+}
+
+function renderOnboard(){
+  el('obGrid').innerHTML=Object.entries(SPECS).map(([k,s])=>
+    `<button onclick="setSpec('${k}')"><span class="ic ${s.form==='chien'?'can':''}"><svg viewBox="0 0 24 24">${(k==='chien'||k==='dressage'||k==='pension')?ICON.dog:ICON.seed}</svg></span><div class="nm">${s.label} ${s.ic}</div><div class="ds">${s.ds}</div></button>`).join('');
+}
+function setSpec(k){active=k;renderHome();renderCheptel();histo=[];show('scr-home',true)}
+
+// segmented buttons (toggle within a group)
+document.addEventListener('click',e=>{
+  const b=e.target.closest('.seg button');
+  if(b){[...b.parentElement.children].forEach(x=>x.classList.remove('sel'));b.classList.add('sel')}
+});
+function tog(row){const sw=row.querySelector('.switch');if(sw)sw.classList.toggle('on')}
+function togPeriod(btn,p){
+  [...btn.parentElement.children].forEach(x=>x.classList.remove('sel'));btn.classList.add('sel');
+  document.querySelectorAll('.plan .pr[data-m]').forEach(pr=>{
+    const v=p==='m'?pr.dataset.m:pr.dataset.a;const per=p==='m'?' / mois':' / an';
+    pr.innerHTML=v+'<span>'+per+'</span>';
+  });
+}
+function toggleTheme(){
+  const h=document.documentElement;
+  const dark=getComputedStyle(h).getPropertyValue('--bg').trim()==='#121714'||h.getAttribute('data-theme')==='dark';
+  h.setAttribute('data-theme',dark?'light':'dark');
+}
+
+renderOnboard();renderHome();renderCheptel();
+</script>
+</body>
+</html>

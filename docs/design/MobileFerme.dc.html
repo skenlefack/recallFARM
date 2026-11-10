@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Mobile — Ferme en direct</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>body{margin:0;background:#062B4F}</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #F2F8FD; background: #062B4F; display: flex; flex-direction: column; overflow: hidden;">
+<div style="display: flex; justify-content: space-between; padding: 14px 24px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span>14:06</span><span style="color: #A9C8E4;">4G · 48 %</span></div>
+
+<div style="flex: 1; overflow: hidden; padding: 10px 20px 0; display: flex; flex-direction: column; gap: 14px;">
+<div style="display: flex; flex-direction: column; gap: 4px;">
+<span style="font-size: 13px; color: #A9C8E4;">Ferme connectée</span>
+<h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 27px; font-weight: 700; letter-spacing: -0.02em;">En direct</h1>
+</div>
+
+<div style="display: flex; align-items: center; gap: 10px; border-radius: 16px; background: #0A3A66; border: 1px solid #1B5486; padding: 12px 14px; font-size: 13px;">
+<span style="width: 8px; height: 8px; border-radius: 50%; background: #C8F169;"></span>
+<span style="flex: 1;">Passerelle en ligne · 9 capteurs</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #A9C8E4;">il y a 40 s</span>
+</div>
+
+<div style="border-radius: 22px; background: #2A1D14; border: 1px solid #F4B04F; padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+<div style="display: flex; justify-content: space-between; font-size: 13px;"><span style="color: #F4D3A0;">Poulailler 2 · température</span><span style="color: #F4B04F; font-weight: 600;">Attention</span></div>
+<div style="display: flex; align-items: baseline; gap: 8px;"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 40px; color: #FBE3BE;">31,4</span><span style="color: #F4D3A0;">°C</span><span style="margin-left: auto; font-size: 12px; color: #F4D3A0;">seuil 32 °C</span></div>
+<svg viewBox="0 0 330 70" width="100%" height="70" role="img" aria-label="Température en hausse depuis 6 h, de 26 à 31,4 °C">
+<line x1="0" y1="14" x2="330" y2="14" stroke="#F4B04F" stroke-dasharray="3 4"/>
+<polygon points="0,58 30,56 60,55 90,52 120,48 150,44 180,40 210,34 240,28 270,24 300,20 330,18 330,70 0,70" fill="#F4B04F" fill-opacity="0.12"/>
+<polyline points="0,58 30,56 60,55 90,52 120,48 150,44 180,40 210,34 240,28 270,24 300,20 330,18" fill="none" stroke="#F4B04F" stroke-width="1.8"/>
+</svg>
+<div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #C9A879;"><span>08:00</span><span>11:00</span><span>14:00</span></div>
+<button type="button" style="border: 0; border-radius: 999px; background: #F4B04F; color: #062B4F; font: inherit; font-weight: 600; font-size: 14px; padding: 11px;">Allumer les brumisateurs</button>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;">
+<div style="border-radius: 18px; background: #0A3A66; border: 1px solid #1B5486; padding: 14px; display: flex; flex-direction: column; gap: 6px;">
+<span style="font-size: 12px; color: #A9C8E4;">Poulailler 1</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 24px;">28,2°</span>
+<span style="font-size: 11px; color: #C8F169;">normal</span>
+</div>
+<div style="border-radius: 18px; background: #0A3A66; border: 1px solid #1B5486; padding: 14px; display: flex; flex-direction: column; gap: 6px;">
+<span style="font-size: 12px; color: #A9C8E4;">Château d'eau</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 24px;">72 %</span>
+<div style="height: 5px; border-radius: 5px; background: #15497A;"><div style="width: 72%; height: 5px; border-radius: 5px; background: #8FE3FF;"></div></div>
+</div>
+<div style="border-radius: 18px; background: #0A3A66; border: 1px solid #1B5486; padding: 14px; display: flex; flex-direction: column; gap: 6px;">
+<span style="font-size: 12px; color: #A9C8E4;">Ammoniac P2</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 24px;">14 <span style="font-size: 13px; color: #A9C8E4;">ppm</span></span>
+<span style="font-size: 11px; color: #C8F169;">normal</span>
+</div>
+<div style="border-radius: 18px; background: #0A3A66; border: 1px solid #1B5486; padding: 14px; display: flex; flex-direction: column; gap: 6px;">
+<span style="font-size: 12px; color: #A9C8E4;">Eau consommée</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 24px;">412 <span style="font-size: 13px; color: #A9C8E4;">L</span></span>
+<span style="font-size: 11px; color: #A9C8E4;">auto-reportée au journal</span>
+</div>
+</div>
+
+<div style="border-radius: 18px; background: #041F3A; border: 1px solid #15497A; height: 112px; position: relative; display: flex; align-items: flex-end; padding: 12px; box-sizing: border-box;">
+<svg viewBox="0 0 350 112" preserveAspectRatio="none" aria-hidden="true" style="position: absolute; inset: 0; width: 100%; height: 100%;"><g stroke="#0B3D6C"><line x1="0" y1="37" x2="350" y2="37"/><line x1="0" y1="74" x2="350" y2="74"/><line x1="117" y1="0" x2="117" y2="112"/><line x1="233" y1="0" x2="233" y2="112"/></g></svg>
+<span style="position: relative; display: flex; align-items: center; gap: 6px; font-size: 12px;"><span style="width: 7px; height: 7px; border-radius: 50%; background: #FF7D5C;"></span>Caméra portail · direct</span>
+</div>
+</div>
+
+<nav aria-label="Navigation" style="display: flex; justify-content: space-around; align-items: center; padding: 10px 12px 26px; border-top: 1px solid #15497A; background: #05264A; font-size: 11px;">
+<a href="#" style="display: flex; flex-direction: column; align-items: center; gap: 4px; color: #A9C8E4; text-decoration: none;"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M3 10l8-6 8 6v8H3z" fill="none" stroke="#A9C8E4" stroke-width="1.5"/></svg>Accueil</a>
+<a href="#" style="display: flex; flex-direction: column; align-items: center; gap: 4px; color: #A9C8E4; text-decoration: none;"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="9" r="3.5" fill="none" stroke="#A9C8E4" stroke-width="1.5"/><path d="M4 18c1.5-3 4-4.5 7-4.5s5.5 1.5 7 4.5" fill="none" stroke="#A9C8E4" stroke-width="1.5"/></svg>Cheptel</a>
+<a href="#" aria-label="Saisir" style="width: 52px; height: 52px; margin-top: -24px; border-radius: 50%; background: #C8F169; display: flex; align-items: center; justify-content: center;"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 4v14M4 11h14" stroke="#062B4F" stroke-width="2"/></svg></a>
+<a href="#" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 4px; color: #C8F169; text-decoration: none;"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M3 17l5-6 4 3 7-9" fill="none" stroke="#C8F169" stroke-width="1.5"/></svg>Ferme</a>
+<a href="#" style="display: flex; flex-direction: column; align-items: center; gap: 4px; color: #A9C8E4; text-decoration: none;"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="4" y="4" width="14" height="14" rx="3" fill="none" stroke="#A9C8E4" stroke-width="1.5"/><path d="M8 9h6M8 13h4" stroke="#A9C8E4" stroke-width="1.5"/></svg>Plus</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

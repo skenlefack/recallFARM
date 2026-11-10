@@ -1,0 +1,5711 @@
+{
+  "components": {
+    "schemas": {
+      "AddMemberDto": {
+        "properties": {
+          "farmer_scope": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "example": "+237690000123",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "proprietaire",
+              "membre",
+              "agent",
+              "veterinaire",
+              "admin",
+              "prestataire"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "role"
+        ],
+        "type": "object"
+      },
+      "AnalyticsDto": {
+        "properties": {
+          "device_id_hash": {
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsEventDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
+      "AnalyticsEventDto": {
+        "properties": {
+          "name": {
+            "example": "reminder_confirmed",
+            "type": "string"
+          },
+          "props": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "ts": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "ts"
+        ],
+        "type": "object"
+      },
+      "AnimalDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "batch_id": {
+            "type": "string"
+          },
+          "birth_date": {
+            "type": "string"
+          },
+          "breed": {
+            "type": "string"
+          },
+          "dam_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "sex": {
+            "enum": [
+              "M",
+              "F"
+            ],
+            "type": "string"
+          },
+          "sire_id": {
+            "type": "string"
+          },
+          "species": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "AnimalPatchDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "batch_id": {
+            "type": "string"
+          },
+          "birth_date": {
+            "type": "string"
+          },
+          "breed": {
+            "type": "string"
+          },
+          "dam_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "sex": {
+            "enum": [
+              "M",
+              "F"
+            ],
+            "type": "string"
+          },
+          "sire_id": {
+            "type": "string"
+          },
+          "species": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "BatchDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "code": {
+            "type": "string"
+          },
+          "current_count": {
+            "description": "Derived — ignored on write",
+            "type": "number"
+          },
+          "housing": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "initial_count": {
+            "example": 500,
+            "type": "number"
+          },
+          "name": {
+            "example": "B03",
+            "type": "string"
+          },
+          "production_type": {
+            "example": "chair",
+            "type": "string"
+          },
+          "species": {
+            "example": "volaille",
+            "type": "string"
+          },
+          "start_date": {
+            "example": "2026-10-20",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "en_cours",
+              "vide_sanitaire",
+              "vendue",
+              "reformee",
+              "terminee"
+            ],
+            "type": "string"
+          },
+          "strain": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "BatchPatchDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "code": {
+            "type": "string"
+          },
+          "current_count": {
+            "description": "Derived — ignored on write",
+            "type": "number"
+          },
+          "housing": {
+            "type": "string"
+          },
+          "initial_count": {
+            "example": 500,
+            "type": "number"
+          },
+          "name": {
+            "example": "B03",
+            "type": "string"
+          },
+          "production_type": {
+            "example": "chair",
+            "type": "string"
+          },
+          "species": {
+            "example": "volaille",
+            "type": "string"
+          },
+          "start_date": {
+            "example": "2026-10-20",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "en_cours",
+              "vide_sanitaire",
+              "vendue",
+              "reformee",
+              "terminee"
+            ],
+            "type": "string"
+          },
+          "strain": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CancelDto": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
+      "ChangeDto": {
+        "properties": {
+          "client_rev": {
+            "example": 1,
+            "type": "number"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "entity": {
+            "example": "daily_logs",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "upsert",
+              "delete"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity",
+          "op",
+          "id",
+          "client_rev"
+        ],
+        "type": "object"
+      },
+      "CheckoutDto": {
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "account_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "orange_money",
+              "mtn_momo"
+            ],
+            "type": "string"
+          },
+          "period": {
+            "enum": [
+              "monthly",
+              "yearly"
+            ],
+            "type": "string"
+          },
+          "phone": {
+            "example": "+237690000001",
+            "type": "string"
+          },
+          "plan": {
+            "example": "pro",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_type",
+          "account_id",
+          "plan",
+          "period",
+          "method",
+          "phone"
+        ],
+        "type": "object"
+      },
+      "ConfirmReminderDto": {
+        "properties": {
+          "health_event": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HealthEventBodyDto"
+              }
+            ],
+            "description": "Act details (defaults: vaccination today for the reminder step)"
+          }
+        },
+        "type": "object"
+      },
+      "ConsentDto": {
+        "properties": {
+          "channel": {
+            "enum": [
+              "app",
+              "ussd",
+              "agent"
+            ],
+            "type": "string"
+          },
+          "farm_id": {
+            "type": "string"
+          },
+          "granted": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "organisation_id": {
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "cgu_confidentialite",
+              "surveillance_agregats",
+              "partage_organisation",
+              "partage_veterinaire",
+              "partage_prestataire",
+              "messages_whatsapp",
+              "messages_sms"
+            ],
+            "type": "string"
+          },
+          "text_version": {
+            "example": "2026-10",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "granted",
+          "text_version"
+        ],
+        "type": "object"
+      },
+      "ConsumeStockDto": {
+        "properties": {
+          "item_id": {
+            "example": "vaccin_newcastle",
+            "type": "string"
+          },
+          "quantity": {
+            "example": 1,
+            "type": "number"
+          }
+        },
+        "required": [
+          "item_id",
+          "quantity"
+        ],
+        "type": "object"
+      },
+      "CreateDraftDto": {
+        "properties": {
+          "changelog": {
+            "type": "string"
+          },
+          "version": {
+            "example": "1.0.1",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CreateHealthEventDto": {
+        "properties": {
+          "active_substance_code": {
+            "type": "string"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "campaign_id": {
+            "type": "string"
+          },
+          "consume_stock": {
+            "$ref": "#/components/schemas/ConsumeStockDto"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/MoneyDto"
+          },
+          "disease": {
+            "type": "string"
+          },
+          "dose_route": {
+            "type": "string"
+          },
+          "doses_count": {
+            "type": "number"
+          },
+          "event_date": {
+            "example": "2026-10-27",
+            "type": "string"
+          },
+          "event_type": {
+            "enum": [
+              "vaccination",
+              "traitement",
+              "deparasitage",
+              "vitamines",
+              "desinfection",
+              "depistage",
+              "soin_neonatal"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "UUID v4 generated by the client",
+            "type": "string"
+          },
+          "next_due": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "performed_by": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "product_batch_no": {
+            "type": "string"
+          },
+          "protocol_id": {
+            "type": "string"
+          },
+          "protocol_step": {
+            "type": "string"
+          },
+          "quantity_unit": {
+            "type": "string"
+          },
+          "quantity_value": {
+            "type": "number"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_type": {
+            "enum": [
+              "batch",
+              "dog",
+              "animal"
+            ],
+            "type": "string"
+          },
+          "withdrawal_eggs_until": {
+            "type": "string"
+          },
+          "withdrawal_meat_until": {
+            "type": "string"
+          },
+          "withdrawal_milk_until": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "subject_type",
+          "subject_id",
+          "event_type",
+          "event_date"
+        ],
+        "type": "object"
+      },
+      "DailyLogDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "culled": {
+            "type": "number"
+          },
+          "eggs": {
+            "type": "number"
+          },
+          "eggs_broken": {
+            "type": "number"
+          },
+          "feed_item_id": {
+            "type": "string"
+          },
+          "feed_kg": {
+            "type": "number"
+          },
+          "id": {
+            "type": "string"
+          },
+          "log_date": {
+            "example": "2026-10-27",
+            "type": "string"
+          },
+          "measured_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "milk_l": {
+            "type": "number"
+          },
+          "milk_sold_l": {
+            "type": "number"
+          },
+          "mortality": {
+            "type": "number"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "present_count": {
+            "type": "number"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_type": {
+            "enum": [
+              "batch",
+              "animal",
+              "dog"
+            ],
+            "type": "string"
+          },
+          "temperature_c": {
+            "type": "number"
+          },
+          "water_l": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "subject_type",
+          "subject_id",
+          "log_date"
+        ],
+        "type": "object"
+      },
+      "DailyLogPatchDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "culled": {
+            "type": "number"
+          },
+          "eggs": {
+            "type": "number"
+          },
+          "eggs_broken": {
+            "type": "number"
+          },
+          "feed_item_id": {
+            "type": "string"
+          },
+          "feed_kg": {
+            "type": "number"
+          },
+          "measured_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "milk_l": {
+            "type": "number"
+          },
+          "milk_sold_l": {
+            "type": "number"
+          },
+          "mortality": {
+            "type": "number"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "present_count": {
+            "type": "number"
+          },
+          "temperature_c": {
+            "type": "number"
+          },
+          "water_l": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "DeleteMeDto": {
+        "properties": {
+          "otp_code": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "DogDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "birth_date": {
+            "type": "string"
+          },
+          "breed": {
+            "type": "string"
+          },
+          "chip_number": {
+            "example": "120093000418271",
+            "type": "string"
+          },
+          "coat": {
+            "type": "string"
+          },
+          "dam_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "identification_type": {
+            "type": "string"
+          },
+          "name": {
+            "example": "Rex",
+            "type": "string"
+          },
+          "photo_uri": {
+            "type": "string"
+          },
+          "rabies_status": {
+            "description": "Derived — ignored on write",
+            "type": "string"
+          },
+          "rabies_valid_until": {
+            "description": "Derived — ignored on write",
+            "type": "string"
+          },
+          "sex": {
+            "enum": [
+              "M",
+              "F"
+            ],
+            "type": "string"
+          },
+          "sire_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "DogPatchDto": {
+        "properties": {
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "birth_date": {
+            "type": "string"
+          },
+          "breed": {
+            "type": "string"
+          },
+          "chip_number": {
+            "example": "120093000418271",
+            "type": "string"
+          },
+          "coat": {
+            "type": "string"
+          },
+          "dam_id": {
+            "type": "string"
+          },
+          "identification_type": {
+            "type": "string"
+          },
+          "name": {
+            "example": "Rex",
+            "type": "string"
+          },
+          "photo_uri": {
+            "type": "string"
+          },
+          "rabies_status": {
+            "description": "Derived — ignored on write",
+            "type": "string"
+          },
+          "rabies_valid_until": {
+            "description": "Derived — ignored on write",
+            "type": "string"
+          },
+          "sex": {
+            "enum": [
+              "M",
+              "F"
+            ],
+            "type": "string"
+          },
+          "sire_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ExpenseDto": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyDto"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "category": {
+            "example": "aliment",
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "expense_date": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "payment_method": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_type": {
+            "type": "string"
+          },
+          "supplier": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "amount",
+          "expense_date"
+        ],
+        "type": "object"
+      },
+      "ExportDto": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "csv"
+            ],
+            "type": "string"
+          },
+          "organisation_id": {
+            "description": "Export for an organisation (managers) instead of your own farms",
+            "type": "string"
+          },
+          "period": {
+            "description": "7d | 30d | 90d | YYYY-MM",
+            "example": "30d",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "reminders",
+              "farms",
+              "health_events"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "FarmDto": {
+        "properties": {
+          "area_ha": {
+            "type": "number"
+          },
+          "country": {
+            "example": "CM",
+            "type": "string"
+          },
+          "currency": {
+            "example": "XAF",
+            "type": "string"
+          },
+          "gps_lat": {
+            "type": "number"
+          },
+          "gps_lng": {
+            "type": "number"
+          },
+          "id": {
+            "type": "string"
+          },
+          "locality": {
+            "type": "string"
+          },
+          "manager_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organisation_id": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "speculations": {
+            "example": [
+              "volaille"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "speculations",
+          "country"
+        ],
+        "type": "object"
+      },
+      "FarmPatchDto": {
+        "properties": {
+          "area_ha": {
+            "type": "number"
+          },
+          "country": {
+            "example": "CM",
+            "type": "string"
+          },
+          "currency": {
+            "example": "XAF",
+            "type": "string"
+          },
+          "gps_lat": {
+            "type": "number"
+          },
+          "gps_lng": {
+            "type": "number"
+          },
+          "locality": {
+            "type": "string"
+          },
+          "manager_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "organisation_id": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "speculations": {
+            "example": [
+              "volaille",
+              "chien"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "FarmSettingsDto": {
+        "properties": {
+          "dashboard_kpis": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "oncall_default": {
+            "example": {
+              "name": "Joseph",
+              "phone": "+237690000111"
+            },
+            "type": "object"
+          },
+          "overrides": {
+            "description": "Overrides keyed by \"<kind>:<code>\", e.g. {\"alert_rule:mortalite_journaliere\":{\"params\":{\"seuil_mortalite_jour_pct\":2}}}",
+            "type": "object"
+          },
+          "targets": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "HealthEventBodyDto": {
+        "properties": {
+          "active_substance_code": {
+            "type": "string"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "campaign_id": {
+            "type": "string"
+          },
+          "consume_stock": {
+            "$ref": "#/components/schemas/ConsumeStockDto"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/MoneyDto"
+          },
+          "disease": {
+            "type": "string"
+          },
+          "dose_route": {
+            "type": "string"
+          },
+          "doses_count": {
+            "type": "number"
+          },
+          "event_date": {
+            "example": "2026-10-27",
+            "type": "string"
+          },
+          "event_type": {
+            "enum": [
+              "vaccination",
+              "traitement",
+              "deparasitage",
+              "vitamines",
+              "desinfection",
+              "depistage",
+              "soin_neonatal"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "UUID v4 of the act to create",
+            "type": "string"
+          },
+          "next_due": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "performed_by": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "product_batch_no": {
+            "type": "string"
+          },
+          "protocol_id": {
+            "type": "string"
+          },
+          "protocol_step": {
+            "type": "string"
+          },
+          "quantity_unit": {
+            "type": "string"
+          },
+          "quantity_value": {
+            "type": "number"
+          },
+          "withdrawal_eggs_until": {
+            "type": "string"
+          },
+          "withdrawal_meat_until": {
+            "type": "string"
+          },
+          "withdrawal_milk_until": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ImportDto": {
+        "properties": {
+          "csv": {
+            "description": "CSV text (alternative to the multipart `file` field)",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "farmers"
+            ],
+            "type": "string"
+          },
+          "organisation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "organisation_id"
+        ],
+        "type": "object"
+      },
+      "InboundSmsDto": {
+        "properties": {
+          "from": {
+            "example": "+237690000001",
+            "type": "string"
+          },
+          "text": {
+            "example": "OK 4821",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "text"
+        ],
+        "type": "object"
+      },
+      "InboundUssdDto": {
+        "properties": {
+          "phone": {
+            "example": "+237690000001",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "description": "Accumulated input, e.g. \"2*4821\"",
+            "example": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "phone",
+          "text"
+        ],
+        "type": "object"
+      },
+      "LeadDto": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "example": "+237690001234",
+            "type": "string"
+          },
+          "source": {
+            "example": "site_public",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "source"
+        ],
+        "type": "object"
+      },
+      "MatingCheckDto": {
+        "properties": {
+          "dam_id": {
+            "type": "string"
+          },
+          "dam_type": {
+            "enum": [
+              "dog",
+              "animal"
+            ],
+            "type": "string"
+          },
+          "generations": {
+            "default": 4,
+            "type": "number"
+          },
+          "id": {
+            "type": "string"
+          },
+          "sire_id": {
+            "type": "string"
+          },
+          "sire_type": {
+            "enum": [
+              "dog",
+              "animal"
+            ],
+            "type": "string"
+          },
+          "species": {
+            "example": "chien",
+            "type": "string"
+          },
+          "threshold": {
+            "default": 0.0625,
+            "type": "number"
+          }
+        },
+        "required": [
+          "species",
+          "sire_id",
+          "dam_id"
+        ],
+        "type": "object"
+      },
+      "MoneyDto": {
+        "properties": {
+          "amount_minor": {
+            "example": 2500,
+            "type": "number"
+          },
+          "currency": {
+            "example": "XAF",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "type": "object"
+      },
+      "OtpRequestDto": {
+        "properties": {
+          "phone": {
+            "example": "+237690000001",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
+        ],
+        "type": "object"
+      },
+      "OtpVerifyDto": {
+        "properties": {
+          "code": {
+            "example": "123456",
+            "type": "string"
+          },
+          "phone": {
+            "example": "+237690000001",
+            "type": "string"
+          },
+          "provisional_user_id": {
+            "description": "Offline provisional account to attach",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "code"
+        ],
+        "type": "object"
+      },
+      "PatchMeDto": {
+        "properties": {
+          "default_currency": {
+            "type": "string"
+          },
+          "language": {
+            "enum": [
+              "fr",
+              "en"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PatchMemberDto": {
+        "properties": {
+          "farmer_scope": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "role": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "invite",
+              "actif",
+              "retire"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PatchVersionDto": {
+        "properties": {
+          "changelog": {
+            "type": "string"
+          },
+          "content": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "PublishDto": {
+        "properties": {
+          "rollout_pct": {
+            "description": "Progressive rollout percentage (RG-PAR-07); omit or 100 for everyone",
+            "example": 10,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "PushDto": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeDto"
+            },
+            "type": "array"
+          },
+          "device_id": {
+            "example": "android-7f3a",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "RefreshDto": {
+        "properties": {
+          "refresh_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "refresh_token"
+        ],
+        "type": "object"
+      },
+      "ResolveAlertDto": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "cause": {
+            "enum": [
+              "chaleur",
+              "panne_eau",
+              "panne_electrique",
+              "capteur_defectueux",
+              "intrusion",
+              "maladie",
+              "fausse_alerte",
+              "autre"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ReviewDto": {
+        "properties": {
+          "comments": {
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approuve",
+              "refuse",
+              "commentaire"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      },
+      "RollbackDto": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "to_version": {
+            "example": "1.0.0",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_version",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "SaleDto": {
+        "properties": {
+          "amount": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MoneyDto"
+              }
+            ],
+            "description": "Derived — ignored on write"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "payment": {
+            "type": "string"
+          },
+          "payment_status": {
+            "enum": [
+              "paye",
+              "partiel",
+              "a_credit"
+            ],
+            "type": "string"
+          },
+          "product": {
+            "example": "oeufs_plateau",
+            "type": "string"
+          },
+          "quantity": {
+            "example": 10,
+            "type": "number"
+          },
+          "sale_date": {
+            "type": "string"
+          },
+          "species": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_type": {
+            "type": "string"
+          },
+          "unit": {
+            "example": "plateau",
+            "type": "string"
+          },
+          "unit_price": {
+            "$ref": "#/components/schemas/MoneyDto"
+          }
+        },
+        "required": [
+          "id",
+          "product",
+          "quantity",
+          "unit",
+          "unit_price",
+          "sale_date"
+        ],
+        "type": "object"
+      },
+      "SimulateProtocolDto": {
+        "properties": {
+          "birth_or_start_date": {
+            "example": "2026-11-01",
+            "type": "string"
+          },
+          "protocol_code": {
+            "example": "volaille_chair_cm",
+            "type": "string"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version_id",
+          "protocol_code",
+          "birth_or_start_date"
+        ],
+        "type": "object"
+      },
+      "SnoozeDto": {
+        "properties": {
+          "until": {
+            "description": "At most today + 14 days",
+            "example": "2026-11-03",
+            "type": "string"
+          }
+        },
+        "required": [
+          "until"
+        ],
+        "type": "object"
+      },
+      "StockMovementDto": {
+        "properties": {
+          "direction": {
+            "enum": [
+              "entree",
+              "sortie",
+              "ajustement"
+            ],
+            "type": "string"
+          },
+          "expiry_date": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "item_id": {
+            "example": "aliment_ponte",
+            "type": "string"
+          },
+          "lot_no": {
+            "type": "string"
+          },
+          "movement_date": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_type": {
+            "type": "string"
+          },
+          "supplier": {
+            "type": "string"
+          },
+          "unit_cost": {
+            "$ref": "#/components/schemas/MoneyDto"
+          }
+        },
+        "required": [
+          "id",
+          "item_id",
+          "movement_date",
+          "direction",
+          "quantity"
+        ],
+        "type": "object"
+      },
+      "TaskDto": {
+        "properties": {
+          "assignee_user_id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "due_date": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "recurrence": {
+            "example": "FREQ=WEEKLY;INTERVAL=1",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "a_faire",
+              "fait",
+              "annule"
+            ],
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_type": {
+            "type": "string"
+          },
+          "template_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "due_date"
+        ],
+        "type": "object"
+      },
+      "TelemetryDto": {
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "metric": {
+            "example": "temperature",
+            "type": "string"
+          },
+          "ts": {
+            "example": "2026-10-27T13:06:00Z",
+            "type": "string"
+          },
+          "value": {
+            "example": 31.4,
+            "type": "number"
+          }
+        },
+        "required": [
+          "device_id",
+          "metric",
+          "value"
+        ],
+        "type": "object"
+      },
+      "WebhookDto": {
+        "properties": {
+          "fees_minor": {
+            "type": "number"
+          },
+          "payment_id": {
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": "string"
+          },
+          "status": {
+            "example": "confirme",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "bearerFormat": "JWT",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "contact": {},
+    "description": "API du MVP RecallFarm — gestion d’élevage hors ligne d’abord (volaille, chiens). Erreurs : { error: { code, message, fields?, details? } }.",
+    "title": "RecallFarm API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/admin/messages": {
+      "get": {
+        "operationId": "Inbound_messages",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "enum": [
+                "sms",
+                "whatsapp",
+                "push"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "organisation_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/alerts": {
+      "get": {
+        "operationId": "Alerts_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "organisation_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "ouverte|escaladee|acquittee|resolue|close|open",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "enum": [
+                "info",
+                "attention",
+                "critique"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/v1/alerts/{id}/ack": {
+      "post": {
+        "operationId": "Alerts_ack",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/v1/alerts/{id}/resolve": {
+      "post": {
+        "operationId": "Alerts_resolve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveAlertDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/v1/analytics/events": {
+      "post": {
+        "operationId": "Misc_analytics",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyticsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/animals/{id}": {
+      "delete": {
+        "operationId": "Livestock_deleteAnimal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "get": {
+        "operationId": "Livestock_getAnimal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "patch": {
+        "operationId": "Livestock_patchAnimal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnimalPatchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "Auth_logout",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/otp/request": {
+      "post": {
+        "operationId": "Auth_request",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/otp/verify": {
+      "post": {
+        "operationId": "Auth_verify",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpVerifyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "operationId": "Auth_refresh",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/batches/{id}": {
+      "delete": {
+        "operationId": "Livestock_deleteBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "get": {
+        "operationId": "Livestock_getBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "patch": {
+        "operationId": "Livestock_patchBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchPatchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      }
+    },
+    "/v1/certificates/verify": {
+      "get": {
+        "operationId": "Health_verify",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "payload",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/daily-logs/{id}": {
+      "get": {
+        "operationId": "Journal_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "journal"
+        ]
+      },
+      "patch": {
+        "operationId": "Journal_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DailyLogPatchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "journal"
+        ]
+      }
+    },
+    "/v1/dev/outbox": {
+      "get": {
+        "operationId": "Dev_outbox",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "phone",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "dev"
+        ]
+      }
+    },
+    "/v1/dev/payments/{id}/confirm": {
+      "post": {
+        "operationId": "Dev_confirm",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "dev"
+        ]
+      }
+    },
+    "/v1/dev/payments/{id}/fail": {
+      "post": {
+        "operationId": "Dev_fail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "dev"
+        ]
+      }
+    },
+    "/v1/dev/scheduler/run": {
+      "post": {
+        "operationId": "Dev_run",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "dev"
+        ]
+      }
+    },
+    "/v1/dogs/{id}": {
+      "delete": {
+        "operationId": "Livestock_deleteDog",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "get": {
+        "operationId": "Livestock_getDog",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "patch": {
+        "operationId": "Livestock_patchDog",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DogPatchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      }
+    },
+    "/v1/dogs/{id}/pedigree": {
+      "get": {
+        "operationId": "Genealogy_dogPedigree",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generations",
+            "required": false,
+            "schema": {
+              "default": 3,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "genealogy"
+        ]
+      }
+    },
+    "/v1/exports": {
+      "post": {
+        "operationId": "ImportsExports_export",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "imports-exports"
+        ]
+      }
+    },
+    "/v1/farms": {
+      "get": {
+        "operationId": "Farms_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "organisation_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      },
+      "post": {
+        "operationId": "Farms_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FarmDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/animals": {
+      "get": {
+        "operationId": "Livestock_listAnimals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "post": {
+        "operationId": "Livestock_createAnimal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnimalDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/batches": {
+      "get": {
+        "operationId": "Livestock_listBatches",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "post": {
+        "operationId": "Livestock_createBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/daily-logs": {
+      "get": {
+        "operationId": "Journal_list",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "journal"
+        ]
+      },
+      "post": {
+        "operationId": "Journal_create",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DailyLogDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "journal"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/dogs": {
+      "get": {
+        "operationId": "Livestock_listDogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      },
+      "post": {
+        "operationId": "Livestock_createDog",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DogDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "livestock"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/expenses": {
+      "get": {
+        "operationId": "StockSales_expenses",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      },
+      "post": {
+        "operationId": "StockSales_createExpense",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpenseDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/kpis": {
+      "get": {
+        "operationId": "StockSales_kpis",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "enum": [
+                "7d",
+                "30d"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/live": {
+      "get": {
+        "operationId": "Alerts_live",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/mating-checks": {
+      "get": {
+        "operationId": "Genealogy_list",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "genealogy"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/sales": {
+      "get": {
+        "operationId": "StockSales_sales",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      },
+      "post": {
+        "operationId": "StockSales_createSale",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/stock-movements": {
+      "get": {
+        "operationId": "StockSales_movements",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      },
+      "post": {
+        "operationId": "StockSales_createMovement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockMovementDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/stock-summary": {
+      "get": {
+        "operationId": "StockSales_summary",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      }
+    },
+    "/v1/farms/{farmId}/tasks": {
+      "get": {
+        "operationId": "Health_listTasks",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "a_faire",
+                "fait",
+                "annule"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      },
+      "post": {
+        "operationId": "Health_createTask",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "farmId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/farms/{id}": {
+      "delete": {
+        "operationId": "Farms_remove",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      },
+      "get": {
+        "operationId": "Farms_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      },
+      "patch": {
+        "operationId": "Farms_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FarmPatchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      }
+    },
+    "/v1/farms/{id}/settings": {
+      "get": {
+        "operationId": "Farms_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      },
+      "put": {
+        "operationId": "Farms_putSettings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FarmSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "farms"
+        ]
+      }
+    },
+    "/v1/feature-flags": {
+      "get": {
+        "operationId": "Misc_flags",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "operationId": "Misc_health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/health-events": {
+      "get": {
+        "operationId": "Health_listEvents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject_type",
+            "required": false,
+            "schema": {
+              "enum": [
+                "batch",
+                "dog",
+                "animal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      },
+      "post": {
+        "operationId": "Health_createEvent",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateHealthEventDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/health-events/{id}": {
+      "delete": {
+        "operationId": "Health_deleteEvent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      },
+      "get": {
+        "operationId": "Health_getEvent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/health-events/{id}/certificate": {
+      "get": {
+        "operationId": "Health_certificate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/health-events/{id}/certificate.json": {
+      "get": {
+        "operationId": "Health_certificateJson",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/imports": {
+      "post": {
+        "operationId": "ImportsExports_create",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDto"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "imports-exports"
+        ]
+      }
+    },
+    "/v1/imports/{id}/commit": {
+      "post": {
+        "operationId": "ImportsExports_commit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "imports-exports"
+        ]
+      }
+    },
+    "/v1/inbound/sms": {
+      "post": {
+        "operationId": "Inbound_sms",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Inbound-Secret",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboundSmsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/inbound/ussd": {
+      "post": {
+        "operationId": "Inbound_ussd",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Inbound-Secret",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboundUssdDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/v1/inbox": {
+      "get": {
+        "operationId": "Inbox_inbox",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "inbox"
+        ]
+      }
+    },
+    "/v1/ingest/telemetry": {
+      "post": {
+        "operationId": "Alerts_ingest",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Device-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/v1/leads": {
+      "post": {
+        "operationId": "Misc_lead",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/mating-checks": {
+      "post": {
+        "operationId": "Genealogy_check",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatingCheckDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "genealogy"
+        ]
+      }
+    },
+    "/v1/me": {
+      "delete": {
+        "operationId": "Me_remove",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteMeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      },
+      "get": {
+        "operationId": "Me_me",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      },
+      "patch": {
+        "operationId": "Me_patch",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchMeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/consents": {
+      "get": {
+        "operationId": "Me_consents",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      },
+      "post": {
+        "operationId": "Me_addConsent",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/export": {
+      "post": {
+        "operationId": "Me_exportData",
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/requests/{id}": {
+      "get": {
+        "operationId": "Me_request",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/me/requests/{id}/cancel": {
+      "post": {
+        "operationId": "Me_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/v1/members/{id}": {
+      "delete": {
+        "operationId": "Organisations_removeMember",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      },
+      "patch": {
+        "operationId": "Organisations_patchMember",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchMemberDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
+    "/v1/organisations/{id}": {
+      "get": {
+        "operationId": "Organisations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
+    "/v1/organisations/{id}/dashboard": {
+      "get": {
+        "operationId": "Organisations_dashboard",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "week",
+            "required": false,
+            "schema": {
+              "example": "2026-W44",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "speculation",
+            "required": false,
+            "schema": {
+              "example": "volaille",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "disease",
+            "required": false,
+            "schema": {
+              "example": "newcastle",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
+    "/v1/organisations/{id}/farms": {
+      "get": {
+        "operationId": "Organisations_farms",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
+    "/v1/organisations/{id}/members": {
+      "get": {
+        "operationId": "Organisations_members",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      },
+      "post": {
+        "operationId": "Organisations_addMember",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMemberDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
+    "/v1/organisations/{id}/reminders": {
+      "get": {
+        "operationId": "Organisations_reminders",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "ouvert|en_retard|aujourdhui|a_venir|envoye|confirme|annule",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "organisations"
+        ]
+      }
+    },
+    "/v1/params/manifest": {
+      "get": {
+        "operationId": "Params_manifest",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "params"
+        ]
+      }
+    },
+    "/v1/params/packs/{code}/versions/{version}": {
+      "get": {
+        "operationId": "Params_pack",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "params"
+        ]
+      }
+    },
+    "/v1/params/public-key": {
+      "get": {
+        "operationId": "Params_publicKey",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "params"
+        ]
+      }
+    },
+    "/v1/params/resolved": {
+      "get": {
+        "operationId": "Params_resolved",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "country",
+            "required": false,
+            "schema": {
+              "example": "CM",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "example": "vaccination_protocol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "example": "chien_cm",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "params"
+        ]
+      }
+    },
+    "/v1/payments/webhook": {
+      "post": {
+        "operationId": "Billing_webhook",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/payments/{id}": {
+      "get": {
+        "operationId": "Billing_payment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/plans": {
+      "get": {
+        "operationId": "Billing_plans",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "country",
+            "required": false,
+            "schema": {
+              "example": "CM",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/protocols": {
+      "get": {
+        "operationId": "Health_protocols",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "species",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "country",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "disease",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/ready": {
+      "get": {
+        "operationId": "Misc_ready",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "misc"
+        ]
+      }
+    },
+    "/v1/reminders": {
+      "get": {
+        "operationId": "Health_listReminders",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Opaque cursor returned as next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "a_venir|envoye|confirme|manque|annule|clos|ouvert, or timing en_retard|aujourdhui",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "due_before",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priority",
+            "required": false,
+            "schema": {
+              "enum": [
+                "normale",
+                "haute",
+                "critique"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/reminders/{id}/cancel": {
+      "post": {
+        "operationId": "Health_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/reminders/{id}/confirm": {
+      "post": {
+        "operationId": "Health_confirm",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmReminderDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/reminders/{id}/snooze": {
+      "post": {
+        "operationId": "Health_snooze",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnoozeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/stock-items": {
+      "get": {
+        "operationId": "StockSales_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "stock-sales"
+        ]
+      }
+    },
+    "/v1/studio/packs": {
+      "get": {
+        "operationId": "Studio_packs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/packs/{code}/rollback": {
+      "post": {
+        "operationId": "Studio_rollback",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/packs/{code}/versions": {
+      "get": {
+        "operationId": "Studio_versions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      },
+      "post": {
+        "operationId": "Studio_createDraft",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDraftDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/simulate-protocol": {
+      "post": {
+        "operationId": "Studio_simulate",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulateProtocolDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}": {
+      "get": {
+        "operationId": "Studio_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      },
+      "patch": {
+        "operationId": "Studio_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchVersionDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}/diff": {
+      "get": {
+        "operationId": "Studio_diff",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}/publish": {
+      "post": {
+        "operationId": "Studio_publish",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}/reviews": {
+      "post": {
+        "operationId": "Studio_review",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}/submit": {
+      "post": {
+        "operationId": "Studio_submit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}/test": {
+      "post": {
+        "operationId": "Studio_test",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/studio/versions/{id}/validate": {
+      "post": {
+        "operationId": "Studio_validate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "studio"
+        ]
+      }
+    },
+    "/v1/subscriptions/checkout": {
+      "post": {
+        "operationId": "Billing_checkout",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/subscriptions/current": {
+      "get": {
+        "operationId": "Billing_current",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "enum": [
+                "user",
+                "organisation"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/sync/pull": {
+      "get": {
+        "operationId": "Sync_pull",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Comma-separated: farms, batches, dogs, animals, daily_logs, health_events, tasks, stock_movements, sales, expenses, reminders, alerts, params",
+            "in": "query",
+            "name": "entities",
+            "required": false,
+            "schema": {
+              "example": "batches,dogs,daily_logs,reminders,params",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "sync"
+        ]
+      }
+    },
+    "/v1/sync/push": {
+      "post": {
+        "operationId": "Sync_push",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "sync"
+        ]
+      }
+    },
+    "/v1/tasks/{id}/done": {
+      "post": {
+        "operationId": "Health_done",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": []
+}

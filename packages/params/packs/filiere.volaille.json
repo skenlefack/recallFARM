@@ -1,0 +1,66 @@
+{
+  "pack": "filiere.volaille",
+  "version": "1.0.0",
+  "level": "filiere",
+  "requires": { "global.core": "^1.0.0" },
+  "objects": [
+    { "kind": "production_type", "code": "chair", "species": "volaille", "phases": [
+      { "code": "demarrage", "max_days": 14 }, { "code": "croissance", "max_days": 21 }, { "code": "finition", "max_days": 10 } ] },
+    { "kind": "production_type", "code": "ponte", "species": "volaille", "phases": [
+      { "code": "poussin", "max_days": 56 }, { "code": "poulette", "max_days": 70 }, { "code": "production", "max_days": 420 } ] },
+
+    { "kind": "form", "code": "batch_volaille", "applies_to": "batch", "species": "volaille", "fields": [
+      { "code": "name", "type": "text", "label": "nom_lot", "required": true, "maps_to": "name" },
+      { "code": "production_type", "type": "select", "label": "type_production", "required": true, "options": ["chair", "ponte"], "maps_to": "production_type" },
+      { "code": "strain", "type": "text", "label": "souche", "maps_to": "attributes.strain" },
+      { "code": "start_date", "type": "date", "label": "date_mise_en_place", "required": true, "maps_to": "start_date" },
+      { "code": "initial_count", "type": "integer", "label": "effectif_initial", "required": true, "min": 1, "max": 200000, "maps_to": "initial_count" },
+      { "code": "age_at_start_days", "type": "integer", "label": "age_mise_en_place_j", "min": 0, "max": 400, "default": 1, "maps_to": "attributes.age_at_start_days" },
+      { "code": "supplier", "type": "text", "label": "couvoir", "maps_to": "attributes.supplier" }
+    ] },
+
+    { "kind": "form", "code": "daily_log_volaille", "applies_to": "daily_log", "species": "volaille", "fields": [
+      { "code": "eggs", "type": "integer", "label": "oeufs_ramasses", "min": 0, "max": 200000, "visible_if": "subject.production_type == 'ponte'", "required_if": "subject.production_type == 'ponte'", "maps_to": "eggs", "widget": "stepper" },
+      { "code": "eggs_broken", "type": "integer", "label": "oeufs_casses", "min": 0, "visible_if": "subject.production_type == 'ponte'", "maps_to": "eggs_broken" },
+      { "code": "laying_rate", "type": "computed", "label": "taux_ponte", "unit": "%", "expr": "log.present_count > 0 && has(log.eggs) ? round(log.eggs / log.present_count * 100, 1) : null", "visible_if": "subject.production_type == 'ponte'" },
+      { "code": "mortality", "type": "integer", "label": "morts", "required": true, "min": 0, "default": 0, "maps_to": "mortality" },
+      { "code": "feed_kg", "type": "decimal", "label": "aliment_kg", "unit": "kg", "min": 0, "max": 100000, "maps_to": "feed_kg" },
+      { "code": "water_l", "type": "decimal", "label": "eau_l", "unit": "l", "min": 0, "maps_to": "water_l" },
+      { "code": "avg_weight_g", "type": "decimal", "label": "poids_moyen_g", "unit": "g", "min": 0, "visible_if": "subject.production_type == 'chair'", "maps_to": "attributes.avg_weight_g" },
+      { "code": "behaviour", "type": "select", "label": "comportement", "options": ["normal", "abattus", "toux", "diarrhee"], "default": "normal", "maps_to": "attributes.behaviour", "widget": "chips" },
+      { "code": "notes", "type": "text", "label": "notes", "maps_to": "notes" }
+    ] },
+
+    { "kind": "kpi", "code": "taux_ponte", "unit": "%", "expr": "log.present_count > 0 ? round(log.eggs / log.present_count * 100, 1) : null", "thresholds": { "red": "< 60", "amber": "< 75" }, "production_type": "ponte" },
+    { "kind": "kpi", "code": "mortalite_cumulee", "unit": "%", "expr": "subject.initial_count > 0 ? round(subject.cumulative_mortality / subject.initial_count * 100, 1) : null", "thresholds": { "red": ">= 5", "amber": ">= 3" } },
+    { "kind": "kpi", "code": "indice_consommation", "unit": "kg/kg", "expr": "subject.weight_gain_kg > 0 ? round(subject.cumulative_feed_kg / subject.weight_gain_kg, 2) : null", "thresholds": { "red": "> 2.2", "amber": "> 1.9" }, "production_type": "chair" },
+
+    { "kind": "alert_rule", "code": "mortalite_journaliere", "source": "daily_logs", "when": "log.present_count > 0 && log.mortality / log.present_count * 100 >= params.seuil_mortalite_jour_pct", "severity": "critique", "propose": "disease_signal", "params": { "seuil_mortalite_jour_pct": 1 },
+      "override": { "seuil_mortalite_jour_pct": { "policy": "bornee", "min": 0.3, "max": 3 } } },
+    { "kind": "alert_rule", "code": "chute_ponte", "source": "daily_logs", "when": "subject.production_type == 'ponte' && has(log.eggs) && log.present_count > 0 && log.eggs / log.present_count * 100 < params.seuil_ponte_pct", "severity": "attention", "params": { "seuil_ponte_pct": 60 },
+      "override": { "seuil_ponte_pct": { "policy": "libre" } } },
+
+    { "kind": "task_template", "code": "nettoyage_abreuvoirs", "trigger": { "type": "recurrent", "every_days": 1 }, "category": "hygiene" },
+    { "kind": "task_template", "code": "pesee_hebdo_chair", "trigger": { "type": "recurrent", "every_days": 7 }, "category": "suivi", "production_type": "chair" },
+
+    { "kind": "sensor_profile", "code": "temperature_poulailler", "metric": "temperature", "unit": "C", "range": [0, 50], "default_alert": { "when": "reading.value > 32", "for": "30m", "severity": "critique" } }
+  ],
+  "i18n": {
+    "fr": {
+      "nom_lot": "Nom du lot", "type_production": "Type de production", "souche": "Souche", "date_mise_en_place": "Date de mise en place",
+      "effectif_initial": "Effectif initial", "age_mise_en_place_j": "Âge à la mise en place (jours)", "couvoir": "Couvoir",
+      "oeufs_ramasses": "Œufs ramassés", "oeufs_casses": "Œufs cassés", "taux_ponte": "Taux de ponte", "morts": "Morts",
+      "aliment_kg": "Aliment (kg)", "eau_l": "Eau (L)", "poids_moyen_g": "Poids moyen (g)", "comportement": "Comportement des oiseaux",
+      "notes": "Notes", "chair": "Chair", "ponte": "Ponte", "normal": "Normal", "abattus": "Abattus", "toux": "Toux", "diarrhee": "Diarrhée",
+      "mortalite_cumulee": "Mortalité cumulée", "indice_consommation": "Indice de consommation",
+      "mortalite_journaliere": "Mortalité anormale", "chute_ponte": "Chute de ponte",
+      "nettoyage_abreuvoirs": "Nettoyer les abreuvoirs", "pesee_hebdo_chair": "Pesée hebdomadaire",
+      "temperature_poulailler": "Température du poulailler"
+    },
+    "en": {
+      "nom_lot": "Batch name", "type_production": "Production type", "souche": "Strain", "date_mise_en_place": "Placement date",
+      "effectif_initial": "Initial count", "oeufs_ramasses": "Eggs collected", "oeufs_casses": "Broken eggs", "taux_ponte": "Laying rate",
+      "morts": "Deaths", "aliment_kg": "Feed (kg)", "eau_l": "Water (L)", "comportement": "Bird behaviour", "notes": "Notes"
+    }
+  }
+}

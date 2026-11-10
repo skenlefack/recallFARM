@@ -1,0 +1,66 @@
+{
+  "pack": "pays.CM",
+  "version": "1.0.0",
+  "level": "pays",
+  "requires": { "global.core": "^1.0.0" },
+  "country": "CM",
+  "currency": "XAF",
+  "languages": ["fr", "en"],
+  "objects": [
+    { "kind": "vaccination_protocol", "code": "volaille_chair_cm", "species": "volaille", "production_type": "chair", "reference": "start_date",
+      "mandatory": false,
+      "steps": [
+        { "code": "marek_j1", "disease": "marek", "offset_days": 1, "route": "injection", "note": "souvent fait au couvoir" },
+        { "code": "newcastle_bi_j7", "disease": "newcastle", "offset_days": 7, "route": "oculaire" },
+        { "code": "gumboro_j12", "disease": "gumboro", "offset_days": 12, "route": "eau_de_boisson" },
+        { "code": "newcastle_rappel_j19", "disease": "newcastle", "offset_days": 19, "route": "eau_de_boisson" },
+        { "code": "gumboro_rappel_j21", "disease": "gumboro", "offset_days": 21, "route": "eau_de_boisson" }
+      ],
+      "override": { "steps": { "policy": "ajout_seulement" }, "offset_days": { "policy": "bornee", "min_delta": -2, "max_delta": 2 } } },
+
+    { "kind": "vaccination_protocol", "code": "volaille_ponte_cm", "species": "volaille", "production_type": "ponte", "reference": "start_date",
+      "mandatory": false,
+      "steps": [
+        { "code": "marek_j1", "disease": "marek", "offset_days": 1, "route": "injection" },
+        { "code": "newcastle_bi_j7", "disease": "newcastle", "offset_days": 7, "route": "oculaire" },
+        { "code": "gumboro_j12", "disease": "gumboro", "offset_days": 12, "route": "eau_de_boisson" },
+        { "code": "newcastle_rappel_j19", "disease": "newcastle", "offset_days": 19, "route": "eau_de_boisson" },
+        { "code": "variole_s8", "disease": "variole_aviaire", "offset_days": 56, "route": "transfixion" },
+        { "code": "newcastle_s16", "disease": "newcastle", "offset_days": 112, "route": "injection" }
+      ],
+      "recurring": { "disease": "newcastle", "every_days": 90, "after_step": "newcastle_s16", "route": "eau_de_boisson" },
+      "override": { "steps": { "policy": "ajout_seulement" } } },
+
+    { "kind": "vaccination_protocol", "code": "chien_cm", "species": "chien", "reference": "birth_date", "mandatory": true,
+      "steps": [
+        { "code": "chppil_s8", "disease": "chppil", "offset_days": 56, "route": "injection" },
+        { "code": "chppil_s12", "disease": "chppil", "offset_days": 84, "route": "injection" },
+        { "code": "rage_m3", "disease": "rage", "offset_days": 90, "route": "injection", "certificate": true }
+      ],
+      "recurring": { "disease": "rage", "every_days": 365, "after_step": "rage_m3", "route": "injection", "certificate": true },
+      "override": { "recurring.every_days": { "policy": "verrouillee" }, "steps": { "policy": "ajout_seulement" } } },
+
+    { "kind": "reminder_plan", "code": "plan_rappels_cm", "offsets_days": [-7, -1, 0, 3],
+      "channels": { "-7": ["app"], "-1": ["app", "sms"], "0": ["app", "sms"], "3": ["app", "sms"] },
+      "quiet_hours": { "start": "21:00", "end": "07:00" }, "max_sms_per_day": 3,
+      "override": { "offsets_days": { "policy": "verrouillee" } } },
+
+    { "kind": "message_template", "code": "rappel_sms", "channel": "sms", "lang": "fr",
+      "text": "RecallFarm: {{disease}} pour {{subject}} {{when}}. Repondez OK {{code}} une fois fait." },
+    { "kind": "message_template", "code": "rappel_sms", "channel": "sms", "lang": "en",
+      "text": "RecallFarm: {{disease}} for {{subject}} {{when}}. Reply OK {{code}} when done." },
+    { "kind": "message_template", "code": "otp_sms", "channel": "sms", "lang": "fr",
+      "text": "RecallFarm: votre code est {{code}}. Il expire dans 10 minutes." },
+
+    { "kind": "plan_price", "code": "pro", "currency": "XAF", "monthly_minor": 2500, "yearly_minor": 25000 },
+    { "kind": "plan_price", "code": "structure", "currency": "XAF", "monthly_minor": 15000, "yearly_minor": 150000, "note": "à partir de, par tranche d'éleveurs suivis (D-10)" },
+    { "kind": "payment_method", "code": "orange_money", "label": "Orange Money" },
+    { "kind": "payment_method", "code": "mtn_momo", "label": "MTN MoMo" },
+
+    { "kind": "ussd_menu", "code": "menu_pilote", "short_code": "*123*7#", "items": ["rappels_du_jour", "confirmer_rappel", "declarer_mortalite"] }
+  ],
+  "i18n": {
+    "fr": { "oculaire": "voie oculaire", "eau_de_boisson": "eau de boisson", "injection": "injection", "transfixion": "transfixion alaire",
+      "rappels_du_jour": "Rappels du jour", "confirmer_rappel": "Confirmer un rappel", "declarer_mortalite": "Déclarer une mortalité" }
+  }
+}

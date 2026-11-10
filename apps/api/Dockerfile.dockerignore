@@ -1,0 +1,10 @@
+# Used by BuildKit when building with context = repository root.
+**/node_modules
+**/dist
+**/var
+**/.env
+.git
+apps/web
+apps/mobile
+infra
+docs

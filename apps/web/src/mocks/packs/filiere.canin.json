@@ -1,0 +1,41 @@
+{
+  "pack": "filiere.canin",
+  "version": "1.0.0",
+  "level": "filiere",
+  "requires": { "global.core": "^1.0.0" },
+  "objects": [
+    { "kind": "production_type", "code": "elevage_canin", "species": "chien", "phases": [] },
+    { "kind": "production_type", "code": "pension", "species": "chien", "phases": [] },
+    { "kind": "production_type", "code": "dressage", "species": "chien", "phases": [] },
+
+    { "kind": "form", "code": "dog", "applies_to": "dog", "species": "chien", "fields": [
+      { "code": "name", "type": "text", "label": "nom", "required": true, "maps_to": "name" },
+      { "code": "breed", "type": "text", "label": "race", "maps_to": "breed" },
+      { "code": "sex", "type": "select", "label": "sexe", "options": ["M", "F"], "required": true, "maps_to": "sex" },
+      { "code": "birth_date", "type": "date", "label": "date_naissance", "maps_to": "birth_date" },
+      { "code": "chip_number", "type": "rfid", "label": "puce", "pattern": "^[0-9]{15}$", "maps_to": "chip_number" },
+      { "code": "color", "type": "text", "label": "robe", "maps_to": "attributes.color" },
+      { "code": "weight_kg", "type": "decimal", "label": "poids_kg", "unit": "kg", "min": 0.3, "max": 120, "maps_to": "attributes.weight_kg" },
+      { "code": "role", "type": "select", "label": "role", "options": ["compagnie", "reproducteur", "garde", "pension", "dressage"], "default": "compagnie", "maps_to": "attributes.role" }
+    ] },
+
+    { "kind": "form", "code": "daily_log_chien", "applies_to": "daily_log", "species": "chien", "fields": [
+      { "code": "appetite", "type": "select", "label": "appetit", "options": ["normal", "faible", "nul"], "default": "normal", "maps_to": "attributes.appetite", "widget": "chips" },
+      { "code": "weight_kg", "type": "decimal", "label": "poids_kg", "unit": "kg", "min": 0.3, "max": 120, "maps_to": "attributes.weight_kg" },
+      { "code": "notes", "type": "text", "label": "notes", "maps_to": "notes" }
+    ] },
+
+    { "kind": "kpi", "code": "statut_rage", "expr": "has(subject.rabies_valid_until) ? (days_between(now, subject.rabies_valid_until) >= 0 ? 'a_jour' : 'expire') : 'inconnu'" },
+
+    { "kind": "workflow", "code": "boarding_admission", "states": ["demande", "admis", "differe", "sorti"],
+      "guard": { "admis": "subject.rabies_status == 'a_jour'" } }
+  ],
+  "i18n": {
+    "fr": { "nom": "Nom", "race": "Race", "sexe": "Sexe", "date_naissance": "Date de naissance", "puce": "N° de puce (15 chiffres)",
+      "robe": "Robe", "poids_kg": "Poids (kg)", "role": "Rôle", "appetit": "Appétit", "notes": "Notes",
+      "compagnie": "Compagnie", "reproducteur": "Reproducteur", "garde": "Garde", "pension": "Pension", "dressage": "Dressage",
+      "statut_rage": "Statut rage", "a_jour": "À jour", "expire": "Expiré", "inconnu": "Inconnu", "M": "Mâle", "F": "Femelle",
+      "normal": "Normal", "faible": "Faible", "nul": "Nul" },
+    "en": { "nom": "Name", "race": "Breed", "sexe": "Sex", "date_naissance": "Date of birth", "puce": "Microchip (15 digits)" }
+  }
+}

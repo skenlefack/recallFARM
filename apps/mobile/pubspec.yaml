@@ -1,0 +1,52 @@
+name: recallfarm
+description: RecallFarm — application éleveur hors ligne d'abord (volaille, chiens), Afrique francophone.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+  flutter: '>=3.24.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # State & navigation
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.2.7
+
+  # Network
+  dio: ^5.4.3+1
+  connectivity_plus: ^6.0.5
+
+  # Local storage (encrypted SQLite, no codegen — replaces Drift, see README "Deviations")
+  sqflite_sqlcipher: ^3.1.0
+  path: ^1.9.0
+  flutter_secure_storage: ^9.2.2
+
+  # Notifications
+  flutter_local_notifications: ^17.2.2
+  timezone: ^0.9.4
+
+  # Utilities
+  intl: ^0.20.2
+  uuid: ^4.4.2
+  crypto: ^3.0.3
+  cryptography: ^2.7.0
+  qr_flutter: ^4.1.0
+  google_fonts: ^6.2.1
+  url_launcher: ^6.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/packs/
