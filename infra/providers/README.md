@@ -82,9 +82,10 @@ typographique est remplacee par l'apostrophe droite (GSM-7).
   `tolerance_s` (300) et `signed_payload` (ex. `"{{timestamp}}.{{body}}"`) : un appel trop ancien
   est refuse (401). Un appel signe deja traite recoit la reponse habituelle (200, meme accuse ou meme
   ecran USSD) sans etre retraite ; si le traitement a echoue, la signature est liberee et la relance
-  de l'agregateur est traitee. Sans Redis, la memoire anti-rejeu est propre a chaque instance
-  (pilote mono-instance) : les traitements restant idempotents, un rejeu sur une autre instance est
-  sans effet. Sans horodatage, un rejeu reste possible mais sans effet.
+  de l'agregateur est traitee. Sans Redis, la memoire anti-rejeu est propre a chaque instance :
+  suffisant pour le pilote mono-instance, `REDIS_URL` obligatoire au-dela (un saut USSD rejoue sur une
+  autre instance ne serait pas reconnu). Sans horodatage, un rejeu reste possible ; paiements et
+  accuses restent sans effet (idempotents).
 - Un connecteur inconnu recoit le meme 401 qu'un mauvais secret.
 - `/sms` et `/dlr` acceptent aussi GET (parametres d'URL). Les corps JSON et formulaire sont lus,
   pas `text/plain`. Accuses WhatsApp : `/dlr?channel=whatsapp` (format `whatsapp.dlr`).
