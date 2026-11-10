@@ -106,3 +106,11 @@ Tous les bancs de tests sont en place et passes. Phase 0 terminee.
 - ADR-001, questionnaire D-03/D-07 crees — en attente decisions PO
 
 ### Stack : 240/240 tests OK
+
+
+## 2026-11-10 — P0.4 Mesures et tracabilite (qa-automatisation, branche feat/P0.4-qa-mesures)
+- Couverture mesuree sur tout le code : API 87,4 % lignes (unit + e2e fusionnes), Web 48,1 % (ADR-003), Mobile 16,4 % ; seuils bloquants en CI (moteurs TS 100 % des branches)
+- Matrice docs/plan/tracabilite-mvp.md : EF MVP 26 couverts / 12 partiels / 1 non couvert ; RG 12 / 5 / 5 ; T-01..T-55 12 / 16 / 27
+- 23 scenarios de recette MVP (apps/api/test/recette-mvp.e2e-spec.ts) ; defauts D-QA-01 (compte provisoire : 500), D-QA-02 (PATCH partiel de lot : 422), D-QA-03 (route analytique en double)
+- CI : scan Trivy des images api et web (CRITICAL bloquant, HIGH rapporte), cache de couches, artefacts de couverture ; le scan detecte 3 CVE CRITICAL dans l image web (requete devops-sre)
+- Suite complete executee 3 fois : 413/413 verts, aucun test instable

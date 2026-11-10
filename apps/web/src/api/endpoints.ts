@@ -23,6 +23,7 @@ import type {
   PackVersion,
   Page,
   Payment,
+  PlansResponse,
   Plan,
   ProtocolSimulation,
   Reminder,
@@ -53,7 +54,7 @@ export const api = {
   patchMe: (body: { name?: string; language?: string }) => http.patch<Me>('/me', body),
 
   /* public */
-  plans: (country = 'CM') => http.get<Page<Plan> | Plan[]>('/plans', { country }, { auth: false }),
+  plans: (country = 'CM') => http.get<PlansResponse | Plan[]>('/plans', { country }, { auth: false }),
   lead: (body: { phone: string; name?: string; source: string }) => http.post<unknown>('/leads', body, { auth: false }),
   verifyCertificate: (payload: string) => http.get<CertificateCheck>('/certificates/verify', { payload }, { auth: false }),
 

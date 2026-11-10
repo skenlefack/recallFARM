@@ -22,3 +22,5 @@ playwright-report/
 key.properties
 infra/providers/providers.json
 .claude/worktrees/
+coverage-e2e/
+coverage-merged/

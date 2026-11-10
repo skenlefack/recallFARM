@@ -40,8 +40,24 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
-      - run: npm test
-      - run: npm run test:e2e
+      # Unitaires avec couverture : 100 % des branches exigees sur src/params/engine et src/params/expr (jest.config.js).
+      - run: npm run test:cov
+      - run: npm run test:e2e:cov
+      - name: Couverture fusionnee unitaires + e2e (seuils bloquants)
+        run: >
+          node ../../tests/coverage/merge-api.js .
+          --min-lines=87 --min-branches=65
+          --scope=src/params/engine:100:100 --scope=src/params/expr:100:100
+          --json=coverage-merged/summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-api
+          path: |
+            apps/api/coverage-merged/
+            apps/api/coverage/lcov.info
+            apps/api/coverage-e2e/lcov.info
+          retention-days: 14
       - name: Contrat OpenAPI à jour
         run: npm run openapi && git diff --exit-code openapi.json
 
@@ -56,8 +72,15 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: apps/web/package-lock.json }
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      # Tests + couverture (seuils de non-regression dans vite.config.ts)
+      - run: npm run test:coverage
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-web
+          path: apps/web/coverage/
+          retention-days: 14
 
   mobile:
     runs-on: ubuntu-latest
@@ -74,7 +97,23 @@ jobs:
         run: test -d android || flutter create --platforms=android --org app.recallfarm --project-name recallfarm .
       - run: flutter pub get
       - run: flutter analyze
-      - run: flutter test
+      - run: flutter test --coverage
+      # flutter ne produit pas de couverture de branches : seuils sur les lignes (voir tests/coverage/lcov-check.js).
+      - name: Couverture Flutter (seuils bloquants)
+        working-directory: .
+        run: >
+          node tests/coverage/lcov-check.js apps/mobile/coverage/lcov.info apps/mobile/lib
+          --min-total=16
+          --scope=core/params:79
+          --scope=core/params/expr:91 --scope=core/params/resolution:86 --scope=core/params/form_engine:92
+          --scope=core/params/inbreeding:81 --scope=core/params/reminder_engine:93
+          --json=apps/mobile/coverage/summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-mobile
+          path: apps/mobile/coverage/
+          retention-days: 14
       - run: flutter build apk --release --dart-define=API_BASE_URL=${{ vars.PILOT_API_URL || 'https://pilote.recallfarm.app/v1' }}
       - uses: actions/upload-artifact@v4
         with:
@@ -106,8 +145,58 @@ jobs:
           done
           echo "All packs identical"
 
+  # Scan Trivy des images api et web : CRITICAL bloque, HIGH est rapporte (artefact, non bloquant).
+  # Le cache de couches (type=gha) est partage avec le job `images`. S'execute en parallele des tests.
+  security:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.image }}/Dockerfile
+          load: true
+          push: false
+          pull: true # images de base les plus recentes : un correctif Alpine publie ferme la CVE sans changer le code
+          tags: recallfarm-${{ matrix.image }}:scan
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+      - name: Rapport HIGH (informatif)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: recallfarm-${{ matrix.image }}:scan
+          severity: HIGH
+          ignore-unfixed: true
+          format: table
+          output: trivy-high-${{ matrix.image }}.txt
+          exit-code: "0"
+      - name: Scan CRITICAL (bloquant)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: recallfarm-${{ matrix.image }}:scan
+          severity: CRITICAL
+          ignore-unfixed: true
+          format: table
+          output: trivy-critical-${{ matrix.image }}.txt
+          exit-code: "1"
+      - name: Afficher les rapports
+        if: always()
+        run: |
+          for f in trivy-*-${{ matrix.image }}.txt; do echo "== $f"; cat "$f"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-${{ matrix.image }}
+          path: trivy-*-${{ matrix.image }}.txt
+          retention-days: 14
+
   images:
-    needs: [api, web, parity]
+    needs: [api, web, parity, security]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -127,9 +216,13 @@ jobs:
           file: apps/api/Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/recallfarm-api:${{ github.sha }},ghcr.io/${{ github.repository_owner }}/recallfarm-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: apps/web/Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/recallfarm-web:${{ github.sha }},ghcr.io/${{ github.repository_owner }}/recallfarm-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max

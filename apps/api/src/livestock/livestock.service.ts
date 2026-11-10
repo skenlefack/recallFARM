@@ -95,7 +95,8 @@ export class LivestockService {
     const existing = await repo.findOne({ where: { id: input.id }, withDeleted: true });
     if (existing && existing.farm_id !== farmId) throw Errors.conflict('Identifiant déjà utilisé', { existing_id: existing.id });
     // Derived aggregates are ignored on write (RG-SYN-01).
-    const clean: Record<string, unknown> = { ...input };
+    // Partial update: fields absent from the request (undefined) never overwrite stored values.
+    const clean: Record<string, unknown> = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined));
     delete clean.current_count;
     delete clean.mortality_total;
     const merged = existing ? { ...this.serializeBatch(existing), ...clean, attributes: { ...existing.attributes, ...(input.attributes ?? {}) } } : clean;
@@ -237,7 +238,8 @@ export class LivestockService {
     const repo = this.ds.getRepository(Dog);
     const existing = await repo.findOne({ where: { id: input.id }, withDeleted: true });
     if (existing && existing.farm_id !== farmId) throw Errors.conflict('Identifiant déjà utilisé', { existing_id: existing.id });
-    const clean: Record<string, unknown> = { ...input };
+    // Partial update: fields absent from the request (undefined) never overwrite stored values.
+    const clean: Record<string, unknown> = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined));
     delete clean.rabies_status;
     delete clean.rabies_valid_until;
     const merged = existing ? { ...this.serializeDog(existing), ...clean, attributes: { ...existing.attributes, ...(input.attributes ?? {}) } } : clean;

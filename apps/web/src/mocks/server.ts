@@ -18,6 +18,7 @@ import {
   members,
   packMeta,
   payments,
+  paymentMethods,
   plans,
   reminders,
   subscription,
@@ -115,7 +116,7 @@ on('PATCH', '/me', ({ user, body }) => {
 
 /* --------------------------------------------------------------- public */
 
-on('GET', '/plans', () => page(plans), false);
+on('GET', '/plans', () => ({ country: 'CM', currency: 'XAF', data: plans, next_cursor: null, payment_methods: paymentMethods }), false);
 on('POST', '/leads', ({ body }) => {
   const b = body as { phone?: string; name?: string; source?: string };
   const phone = String(b.phone ?? '').replace(/[\s.-]/g, '');
@@ -290,9 +291,13 @@ on('POST', '/subscriptions/checkout', ({ body }) => {
   if (!/^\+?\d{9,15}$/.test(phone)) throw new HttpError(422, 'VALIDATION_ERROR', 'Numéro mobile money invalide.', { phone: 'format invalide' });
   const pl = plans.find((x) => x.code === b.plan);
   if (!pl?.price) throw new HttpError(422, 'BUSINESS_RULE', 'Cette formule se souscrit sur devis.', undefined, { rule: 'RG-ABO-01' });
+  if (!paymentMethods.some((m) => m.code === b.method)) throw new HttpError(422, 'VALIDATION_ERROR', 'Moyen de paiement indisponible.', { method: 'moyen de paiement non disponible' });
+  // simulateur : numeros finissant par 97 -> refus explicite (PAY-INIT), par 96 -> issue inconnue (PAY-PENDING)
+  if (phone.endsWith('97')) throw new HttpError(422, 'BUSINESS_RULE', 'Paiement refusé.', undefined, { rule: 'PAY-INIT' });
   const amount = b.period === 'yearly' ? pl.price.yearly : pl.price.monthly;
   const pay = { id: uid(), status: 'initie' as const, amount_minor: amount?.amount_minor ?? 0, currency: 'XAF', method: b.method as never, created: Date.now(), phone };
   payments.push(pay);
+  if (phone.endsWith('96')) throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: pay.id, status: 'en_attente' });
   return { payment_id: pay.id, status: 'initie', ussd_push: true };
 });
 on('GET', '/payments/:id', (_c, p) => {

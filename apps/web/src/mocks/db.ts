@@ -11,6 +11,7 @@ import type {
   PackContent,
   PackVersion,
   Payment,
+  PaymentMethodOption,
   Plan,
   Reminder,
   ReminderStatus,
@@ -398,6 +399,12 @@ export const plans: Plan[] = [
   { code: 'pro', name: 'Pro', rank: 1, features: ['rappels_sms', 'rappels_whatsapp', 'certificat_qr', 'genealogie', 'tresorerie', 'simulateur', 'facturation'], quotas: { farms: 3, cameras: 2, sms_per_month: 60 }, price: { monthly: { amount_minor: 2500, currency: 'XAF' }, yearly: { amount_minor: 25000, currency: 'XAF' } } },
   { code: 'structure', name: 'Structure', rank: 2, features: ['multi_utilisateurs', 'mode_agent', 'import_masse', 'campagnes', 'studio_org', 'tableau_bord_org'], quotas: { farms: 1000, cameras: 10, sms_per_month: 5000 }, price: { monthly: { amount_minor: 15000, currency: 'XAF' }, yearly: { amount_minor: 150000, currency: 'XAF' }, from: true } },
   { code: 'institution', name: 'Institution', rank: 3, features: ['surveillance', 'exports_dhis2', 'hebergement_souverain', 'api'], quotas: { farms: 100000, cameras: 50, sms_per_month: 100000 }, price: null },
+];
+
+/** Meme contenu que le pack pays CM (GET /plans -> payment_methods). */
+export const paymentMethods: PaymentMethodOption[] = [
+  { code: 'orange_money', label: 'Orange Money' },
+  { code: 'mtn_momo', label: 'MTN MoMo' },
 ];
 
 export const subscription: Subscription = {

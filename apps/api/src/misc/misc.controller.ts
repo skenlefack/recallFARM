@@ -5,6 +5,7 @@ import { Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsISO8601, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
 import { createHash } from 'crypto';
 import { DataSource } from 'typeorm';
+import { EVENT_CATALOGUE } from '../analytics/analytics.service';
 import { EntitlementsService } from '../billing/entitlements.service';
 import { AuthUser, CurrentUser, Public } from '../common/auth';
 import { Errors } from '../common/errors';
@@ -68,6 +69,10 @@ export class MiscController {
   async analytics(@CurrentUser() user: AuthUser, @Body() dto: AnalyticsDto) {
     const u = await this.ds.getRepository(User).findOne({ where: { id: user.id } });
     if (u?.analytics_opt_out) throw Errors.forbidden('Analytique désactivée par l’utilisateur');
+    // Closed catalogue (17 §5): unknown event names are refused, nothing is stored.
+    const known = new Set<string>(EVENT_CATALOGUE);
+    const unknown = [...new Set(dto.events.map((e) => e.name).filter((n) => !known.has(n)))];
+    if (unknown.length) throw Errors.validation({ events: `Noms non reconnus: ${unknown.join(', ')}` }, 'Evenements invalides');
     for (const e of dto.events) {
       await this.ds.query(`INSERT INTO analytics_events (user_id, device_id_hash, name, ts, props) VALUES ($1,$2,$3,$4,$5)`, [
         user.id, dto.device_id_hash ?? null, e.name, e.ts, JSON.stringify(e.props ?? {}),

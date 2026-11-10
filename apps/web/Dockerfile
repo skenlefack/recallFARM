@@ -15,6 +15,10 @@ ENV VITE_PUBLIC_URL=${VITE_PUBLIC_URL} VITE_MOCK=0
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+# Security fixes of the Alpine base (Trivy: libssl3, libcrypto3, brotli-libs CRITICAL), then back to non-root.
+USER root
+RUN apk upgrade --no-cache
+USER 101
 # non-root (uid 101), listens on 8080
 COPY --chown=101:101 apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build --chown=101:101 /app/apps/web/dist /usr/share/nginx/html
