@@ -17,3 +17,11 @@ L'orchestrateur ou le proprietaire du produit repond et deplace la reponse dans 
 | D-08 | Certification ISO 27001 : auditeur | En attente | — |
 | D-09 | Polices embarquees ou Google Fonts | En attente | — |
 | D-10 | Strategie de test sur appareils reels | En attente | — |
+
+## Questions mobile-socle (P0.1, 2026-11-10)
+
+| ID | Question | Contexte | Proposition |
+|----|----------|----------|-------------|
+| Q-MOB-01 | Accepter Android 7 (API 24) comme minimum au lieu d'Android 6 (API 23) ? | Mesure 2026-11-10 : avec minSdk 23 le build release echoue (« minSdkVersion 23 cannot be smaller than version 24 declared in library [:url_launcher_android] ») et Flutter 3.38 avertit que l'API 23 sera abandonnee. Forcer (`tools:overrideLibrary`) exposerait a des plantages. | Applique : minSdk = 24 (`flutter.minSdkVersion`). A valider par le proprietaire du produit ; alternative couteuse : figer url_launcher_android et Flutter. |
+| Q-MOB-02 | D-09 (polices embarquees ou Google Fonts) : tranche par le lot P0.1 ? | Le lot P0.1 §1 demande « embarque les polices (pas de telechargement a l'execution) » alors que D-09 est « En attente ». `GoogleFonts.getFont(nom)` conservait toute la table des ~1 500 familles dans libapp.so. | Polices embarquees (sous-ensemble latin, OFL) appliquees dans ce lot, ADR-003. A confirmer par le proprietaire du produit (D-09). |
+| Q-MOB-03 | Dossier v2.2 absent du depot | `docs/dossier/` n'existe pas dans le depot : les ID ENF de performance/taille ne peuvent pas etre cites exactement (seul ENF-PER-04 « APK <= 25 Mo » apparait dans apps/mobile/README.md). | Ajouter le dossier au depot ou fournir les ID ENF de demarrage a froid et de synchro 2G. |
