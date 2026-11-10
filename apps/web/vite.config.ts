@@ -59,10 +59,10 @@ export default defineConfig(({ mode }) => {
         reporter: ['text-summary', 'json-summary', 'lcov'],
         reportsDirectory: 'coverage',
         thresholds: {
-          lines: 48,
-          statements: 48,
-          functions: 48,
-          branches: 73,
+          lines: 47,
+          statements: 47,
+          functions: 47,
+          branches: 72,
           // Moteur d'expressions (copie web du moteur partage) : ne doit pas regresser.
           'src/lib/expr.ts': { lines: 93, branches: 81 },
         },

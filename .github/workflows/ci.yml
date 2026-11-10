@@ -46,7 +46,7 @@ jobs:
       - name: Couverture fusionnee unitaires + e2e (seuils bloquants)
         run: >
           node ../../tests/coverage/merge-api.js .
-          --min-lines=81 --min-branches=58
+          --min-lines=87 --min-branches=65
           --scope=src/params/engine:100:100 --scope=src/params/expr:100:100
           --json=coverage-merged/summary.json
       - uses: actions/upload-artifact@v4

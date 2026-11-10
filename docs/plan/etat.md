@@ -112,31 +112,32 @@ Priorite PO : **D-07 puis D-03, puis D-01** — ce sont elles qui debloquent le 
 
 | Indicateur | Cible | Mesure | Etat |
 |------------|-------|--------|------|
-| Tests API unitaires | 100 % verts | **85/85** (5 suites, 36 s) | OK |
-| Tests API e2e | verts | **Non executes** (pile RecallFarm arretee) | ? |
-| Tests Web (Vitest) | 100 % verts | **70/70** (7 fichiers, 27 s) | OK |
-| Tests Mobile (flutter test) | 100 % verts | **85/85** | OK |
+| Tests API unitaires | 100 % verts | **202/202** (11 suites, 39-58 s) ; +89 tests de branches des moteurs (113 -> 202, lot P0.4) | OK |
+| Tests API e2e | verts | **56/56** (3 suites, base `recallfarm_test_qa`, 231-295 s ; 1 execution a 1 399 s sous charge de la machine, sans echec). Dont 2 `it.failing` qui tracent les defauts D-QA-01/02 | OK |
+| Tests Web (Vitest) | 100 % verts | **70/70** (7 fichiers, 34-59 s) | OK |
+| Tests Mobile (flutter test) | 100 % verts | **85/85** (31-36 s) | OK |
 | flutter analyze | 0 | **0 probleme** | OK |
 | Lint API | 0 | **0** (2 erreurs corrigees le 2026-11-10) | OK |
 | Build API (tsc) | OK | **OK** (2 erreurs de typage corrigees le 2026-11-10 : le build etait casse) | OK |
 | Lint Web | 0 | **0** (1 erreur corrigee le 2026-11-10) | OK |
-| Tests instables | 0 | Aucun observe sur 1 execution ; integration_test mobile fragile (tap sur Panel) | — |
-| Total | — | **240/240 verts** | OK |
-| Couverture API (lignes) | >= 80 % | **71,4 %** (branches 49 %, fonctions 40 %) | KO |
-| Couverture moteurs (branches) | 100 % | Non isolee | ? |
-| Couverture Web | >= 80 % | **Non mesurable** (@vitest/coverage-v8 non installe) | ? |
-| Couverture Mobile | >= 80 % | Non mesuree | ? |
-| Parite TS/Dart | 100 % | OK au 2026-10-28 (62 TS + 76 Dart vecteurs) ; non relancee | — |
-| Temps de CI | < 15 min | **Non mesurable** (depot sans remote, CI jamais executee) | ? |
-| Anomalies critiques | 0 | **0 ouverte** (1 corrigee : CVE TypeORM) | OK |
-| Anomalies elevees | — | **8 CVE HIGH** dans les images (multer, pacote, picomatch, sigstore ; pcre2, nghttp2, zlib, tiff) | A traiter |
+| Tests instables | 0 | **0 sur 3 executions completes** (API unit + e2e, Web, Mobile ; 2026-11-10). Observe une fois : 3 tests Web en echec par expiration (`Studio.test`, `findAllByRole` 1 s) quand la suite Web tournait en meme temps que l'e2e API (CPU sature) ; verts a chaque execution isolee. integration_test mobile fragile (tap sur Panel) | OK (a surveiller) |
+| Total | — | **413/413 verts** (202 + 56 + 70 + 85) | OK |
+| Couverture API (lignes) | >= 80 % | **87,4 %** unitaires + e2e fusionnes (branches 65,6 %, fonctions 79,3 %) ; unitaires seuls 27,6 % ; e2e seuls 84,8 %. Mesure sur tout `src/` hors `main.ts` et `scripts/` (la mesure du 2026-11-10 matin, 71,4 %, avait une autre definition) | OK (lignes) ; branches KO |
+| Couverture moteurs (branches) | 100 % | **100 %** (553/553 branches, 100 % des lignes) sur `src/params/engine` et `src/params/expr`, par les tests unitaires seuls ; seuil bloquant (jest + CI). Moteurs Dart : lignes 79 a 93 % (pas de mesure de branches sous Flutter) | OK (TS) ; KO (Dart) |
+| Couverture Web | >= 80 % | **48,1 %** lignes (branches 73,8 %, fonctions 48,3 %) via `@vitest/coverage-v8` (ADR-003) ; `src/lib/expr.ts` 93,8 % / 82 % | KO |
+| Couverture Mobile | >= 80 % | **16,4 %** lignes (1 276 / 7 765 ; 4 fichiers jamais importes inclus, estimes) ; `features/` 4,9 % | KO |
+| Parite TS/Dart | 100 % | Relancee le 2026-11-10 : tests de moteurs TS (vecteurs) et Dart verts ; 62 TS + 76 Dart vecteurs (cible du dossier : 5 000) | OK |
+| Temps de CI | < 15 min | **Non mesurable** (depot sans remote). Estimation : chaine api (~9 min avec couverture) -> parity -> images ~14 min ; job `security` en parallele (< 5 min, cache de couches `type=gha`) | ? |
+| Traçabilite MVP | 39 EF / 22 RG tous testes | EF : **26 couverts, 12 partiels, 1 non couvert** ; RG : **12 / 5 / 5** (docs/plan/tracabilite-mvp.md) | KO |
+| Anomalies critiques | 0 | **1 ouverte** : 3 CVE CRITICAL corrigeables dans l'image web (libssl3, libcrypto3, brotli-libs) ; le scan Trivy bloquant de la CI les detecte. Image API : 0 CRITICAL | A traiter (requete devops-sre) |
+| Anomalies elevees | — | **22 CVE HIGH corrigeables** dans l'image API (body-parser, brace-expansion, ip-address, js-yaml, lodash, multer, pacote, picomatch, sigstore...)  (Trivy 0.57.1, 2026-11-10 ; HIGH de l'image web non mesures). **3 defauts fonctionnels** reveles par les tests : D-QA-01 (rattachement du compte provisoire : 500), D-QA-02 (PATCH partiel de lot : 422), D-QA-03 (route d'analytique en double) | A traiter |
 | Revues relecteur | 1 par lot | **0** | KO |
 
 ## Actions recommandees
 
 1. PO : trancher **D-07, D-03, D-01**.
 2. ~~Initialiser git~~ (fait) ; creer le depot GitHub et pousser pour que la CI tourne.
-3. ~~Corriger lint et build~~ (fait) ; installer `@vitest/coverage-v8`.
-4. Remonter la couverture API a 80 % (branches surtout) et tracer chaque exigence MVP vers un test.
+3. ~~Corriger lint et build~~ (fait) ; ~~installer `@vitest/coverage-v8`~~ (fait, ADR-003).
+4. ~~Mesurer la couverture et tracer chaque exigence MVP~~ (fait : docs/plan/tracabilite-mvp.md). Reste : couverture Web (48 % -> 80 %), Mobile (16 % -> 80 %), branches API (66 %), moteurs Dart a 100 % ; corriger D-QA-01/02/03 et les CVE (docs/plan/requests.md). Les seuils de la CI montent des qu'une mesure les depasse.
 5. Faire passer `relecteur` sur les 7 lots declares termines.
 6. Finir les criteres ouverts de P0.1 (APK release signe, parcours pilote complet) et P0.2 (recette HTTPS, sauvegardes).
