@@ -166,6 +166,15 @@ describe('recette MVP — exploitation volaille (stock, ventes, depenses, taches
     await sale(addDays(today, 3), 'fumier').expect(201); // a product not concerned by eggs
   });
 
+  it('RG-JOU-02 RG-CHE-01: cumulative mortality = sum of deaths / initial count, and the live count follows', async () => {
+    const day = (n: number, mortality: number) =>
+      http.post(`/v1/farms/${farmId}/daily-logs`).set(auth(token)).send({ id: randomUUID(), subject_type: 'batch', subject_id: batchId, log_date: addDays(today, -n), mortality, eggs: 150 });
+    await day(2, 4).expect(201);
+    await day(1, 6).expect(201);
+    const b = await http.get(`/v1/batches/${batchId}`).set(auth(token)).expect(200);
+    expect(b.body).toMatchObject({ initial_count: 200, mortality_total: 10, current_count: 190, mortality_pct: 5 });
+  });
+
   it('T-21 EF-DEP-01 RG-MDD-06: expenses are whole minor units; a foreign currency is refused', async () => {
     const ok = await http
       .post(`/v1/farms/${farmId}/expenses`)
@@ -334,6 +343,29 @@ describe('recette MVP — authentification, portee, consentements, donnees perso
   });
 });
 
+describe('recette MVP — integration (speculations, calendrier type)', () => {
+  it('EF-ONB-01 EF-ONB-04: the speculations chosen drive the forms and the task calendar offered (nothing hard-coded)', async () => {
+    const { token } = await login('+237690010013');
+    const poultry = randomUUID();
+    const dogs = randomUUID();
+    await http.post('/v1/farms').set(auth(token)).send({ id: poultry, name: 'Volailles', speculations: ['volaille'], country: 'CM' }).expect(201);
+    // Decouverte plan: one farm per account (quota), so the kennel belongs to another account.
+    const second = await login('+237690010014');
+    await http.post('/v1/farms').set(auth(token)).send({ id: randomUUID(), name: 'Seconde ferme', speculations: ['volaille'], country: 'CM' }).expect(429);
+    await http.post('/v1/farms').set(auth(second.token)).send({ id: dogs, name: 'Chenil', speculations: ['chien'], country: 'CM' }).expect(201);
+    const codes = async (farm: string, kind: string) => {
+      const r = await http.get(`/v1/params/resolved?farm_id=${farm}&kind=${kind}`).set(auth(farm === dogs ? second.token : token));
+      return r.status === 404 ? [] : Object.values(r.body.objects).map((o: any) => o.code);
+    };
+    const poultryTemplates = await codes(poultry, 'task_template');
+    expect(poultryTemplates).toEqual(expect.arrayContaining(['nettoyage_abreuvoirs', 'pesee_hebdo_chair']));
+    expect(await codes(dogs, 'task_template')).not.toContain('pesee_hebdo_chair');
+    expect(await codes(poultry, 'form')).toContain('batch_volaille');
+    expect(await codes(dogs, 'form')).not.toContain('batch_volaille');
+    expect(await codes(dogs, 'form')).toContain('dog');
+  });
+});
+
 describe('recette MVP — analytique, drapeaux, referentiels', () => {
   it('EF-ANA-01: usage events are pseudonymised (device hash, no user text) and refused once the user opted out', async () => {
     const { token, user } = await login('+237690010010');
@@ -362,6 +394,29 @@ describe('recette MVP — analytique, drapeaux, referentiels', () => {
     expect(Object.keys(f.body.flags).length).toBeGreaterThan(0);
     expect(Object.values(f.body.flags).every((v) => typeof v === 'boolean')).toBe(true);
     await http.get('/v1/feature-flags').expect(401);
+  });
+
+  it('T-34 RG-ABO-01 EF-ABO-02: an expired Pro subscription keeps its modules 7 days (grace), then falls back; data stays', async () => {
+    const { token, user } = await login('+237690010015');
+    const farmId = randomUUID();
+    await http.post('/v1/farms').set(auth(token)).send({ id: farmId, name: 'Ferme grace', speculations: ['volaille'], country: 'CM' }).expect(201);
+    const setExpiry = (daysAgo: number, graceDays: number) =>
+      sql(
+        `INSERT INTO subscriptions (account_type, account_id, plan, period, status, started_at, expires_at, grace_until)
+         VALUES ('user', $1, 'pro', 'mensuel', 'actif', now() - interval '40 days', now() - ($2 || ' days')::interval, now() - ($2 || ' days')::interval + ($3 || ' days')::interval)
+         ON CONFLICT (account_type, account_id) DO UPDATE SET expires_at = EXCLUDED.expires_at, grace_until = EXCLUDED.grace_until`,
+        [user.id, String(daysAgo), String(graceDays)],
+      );
+    await setExpiry(3, 7); // expired 3 days ago, 4 days of grace left
+    const inGrace = (await http.get('/v1/me').set(auth(token)).expect(200)).body.entitlements;
+    expect(inGrace).toMatchObject({ plan: 'pro', status: 'grace' });
+    expect(inGrace.features).toContain('certificat_qr');
+    await setExpiry(8, 7); // expired 8 days ago, grace over
+    const after = (await http.get('/v1/me').set(auth(token)).expect(200)).body.entitlements;
+    expect(after.plan).toBe('decouverte');
+    expect(after.features).not.toContain('certificat_qr');
+    // the data is never deleted for non payment
+    await http.get(`/v1/farms/${farmId}`).set(auth(token)).expect(200);
   });
 
   it('EF-ABO-02 EF-ABO-01: the catalogue prices are integers in minor units with a currency, never floats', async () => {
