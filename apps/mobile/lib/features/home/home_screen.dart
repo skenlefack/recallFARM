@@ -188,10 +188,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
                 InkWell(
                   onTap: d.today.length > 1 ? () => setState(() => _index = (i + 1) % d.today.length) : null,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    child: Text('${i + 1} / ${d.today.length}',
-                        style: RfType.mono(size: 11, color: RfColors.bg, letterSpacing: 0.66)),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: RfSpace.minTouch, minWidth: RfSpace.minTouch),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      child: Center(
+                        widthFactor: 1,
+                        child: Text('${i + 1} / ${d.today.length}',
+                            style: RfType.mono(size: 11, color: RfColors.bg, letterSpacing: 0.66)),
+                      ),
+                    ),
                   ),
                 ),
               ],

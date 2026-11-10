@@ -317,7 +317,7 @@ Future<void> pumpScreen(
           data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(textScale)),
           child: c!,
         ),
-        home: screen,
+        home: Material(color: AppTheme.dark().scaffoldBackgroundColor, child: screen),
       ),
     ),
   );

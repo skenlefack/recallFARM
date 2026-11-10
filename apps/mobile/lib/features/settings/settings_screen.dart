@@ -39,10 +39,11 @@ class SettingsScreen extends ConsumerWidget {
                 children: [
                   SectionLabel(context.tr('language')),
                   const SizedBox(height: 8),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       RfChip(label: 'Français', selected: lang == 'fr', onTap: () => _setLang(ref, 'fr')),
-                      const SizedBox(width: 8),
                       RfChip(label: 'English', selected: lang == 'en', onTap: () => _setLang(ref, 'en')),
                     ],
                   ),
