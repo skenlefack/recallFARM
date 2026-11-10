@@ -73,24 +73,23 @@ GoRouter buildRouter(AppSession session, GlobalKey<NavigatorState> rootKey) {
   String? q(GoRouterState s, String name) => s.uri.queryParameters[name];
   late final GoRouter router;
   var lastStage = session.stage;
-  session.addListener(() {
+  var disposed = false;
+  void followAdvance() {
     final target = onboardingAdvanceTarget(lastStage, session.stage);
     lastStage = session.stage;
     if (target == null) return;
     // After the current notification round (the refresh may still be running).
     scheduleMicrotask(() {
+      if (disposed) return;
       final current = router.routerDelegate.currentConfiguration;
       if (current.isNotEmpty && current.uri.path == target) return;
       router.go(target);
     });
-  });
+  }
 
-  router = GoRouter(
-    navigatorKey: rootKey,
-    initialLocation: '/home',
-    refreshListenable: session,
-    redirect: (context, state) => onboardingRedirect(session.stage, state.matchedLocation),
-    routes: [
+  session.addListener(followAdvance);
+
+  final routes = <RouteBase>[
       GoRoute(path: '/', redirect: (_, __) => '/home'),
       GoRoute(path: '/onboarding/speculation', builder: (_, __) => const SpeculationScreen()),
       GoRoute(path: '/onboarding/account', builder: (_, __) => const AccountScreen()),
@@ -172,7 +171,40 @@ GoRouter buildRouter(AppSession session, GlobalKey<NavigatorState> rootKey) {
       GoRoute(path: '/subscription', parentNavigatorKey: rootKey, builder: (_, __) => const SubscriptionScreen()),
       GoRoute(path: '/my-data', parentNavigatorKey: rootKey, builder: (_, __) => const MyDataScreen()),
       GoRoute(path: '/settings', parentNavigatorKey: rootKey, builder: (_, __) => const SettingsScreen()),
-    ],
+  ];
+  final config = ValueNotifier(RoutingConfig(
+    routes: routes,
+    redirect: (context, state) => onboardingRedirect(session.stage, state.matchedLocation),
+  ));
+  router = _RfGoRouter(
+    onDispose: () {
+      disposed = true;
+      session.removeListener(followAdvance);
+      config.dispose();
+    },
+    routingConfig: config,
+    navigatorKey: rootKey,
+    initialLocation: '/home',
+    refreshListenable: session,
   );
   return router;
+}
+
+/// GoRouter that also releases what [buildRouter] attached to the session.
+class _RfGoRouter extends GoRouter {
+  _RfGoRouter({
+    required this.onDispose,
+    required super.routingConfig,
+    super.navigatorKey,
+    super.initialLocation,
+    super.refreshListenable,
+  }) : super.routingConfig();
+
+  final VoidCallback onDispose;
+
+  @override
+  void dispose() {
+    onDispose();
+    super.dispose();
+  }
 }
