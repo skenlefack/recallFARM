@@ -2,8 +2,8 @@
 
 Derniere mise a jour : 2026-11-10 (mesures relancees ce jour ; precedente : 2026-10-27)
 
-> Le depot n'est pas un depot git : aucune branche, aucune PR, aucun historique de CI.
-> Les colonnes "lien PR" ci-dessous sont donc vides. Le journal (docs/plan/journal.md)
+> Depot git initialise le 2026-11-10 (commit 5fcaea0, branche main, pas encore de remote) :
+> aucune PR ni historique de CI anterieurs, les colonnes "lien PR" sont donc vides. Le journal (docs/plan/journal.md)
 > n'a pas d'entree apres le 2026-10-28 : aucun travail trace depuis 13 jours.
 
 ## Progression par phase
@@ -113,8 +113,9 @@ Priorite PO : **D-07 puis D-03, puis D-01** — ce sont elles qui debloquent le 
 | Tests Web (Vitest) | 100 % verts | **70/70** (7 fichiers, 27 s) | OK |
 | Tests Mobile (flutter test) | 100 % verts | **85/85** | OK |
 | flutter analyze | 0 | **0 probleme** | OK |
-| Lint API | 0 | **2 erreurs** (imports inutiles : app.module.ts:4, imports-exports.controller.ts:10) | KO |
-| Lint Web | 0 | **1 erreur** (e2e/public-site.spec.ts:11, variable `tarifs` inutilisee) | KO |
+| Lint API | 0 | **0** (2 erreurs corrigees le 2026-11-10) | OK |
+| Build API (tsc) | OK | **OK** (2 erreurs de typage corrigees le 2026-11-10 : le build etait casse) | OK |
+| Lint Web | 0 | **0** (1 erreur corrigee le 2026-11-10) | OK |
 | Tests instables | 0 | Aucun observe sur 1 execution ; integration_test mobile fragile (tap sur Panel) | — |
 | Total | — | **240/240 verts** | OK |
 | Couverture API (lignes) | >= 80 % | **71,4 %** (branches 49 %, fonctions 40 %) | KO |
@@ -122,7 +123,7 @@ Priorite PO : **D-07 puis D-03, puis D-01** — ce sont elles qui debloquent le 
 | Couverture Web | >= 80 % | **Non mesurable** (@vitest/coverage-v8 non installe) | ? |
 | Couverture Mobile | >= 80 % | Non mesuree | ? |
 | Parite TS/Dart | 100 % | OK au 2026-10-28 (62 TS + 76 Dart vecteurs) ; non relancee | — |
-| Temps de CI | < 15 min | **Non mesurable** (pas de depot git, CI jamais executee) | ? |
+| Temps de CI | < 15 min | **Non mesurable** (depot sans remote, CI jamais executee) | ? |
 | Anomalies critiques | 0 | **0 ouverte** (1 corrigee : CVE TypeORM) | OK |
 | Anomalies elevees | — | **8 CVE HIGH** dans les images (multer, pacote, picomatch, sigstore ; pcre2, nghttp2, zlib, tiff) | A traiter |
 | Revues relecteur | 1 par lot | **0** | KO |
@@ -130,8 +131,8 @@ Priorite PO : **D-07 puis D-03, puis D-01** — ce sont elles qui debloquent le 
 ## Actions recommandees
 
 1. PO : trancher **D-07, D-03, D-01**.
-2. Initialiser git et pousser sur GitHub pour que la CI tourne (temps de CI, historique, PR).
-3. Corriger les 3 erreurs de lint ; installer `@vitest/coverage-v8`.
+2. ~~Initialiser git~~ (fait) ; creer le depot GitHub et pousser pour que la CI tourne.
+3. ~~Corriger lint et build~~ (fait) ; installer `@vitest/coverage-v8`.
 4. Remonter la couverture API a 80 % (branches surtout) et tracer chaque exigence MVP vers un test.
 5. Faire passer `relecteur` sur les 7 lots declares termines.
 6. Finir les criteres ouverts de P0.1 (APK release signe, parcours pilote complet) et P0.2 (recette HTTPS, sauvegardes).
