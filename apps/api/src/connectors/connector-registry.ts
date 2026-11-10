@@ -80,4 +80,17 @@ export class ConnectorRegistry {
   }
 }
 
+/**
+ * Without Redis, each USSD hop holds a PostgreSQL connection for its session lock and needs a second
+ * one for its work: a few simultaneous sessions can exhaust the pool and freeze the whole API
+ * (payment webhooks included). Production therefore requires REDIS_URL as soon as a connector serves USSD.
+ */
+export function assertUssdLockBackend(registry: ConnectorRegistry, env: NodeJS.ProcessEnv = process.env): void {
+  const production = (env.NODE_ENV || 'development') === 'production';
+  const ussd = Object.entries(registry.config.connectors).filter(([, c]) => !!c.ussd).map(([n]) => n);
+  if (production && ussd.length && !env.REDIS_URL) {
+    throw new ConnectorConfigError(`REDIS_URL requis en production : le connecteur ${ussd.join(', ')} sert l'USSD (verrous de session)`);
+  }
+}
+
 export const CONNECTOR_REGISTRY = 'CONNECTOR_REGISTRY';

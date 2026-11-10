@@ -6,7 +6,7 @@ import { reloadConfig } from '../config';
 import { Payment } from '../database/entities';
 import { ConnectorMessageProvider, parseMinor, SimulatorSmsProvider } from '../notifications/providers';
 import { ConnectorHttp, FetchFn, inspectInbound, parseTimestamp, verifyInbound } from './connector-http';
-import { ConnectorConfigError, ConnectorRegistry, parseProvidersConfig } from './connector-registry';
+import { assertUssdLockBackend, ConnectorConfigError, ConnectorRegistry, parseProvidersConfig } from './connector-registry';
 import { ConnectorSpec, ProvidersConfig } from './connector.types';
 import { missingEnv, validateProvidersConfig } from './connector.validation';
 import { amountMajor, formatPhone, getPath, render, renderText, resolveEnv, smsSegments, TemplateError, toE164 } from './template';
@@ -643,5 +643,17 @@ describe('ConnectorPaymentProvider (mobile money through any aggregator)', () =>
     const noRef = new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ body: {} }]).fn));
     await expect(noRef.initiate(payment('orange_money'))).rejects.toBeInstanceOf(PaymentProviderError);
     await expect(new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ body: {} }]).fn)).initiate(payment('orange_money'))).rejects.toMatchObject({ definitive: false });
+  });
+});
+
+describe('USSD lock backend (revue N1)', () => {
+  const example = JSON.parse(readFileSync(EXAMPLE, 'utf8')) as ProvidersConfig;
+  const registry = new ConnectorRegistry(example);
+
+  it('requires REDIS_URL in production when a connector serves USSD', () => {
+    expect(() => assertUssdLockBackend(registry, { NODE_ENV: 'production' })).toThrow(/REDIS_URL requis/);
+    expect(() => assertUssdLockBackend(registry, { NODE_ENV: 'production', REDIS_URL: 'redis://r:6379' })).not.toThrow();
+    expect(() => assertUssdLockBackend(registry, { NODE_ENV: 'development' })).not.toThrow();
+    expect(() => assertUssdLockBackend(ConnectorRegistry.empty(), { NODE_ENV: 'production' })).not.toThrow();
   });
 });

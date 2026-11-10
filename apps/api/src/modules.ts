@@ -8,7 +8,7 @@ import { EntitlementsService } from './billing/entitlements.service';
 import { PaymentOpsService } from './billing/payment-ops.service';
 import { PaymentsScheduler } from './billing/payments.scheduler';
 import { ConnectorPaymentProvider, PAYMENT_PROVIDER, SimulatorPaymentProvider } from './billing/payment.providers';
-import { CONNECTOR_REGISTRY, ConnectorRegistry } from './connectors/connector-registry';
+import { assertUssdLockBackend, CONNECTOR_REGISTRY, ConnectorRegistry } from './connectors/connector-registry';
 import { ConnectorsController } from './connectors/connectors.controller';
 import { AccessService } from './common/access.service';
 import { TokenService } from './common/auth';
@@ -86,7 +86,14 @@ function routedMessaging(registry: ConnectorRegistry, channel: 'sms' | 'whatsapp
 @Global()
 @Module({
   providers: [
-    { provide: CONNECTOR_REGISTRY, useFactory: () => ConnectorRegistry.fromEnv() },
+    {
+      provide: CONNECTOR_REGISTRY,
+      useFactory: () => {
+        const registry = ConnectorRegistry.fromEnv();
+        assertUssdLockBackend(registry);
+        return registry;
+      },
+    },
     {
       provide: SMS_PROVIDER,
       inject: [CONNECTOR_REGISTRY],
