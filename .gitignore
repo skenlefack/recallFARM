@@ -21,3 +21,5 @@ playwright-report/
 *.jks
 key.properties
 infra/providers/providers.json
+coverage-e2e/
+coverage-merged/

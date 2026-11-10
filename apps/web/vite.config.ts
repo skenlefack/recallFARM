@@ -50,6 +50,23 @@ export default defineConfig(({ mode }) => {
       setupFiles: ['./src/test/setup.ts'],
       css: false,
       include: ['src/**/*.test.{ts,tsx}'],
+      // `npm run test:coverage` : mesure sur tout src/ (pas seulement les fichiers importes par un test).
+      // Seuils = valeurs mesurees le 2026-11-10 (non-regression) ; plan de remontee dans docs/plan/etat.md.
+      coverage: {
+        provider: 'v8',
+        include: ['src/**/*.{ts,tsx}'],
+        exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/mocks/**', 'src/**/*.d.ts'],
+        reporter: ['text-summary', 'json-summary', 'lcov'],
+        reportsDirectory: 'coverage',
+        thresholds: {
+          lines: 48,
+          statements: 48,
+          functions: 48,
+          branches: 73,
+          // Moteur d'expressions (copie web du moteur partage) : ne doit pas regresser.
+          'src/lib/expr.ts': { lines: 93, branches: 81 },
+        },
+      },
     },
   };
 });
