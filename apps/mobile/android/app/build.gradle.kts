@@ -71,7 +71,7 @@ if (hasReleaseSigning) {
 
 // minSdk : celui de Flutter 3.38, soit 24 (Android 7). Android 6 (API 23, cible initiale)
 // ne compile plus : url_launcher_android 6.3.30 declare minSdk 24 et Flutter annonce
-// l'abandon de l'API 23. Voir docs/plan/questions.md Q-MOB-01.
+// l'abandon de l'API 23. Q-MOB-01 tranche le 10/11/2026 : Android 7 minimum.
 
 android {
     namespace = "app.recallfarm.recallfarm"

@@ -54,7 +54,7 @@ Pour un serveur de dev en HTTP (`http://10.0.2.2:8080`), ajouter `android:usesCl
 
 `android/app/build.gradle.kts` (versionné) : desugaring (flutter_local_notifications 17), Java 17,
 `minSdk = flutter.minSdkVersion` = **24 (Android 7)** — le dossier 08 vise Android 8 (API 26) ; Android 6
-(API 23) ne compile plus avec url_launcher_android 6.3.30 (voir docs/plan/questions.md Q-MOB-01) —,
+(API 23) ne compile plus avec url_launcher_android 6.3.30 (Q-MOB-01, tranché le 10/11/2026 : Android 7 minimum) —,
 bibliothèques natives compressées, signature release lue hors dépôt (§ 9).
 
 APK léger (ENF-PER-04 ≤ 25 Mo) : `flutter build apk --release --split-per-abi` (§ 9).
@@ -271,18 +271,24 @@ plafonnée à 1,3 et mises en page testées à 360×640 (test `form_renderer_tes
    keyPassword=...
    ```
 
-Sans keystore complet, la release est **signée avec la clé de debug** et Gradle affiche
-`WARNING: RecallFarm : release NON signee pour la publication (...)` : APK de test, jamais distribué.
-`RECALLFARM_REQUIRE_RELEASE_SIGNING=true` transforme l'avertissement en échec (à activer en CI sur `main`).
+**Sans keystore complet, toute tâche release échoue** (`RecallFarm : release refusee, ...`) : un APK release
+signé avec la clé de debug ne pourrait pas être mis à jour par la vraie release, et la désinstallation
+forcée détruirait les saisies non synchronisées. Les builds debug (et `flutter test`, `integration_test`)
+ne sont jamais bloqués. Pour un essai local uniquement : `RECALLFARM_ALLOW_DEBUG_SIGNED_RELEASE=true`
+(signature debug + `WARNING: ... APK d'essai, a ne jamais distribuer`).
 
-Générer la clé d'upload (une fois ; conservée hors dépôt, dans le coffre de l'équipe) :
+Générer la clé d'upload (une fois), **hors du dépôt** (ex. `~/secrets/`, puis coffre de l'équipe) :
 
 ```bash
+mkdir -p ~/secrets && cd ~/secrets
 keytool -genkeypair -v -keystore recallfarm-upload.jks -storetype PKCS12 \
   -keyalg RSA -keysize 2048 -validity 10000 -alias upload \
   -dname "CN=RecallFarm, O=RecallFarm, C=CM"
 base64 -w0 recallfarm-upload.jks > recallfarm-upload.jks.b64   # valeur du secret ANDROID_KEYSTORE_BASE64
 ```
+
+`*.jks`, `*.keystore`, `key.properties`, `*.b64` et `*.jks.b64` sont ignorés par git dans `android/`, par
+sécurité seulement : ne jamais créer ces fichiers dans le dépôt.
 
 Secrets CI attendus (GitHub, environnement `release`) : `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. La CI décode le keystore dans `$RUNNER_TEMP` et exporte
@@ -299,6 +305,11 @@ flutter build apk --release --split-per-abi --target-platform android-arm,androi
 Un APK par ABI ; l'APK universel n'est plus l'artefact de référence. Leviers (ADR-003) : polices embarquées
 au lieu de `google_fonts` (libapp.so arm64 16,1 → 8,5 Mo) et bibliothèques natives compressées.
 
+À mesurer sur téléphone réel (D-10) : avec `useLegacyPackaging` les `.so` sont extraits à l'installation,
+la **taille installée** (téléchargement + bibliothèques extraites) peut dépasser celle sans compression ;
+comparer `adb shell dumpsys package app.recallfarm.recallfarm` / Paramètres > Stockage avec et sans,
+sur un appareil 2 Go à stockage réduit.
+
 | APK release (2026-11-10, Flutter 3.38.3) | Avant | Après |
 |---|---|---|
 | arm64-v8a | 33,95 Mo (33 950 458 o) | 12,61 Mo (12 613 359 o) |
@@ -312,7 +323,7 @@ au lieu de `google_fonts` (libapp.so arm64 16,1 → 8,5 Mo) et bibliothèques na
 | `integration_test/smoke_test.dart` | E01 → E02 → compte hors ligne → E03, sans réseau |
 | `integration_test/pilot_journey_test.dart` | MVP-SCOPE §6 par l'interface : OTP (dev_code) → consentements → exploitation → lot (E12) → saisie du jour (E13) → synchro → rappels (moteur local + serveur, écran Santé) |
 | `integration_test/offline_sync_test.dart` | 50 cycles « mode avion » (saisies hors ligne, relance de l'app hors ligne tous les 10 cycles, coupure **après** envoi tous les 5 cycles), puis serveur = téléphone ; synchro chronométrée de 500 changements |
-| `integration_test/db_key_migration_test.dart` | migration de la clé SQLCipher (phrase de passe → clé brute), y compris app tuée au milieu |
+| `integration_test/db_key_migration_test.dart` | migration de la clé SQLCipher (phrase de passe → clé brute) ; app tuée **entre le rekey et l'écriture du marqueur** (pas pendant le rekey : cas couvert par l'atomicité de SQLCipher, non testé) ; rekey en échec (disque plein simulé) deux lancements de suite → app ouverte sur l'ancienne clé, données lisibles, marqueur absent, puis migration |
 | `integration_test/startup_probe_test.dart` | coût d'ouverture de la base chiffrée sur l'appareil |
 
 ```bash
