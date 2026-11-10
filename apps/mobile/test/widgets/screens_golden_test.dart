@@ -24,6 +24,12 @@ import 'package:recallfarm/features/livestock/subject_form_screen.dart';
 import 'package:recallfarm/features/more/more_screen.dart';
 import 'package:recallfarm/features/my_data/my_data_screen.dart';
 import 'package:recallfarm/features/onboarding/speculation_screen.dart';
+import 'package:recallfarm/features/onboarding/account_screen.dart';
+import 'package:recallfarm/features/onboarding/consents_screen.dart';
+import 'package:recallfarm/features/onboarding/farm_setup_screen.dart';
+import 'package:recallfarm/features/alerts/critical_alert_screen.dart';
+import 'package:recallfarm/features/health/reminder_detail_screen.dart';
+import 'package:recallfarm/features/health/certificate_screen.dart';
 import 'package:recallfarm/features/settings/settings_screen.dart';
 import 'package:recallfarm/features/subscription/subscription_screen.dart';
 import 'package:recallfarm/features/tasks/tasks_screen.dart';
@@ -139,6 +145,16 @@ void main() {
     Case('E81_settings', () => const SettingsScreen()),
     Case('E82_my_data', () => const MyDataScreen()),
     Case('E01_speculation', () => const SpeculationScreen()),
+    Case('E02_account', () => const AccountScreen()),
+    Case('E03_consents', () => const ConsentsScreen()),
+    Case('E04_farm_setup', () => const FarmSetupScreen()),
+    Case('E23_reminder_detail', () => ReminderDetailScreen(reminderKey: '$kBatchId:newcastle_j7')),
+    Case('E42_certificate', () => const CertificateScreen(eventId: '55555555-5555-4555-8555-555555555555')),
+    Case('E60_sale_form', () => const SaleFormScreen()),
+    Case('E61_expense_form', () => const ExpenseFormScreen()),
+    Case('E62_stock_form', () => const StockMovementFormScreen()),
+    Case('E65_task_form', () => const TaskFormScreen()),
+    Case('E73_critical_alert', () => const CriticalAlertScreen(alertId: '77777777-7777-4777-8777-777777777777')),
   ];
 
   for (final size in const [Size(360, 640), Size(412, 915)]) {
