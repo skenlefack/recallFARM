@@ -3,7 +3,7 @@
  * fonctions et syntaxe. Complete les vecteurs communs (packages/params/vectors) sans les modifier.
  * Les erreurs attendues sont les codes de EXPRESSIONS.md.
  */
-import { collectCalls, evaluate, evaluateCondition, evaluateOrThrow, isKnownFunction, parse, roundHalfAwayFromZero } from './index';
+import { collectCalls, evaluate, evaluateCondition, evaluateOrThrow, EXPR_BUDGET, isKnownFunction, parse, roundHalfAwayFromZero } from './index';
 
 const ok = (src: string, ctx: Record<string, unknown> = {}) => {
   const r = evaluate(src, ctx);
@@ -161,6 +161,7 @@ describe('evaluation and type errors (T-50)', () => {
   });
 
   it('enforces the budget and deep recursion limits', () => {
+    expect(EXPR_BUDGET).toBe(10_000); // EXPRESSIONS.md: same budget in Dart
     expect(err('[' + '1,'.repeat(10_001) + '1]')).toBe('budget');
     expect(err('('.repeat(20_000) + '1' + ')'.repeat(20_000))).toBe('budget');
   });
