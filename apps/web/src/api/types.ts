@@ -275,7 +275,20 @@ export interface Subscription {
   entitlements?: { source?: { account_type?: 'user' | 'organisation' | 'none'; account_id?: UUID | null } };
 }
 
-export type PaymentMethod = 'orange_money' | 'mtn_momo';
+/** Code d'un moyen de paiement declare dans le pack pays (GET /plans -> payment_methods). */
+export type PaymentMethod = string;
+
+export interface PaymentMethodOption {
+  code: PaymentMethod;
+  label: string;
+}
+
+/** GET /plans : `data` = formules, `payment_methods` = moyens du pack pays. */
+export interface PlansResponse extends Page<Plan> {
+  country?: string;
+  currency?: string;
+  payment_methods?: PaymentMethodOption[];
+}
 
 export interface CheckoutRequest {
   account_type: 'user' | 'organisation';
