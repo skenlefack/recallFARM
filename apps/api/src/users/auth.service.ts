@@ -105,8 +105,7 @@ export class AuthService {
     // Reassign outbound messages
     await this.ds.query(`UPDATE outbound_messages SET recipient_user_id = $1 WHERE recipient_user_id = $2`, [targetId, provisionalId]);
 
-    // Reassign devices / telemetry
-    await this.ds.query(`UPDATE devices SET user_id = $1 WHERE user_id = $2`, [targetId, provisionalId]);
+    // Devices (sensors) belong to farms, not users: they follow the farms reassigned above.
 
     // Soft-delete the provisional user
     provisional.account_status = 'fusionne';

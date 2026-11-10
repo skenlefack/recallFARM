@@ -231,11 +231,8 @@ describe('recette MVP — exploitation volaille (stock, ventes, depenses, taches
     expect(list.body.data.map((b: any) => b.id)).not.toContain(id);
   });
 
-  // DEFECT D-QA-02 (docs/plan/requests.md): PATCH is not partial. DTO classes emit own `undefined` fields, and
-  // `{ ...serializeBatch(existing), ...clean }` in livestock.service.ts lets them override the stored start_date /
-  // initial_count, so renaming a batch answers 422. `it.failing` passes while the defect exists and turns red
-  // as soon as it is fixed: then replace `it.failing` by `it`.
-  it.failing('EF-CHE-01: PATCH /batches/:id with only the changed field (partial update) answers 200', async () => {
+  // Regression D-QA-02 (fixed 2026-11-10): absent DTO fields must not overwrite stored values.
+  it('EF-CHE-01: PATCH /batches/:id with only the changed field (partial update) answers 200', async () => {
     const id = randomUUID();
     await http.post(`/v1/farms/${farmId}/batches`).set(auth(token)).send({ id, name: 'Chair 3', production_type: 'chair', start_date: addDays(today, -3), initial_count: 100 }).expect(201);
     const patched = await http.patch(`/v1/batches/${id}`).set(auth(token)).send({ name: 'Chair 3 (renomme)' }).expect(200);
@@ -266,10 +263,8 @@ describe('recette MVP — authentification, portee, consentements, donnees perso
     await http.post('/v1/auth/otp/verify').send({ phone, code: r1.body.dev_code }).expect(401);
   });
 
-  // DEFECT D-QA-01 (docs/plan/requests.md): auth.service.ts mergeProvisionalAccount runs
-  // `UPDATE devices SET user_id = ...` but `devices` has no user_id column (it belongs to a farm), so the first login
-  // with a provisional account answers 500. `it.failing` turns red once fixed: then replace it by `it`.
-  it.failing('EF-AUT-02: an offline provisional account is attached at the first login and its farm follows', async () => {
+  // Regression D-QA-01 (fixed 2026-11-10): merging a provisional account must not touch devices.user_id.
+  it('EF-AUT-02: an offline provisional account is attached at the first login and its farm follows', async () => {
     const provisional = randomUUID();
     const farmId = randomUUID();
     await sql(`INSERT INTO users (id, phone, account_status) VALUES ($1, $2, 'provisoire')`, [provisional, `+2376900${Math.floor(10000 + Math.random() * 89999)}`]);

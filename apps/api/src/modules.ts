@@ -51,7 +51,7 @@ import { StudioController } from './studio/studio.controller';
 import { StudioService } from './studio/studio.service';
 import { SyncController } from './sync/sync.controller';
 import { SyncService } from './sync/sync.service';
-import { AdminAnalyticsController, AnalyticsController } from './analytics/analytics.controller';
+import { AdminAnalyticsController } from './analytics/analytics.controller';
 import { AnalyticsService } from './analytics/analytics.service';
 import { AggregationService } from './analytics/aggregation.service';
 import { AuthService } from './users/auth.service';
@@ -129,7 +129,7 @@ export class BillingModule {}
 @Module({ providers: [UsersService, AuthService, RetentionService], controllers: [AuthController, MeController, DataRegistryController], exports: [UsersService] })
 export class UsersModule {}
 
-@Module({ providers: [AnalyticsService, AggregationService], controllers: [AnalyticsController, AdminAnalyticsController], exports: [AnalyticsService] })
+@Module({ providers: [AnalyticsService, AggregationService], controllers: [AdminAnalyticsController], exports: [AnalyticsService] })
 export class AnalyticsModule {}
 
 @Module({ providers: [FarmsService], controllers: [FarmsController], exports: [FarmsService] })
