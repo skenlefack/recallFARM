@@ -166,24 +166,18 @@ jobs:
           tags: recallfarm-${{ matrix.image }}:scan
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+      # Trivy lance depuis son image officielle a version figee (pas d'action tierce : l'action
+      # trivy-action ne se resout plus et a deja ete la cible d'attaques de chaine d'approvisionnement).
       - name: Rapport HIGH (informatif)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: recallfarm-${{ matrix.image }}:scan
-          severity: HIGH
-          ignore-unfixed: true
-          format: table
-          output: trivy-high-${{ matrix.image }}.txt
-          exit-code: "0"
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/out"
+          aquasec/trivy:0.57.1 image --quiet --severity HIGH --ignore-unfixed --format table
+          --output /out/trivy-high-${{ matrix.image }}.txt --exit-code 0 recallfarm-${{ matrix.image }}:scan
       - name: Scan CRITICAL (bloquant)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: recallfarm-${{ matrix.image }}:scan
-          severity: CRITICAL
-          ignore-unfixed: true
-          format: table
-          output: trivy-critical-${{ matrix.image }}.txt
-          exit-code: "1"
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/out"
+          aquasec/trivy:0.57.1 image --quiet --severity CRITICAL --ignore-unfixed --format table
+          --output /out/trivy-critical-${{ matrix.image }}.txt --exit-code 1 recallfarm-${{ matrix.image }}:scan
       - name: Afficher les rapports
         if: always()
         run: |

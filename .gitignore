@@ -24,3 +24,4 @@ infra/providers/providers.json
 .claude/worktrees/
 coverage-e2e/
 coverage-merged/
+!tests/coverage/
