@@ -1,9 +1,9 @@
 # ADR-003 — Mobile : polices embarquees (retrait de google_fonts) et taille de l'APK
 
 ## Statut
-ACCEPTE par mobile-socle pour le lot P0.1 (2026-11-10). Tranche de fait D-09 « polices embarquees
-ou Google Fonts » dans le sens demande par le lot P0.1 §1 ; a confirmer par le proprietaire du
-produit (docs/plan/questions.md Q-MOB-02).
+PROPOSE (mobile-socle, lot P0.1, 2026-11-10). Applique sur la branche dans le sens demande par le
+lot P0.1 §1 (« embarque les polices »), mais D-09 « polices embarquees ou Google Fonts » n'est pas
+tranche : decision du proprietaire du produit attendue (docs/plan/questions.md Q-MOB-02).
 
 ## Contexte
 - Critere d'acceptation P0.1 : APK release signe < 25 Mo (ENF-PER-04) ; eleveurs en 2G.
@@ -35,7 +35,7 @@ produit (docs/plan/questions.md Q-MOB-02).
 
 ## Consequences
 - Taille : voir les mesures avant/apres dans apps/mobile/README.md §9.
-- `RfType` garde son API ; `RfType.useGoogleFonts = false` (tests de widgets) continue de forcer
+- `RfType` garde son API ; `RfType.useBundledFonts = false` (tests de widgets, ex-`useGoogleFonts`) force
   la police systeme.
 - `--dart-define=ALLOW_FONT_FETCHING` disparait.
 - Rendu identique aux maquettes des le premier lancement, sans reseau.

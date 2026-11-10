@@ -13,12 +13,12 @@ class RfType {
   static const String bodyFamily = 'IBMPlexSans';
   static const String monoFamily = 'IBMPlexMono';
 
-  /// Set to false in widget tests to use the platform font (kept under its
-  /// historical name: widget tests already toggle it).
-  static bool useGoogleFonts = true;
+  /// Set to false in widget tests to use the platform font instead of the
+  /// bundled families.
+  static bool useBundledFonts = true;
 
   static TextStyle _font(String family, TextStyle base) =>
-      useGoogleFonts ? base.copyWith(fontFamily: family) : base;
+      useBundledFonts ? base.copyWith(fontFamily: family) : base;
 
   static TextStyle title({double size = 22, FontWeight weight = FontWeight.w700, Color? color, double? letterSpacing}) =>
       _font(

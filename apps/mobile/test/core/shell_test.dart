@@ -8,7 +8,7 @@ import '../widgets/test_app.dart';
 /// Regression (found on the emulator by integration_test/pilot_journey_test.dart):
 /// the bottom bar took the whole screen height, the page body got 0 px.
 void main() {
-  setUpAll(() => RfType.useGoogleFonts = false);
+  setUpAll(() => RfType.useBundledFonts = false);
 
   testWidgets('the bottom bar stays a bar; the page body gets the screen', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
