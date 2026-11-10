@@ -46,7 +46,10 @@ class RfBottomNav extends StatelessWidget {
             _item(context, Glyph.home, 'nav_home', '/home'),
             _item(context, Glyph.herd, 'nav_livestock', '/livestock'),
             Expanded(
+              // heightFactor 1: without it Center takes all the height the
+              // Scaffold offers to bottomNavigationBar and the bar covers the screen.
               child: Center(
+                heightFactor: 1,
                 child: Transform.translate(
                   offset: const Offset(0, -14),
                   child: Semantics(
