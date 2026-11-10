@@ -148,7 +148,7 @@ void main() {
     Case('E02_account', () => const AccountScreen()),
     Case('E03_consents', () => const ConsentsScreen()),
     Case('E04_farm_setup', () => const FarmSetupScreen()),
-    Case('E23_reminder_detail', () => ReminderDetailScreen(reminderKey: '$kBatchId:newcastle_j7')),
+    Case('E23_reminder_detail', () => const ReminderDetailScreen(reminderKey: '$kBatchId:newcastle_j7')),
     Case('E42_certificate', () => const CertificateScreen(eventId: '55555555-5555-4555-8555-555555555555')),
     Case('E60_sale_form', () => const SaleFormScreen()),
     Case('E61_expense_form', () => const ExpenseFormScreen()),
