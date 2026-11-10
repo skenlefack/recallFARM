@@ -45,6 +45,8 @@ dev_dependencies:
     sdk: flutter
   flutter_driver:
     sdk: flutter
+  # Tests de LocalDb sur le poste (SQLite FFI, sans chiffrement) : ADR-004.
+  sqflite_common_ffi: ^2.3.4
   flutter_lints: ^4.0.0
 
 flutter:
