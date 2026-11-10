@@ -1,9 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { AlertsController } from './alerts/alerts.controller';
 import { AlertsService } from './alerts/alerts.service';
+import { AdminPaymentsController } from './billing/admin-payments.controller';
 import { BillingController } from './billing/billing.controller';
 import { BillingService } from './billing/billing.service';
 import { EntitlementsService } from './billing/entitlements.service';
+import { PaymentOpsService } from './billing/payment-ops.service';
+import { PaymentsScheduler } from './billing/payments.scheduler';
 import { ConnectorPaymentProvider, PAYMENT_PROVIDER, SimulatorPaymentProvider } from './billing/payment.providers';
 import { CONNECTOR_REGISTRY, ConnectorRegistry } from './connectors/connector-registry';
 import { ConnectorsController } from './connectors/connectors.controller';
@@ -111,6 +114,8 @@ export class MessagingModule {}
   providers: [
     EntitlementsService,
     BillingService,
+    PaymentOpsService,
+    PaymentsScheduler,
     {
       provide: PAYMENT_PROVIDER,
       inject: [CONNECTOR_REGISTRY],
@@ -122,8 +127,8 @@ export class MessagingModule {}
       },
     },
   ],
-  controllers: [BillingController],
-  exports: [EntitlementsService, BillingService],
+  controllers: [BillingController, AdminPaymentsController],
+  exports: [EntitlementsService, BillingService, PaymentOpsService],
 })
 export class BillingModule {}
 

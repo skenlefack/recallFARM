@@ -1,13 +1,21 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
-import { ApiBearerAuth, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiHeader, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
 import type { Request } from 'express';
 import { AuthUser, CurrentUser, Public } from '../common/auth';
 import { Errors } from '../common/errors';
+import { config } from '../config';
 import { BillingService } from './billing.service';
 
 export class CheckoutDto {
+  @ApiPropertyOptional({
+    description: 'UUID v4 cree par le client (recommande) : un nouvel envoi avec le meme id renvoie le meme paiement, sans second prelevement',
+    format: 'uuid',
+  })
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
   @ApiProperty({ enum: ['user', 'organisation'] }) @IsIn(['user', 'organisation']) account_type: 'user' | 'organisation';
   @ApiProperty() @IsUUID() account_id: string;
   @ApiProperty({ example: 'pro' }) @IsString() plan: string;
@@ -46,9 +54,11 @@ export class BillingController {
   }
 
   @ApiBearerAuth()
+  @ApiHeader({ name: 'idempotency-key', required: false, description: 'Alternative a `id` (1 a 100 caracteres) : meme cle, meme paiement' })
   @Post('subscriptions/checkout')
-  checkout(@CurrentUser() user: AuthUser, @Body() dto: CheckoutDto) {
-    return this.billing.checkout(user, dto);
+  checkout(@CurrentUser() user: AuthUser, @Body() dto: CheckoutDto, @Headers('idempotency-key') key?: string) {
+    if (key !== undefined && !/^[\x21-\x7e]{1,100}$/.test(key)) throw Errors.validation({ 'Idempotency-Key': '1 a 100 caracteres visibles' });
+    return this.billing.checkout(user, { ...dto, ...(key ? { idempotency_key: key } : {}) });
   }
 
   @ApiBearerAuth()
@@ -69,6 +79,8 @@ export class BillingController {
   @HttpCode(200)
   @Post('payments/webhook')
   async webhook(@Req() req: Request & { rawBody?: Buffer }, @Headers('x-signature') signature: string | undefined, @Body() dto: WebhookDto) {
+    // With connectors, results arrive only on /connectors/:name/payment, tied to the connector (m13).
+    if (config().paymentProvider === 'connector') throw Errors.notFound('Route');
     if (!this.billing.verifySignature(req.rawBody, signature)) throw Errors.unauthenticated('Signature invalide');
     return this.billing.applyResult(dto);
   }

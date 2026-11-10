@@ -16,6 +16,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 const TEST_DB = process.env.TEST_DATABASE_URL || 'postgres://recallfarm:recallfarm@localhost:5432/recallfarm_test';
 
 interface Received {
+  method?: string;
   path: string;
   headers: IncomingMessage['headers'];
   body: Record<string, unknown>;
@@ -30,7 +31,7 @@ const aggregator: Server = createServer((req, res) => {
   req.on('data', (c) => (data += c));
   req.on('end', () => {
     const path = (req.url ?? '').split('?')[0];
-    received.push({ path, headers: req.headers, body: data ? JSON.parse(data) : {} });
+    received.push({ method: req.method, path, headers: req.headers, body: data ? JSON.parse(data) : {} });
     const next = queued[path]?.shift();
     counter++;
     const fallback = path === '/v1/sms/messages' ? { data: { id: `MSG-${counter}`, cost: 20 } } : { transaction_id: `TX-${counter}` };
@@ -77,6 +78,21 @@ function providers(port: number) {
             fees_minor: 'fees',
             amount_minor: 'amount',
             ack: { ok: true },
+          },
+          status: {
+            method: 'GET',
+            url: '/payments/{{provider_ref}}',
+            result: { status: 'state', status_map: { SUCCESS: 'confirme', FAILED: 'echoue', PENDING: 'en_attente' }, amount_minor: 'amount' },
+          },
+          refund: {
+            url: '/refunds',
+            body: { key: '{{refund_id}}', transaction: '{{provider_ref}}', amount: '{{amount_minor}}', reason: '{{reason}}' },
+            result: { ref: 'refund_id', status: 'state', status_map: { DONE: 'rembourse', REFUSED: 'echoue', QUEUED: 'en_attente' } },
+          },
+          list: {
+            method: 'GET',
+            url: '/payments?date={{date}}',
+            result: { items: 'items', payment_id: 'reference', ref: 'transaction_id', status: 'status', status_map: { SUCCESS: 'confirme', FAILED: 'echoue' }, amount_minor: 'amount' },
           },
         },
       },
@@ -178,8 +194,10 @@ afterAll(async () => {
 
 describe('declarative connectors', () => {
   it('sends OTP SMS through the described aggregator with its auth and body format', async () => {
+    const before = received.length;
     await http.post('/v1/auth/otp/request').send({ phone: '+237690000005' }).expect(200);
-    const sms = received.find((r) => r.path === '/v1/sms/messages');
+    // The SMS of this request, not the first one ever received (order-independent).
+    const sms = received.slice(before).find((r) => r.path === '/v1/sms/messages' && r.body.to === '237690000005');
     expect(sms?.headers.authorization).toBe('Bearer agg-token');
     expect(sms?.body).toMatchObject({ from: 'RecallFarm', to: '237690000005' });
     const rows = await db.query(`SELECT provider_ref, cost_minor::int AS cost, currency, body FROM outbound_messages WHERE template_code = 'otp_sms' ORDER BY queued_at DESC LIMIT 1`);
@@ -454,5 +472,222 @@ describe('declarative connectors', () => {
   it('accepts inbound SMS as GET query parameters (m15)', async () => {
     const r = await http.get('/v1/connectors/fakeagg/sms?msisdn=237690000001&content=bonjour').set(CB).expect(200);
     expect(r.body).toMatchObject({ handled: false, reply: expect.stringMatching(/non compris/) });
+  });
+
+  /* ---------- P1.2: idempotent checkout, status queries, refunds, reconciliation (M6, m12, m13) ---------- */
+
+  const collects = () => received.filter((r) => r.path === '/v1/payments/collect').length;
+  const body = (o: Record<string, unknown> = {}) => ({ account_type: 'user', plan: 'pro', period: 'monthly', method: 'orange_money', phone: '+237690000001', ...o });
+  const opsService = () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { PaymentOpsService } = require('../src/billing/payment-ops.service');
+    return app.get(PaymentOpsService);
+  };
+
+  it('checkout is idempotent: a double tap with the same client id gives one payment and one USSD prompt', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const id = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+    const before = collects();
+    const [a, b] = await Promise.all([
+      http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })),
+      http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })),
+    ]);
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect(a.body.payment_id).toBe(id);
+    expect(b.body.payment_id).toBe(id);
+    expect(collects() - before).toBe(1);
+    const again = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201);
+    expect(again.body).toMatchObject({ payment_id: id, status: 'initie', ussd_push: true, replayed: true, provider_ref: expect.stringMatching(/^TX-/) });
+    expect(collects() - before).toBe(1);
+    expect((await db.query(`SELECT count(*)::int AS n FROM payments WHERE id = $1`, [id])).rows[0].n).toBe(1);
+    // Same id, other request: refused.
+    const other = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, period: 'yearly' })).expect(409);
+    expect(other.body.error.details.rule).toBe('PAY-IDEMPOTENCY');
+    await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'not-a-uuid', account_id: m.id })).expect(422);
+  });
+
+  it('checkout accepts an Idempotency-Key header, scoped to the user; a refused payment replays its refusal', async () => {
+    const m = await login('+237690000001');
+    const before = collects();
+    const send = (key: string) => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}`, 'idempotency-key': key }).send(body({ account_id: m.id }));
+    const a = await send('tap-1').expect(201);
+    const b = await send('tap-1').expect(201);
+    expect(b.body.payment_id).toBe(a.body.payment_id);
+    expect(collects() - before).toBe(1);
+    queued['/v1/payments/collect'] = [{ status: 400, body: { error: 'solde' } }];
+    const refused = await send('tap-2').expect(422);
+    const replay = await send('tap-2').expect(422);
+    expect(replay.body.error.details).toMatchObject({ rule: 'PAY-INIT', payment_id: refused.body.error.details.payment_id, replayed: true });
+    await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}`, 'idempotency-key': 'a b' }).send(body({ account_id: m.id })).expect(422);
+  });
+
+  it('only routed payment methods are offered (m12) and the global webhook is closed with connectors (m13)', async () => {
+    const plans = await http.get('/v1/plans').expect(200);
+    expect(plans.body.payment_methods.map((x: { code: string }) => x.code)).toEqual(['orange_money']);
+    const m = await login('+237690000001');
+    const r = await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}` }).send(body({ account_id: m.id, method: 'mtn_momo' })).expect(422);
+    expect(r.body.error.fields.method).toBeDefined();
+    await http.post('/v1/payments/webhook').send({ payment_id: '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', status: 'confirme' }).expect(404);
+  });
+
+  it('pending payments are queried with growing delays, then flagged "a_verifier"; a late webhook still confirms', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const co = await checkout(m.token, m.id).expect(201);
+    const statusPath = `/v1/payments/${co.body.provider_ref}`;
+    await db.query(`UPDATE payments SET created_at = now() - interval '10 minutes' WHERE id = $1`, [co.body.payment_id]);
+    queued[statusPath] = Array.from({ length: 6 }, () => ({ status: 200, body: { state: 'PENDING' } }));
+    const ops = opsService();
+    let at = Date.now();
+    const delays: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      await ops.pollPending(new Date(at));
+      const raw = (await db.query(`SELECT status, raw FROM payments WHERE id = $1`, [co.body.payment_id])).rows[0];
+      if (i < 5) {
+        expect(raw.status).toBe('en_attente');
+        delays.push(Math.round((Date.parse(raw.raw.poll.next_at) - at) / 60_000));
+      } else expect(raw.status).toBe('a_verifier');
+      at += 3 * 3600_000;
+    }
+    expect(delays).toEqual([5, 10, 20, 40, 60]);
+    expect(received.filter((r) => r.path === statusPath && r.method === 'GET')).toHaveLength(6);
+    const flagged = await http.get('/v1/admin/payments?status=a_verifier').set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(flagged.body.data.find((p: { id: string }) => p.id === co.body.payment_id)).toMatchObject({ connector: 'fakeagg', poll: expect.objectContaining({ count: 6 }) });
+    await http.get('/v1/admin/payments').set({ authorization: `Bearer ${m.token}` }).expect(403);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    expect(await status(m.token, co.body.payment_id)).toBe('confirme');
+  });
+
+  it('a status query confirms a payment whose webhook never came (admin "check now")', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const co = await checkout(m.token, m.id).expect(201);
+    queued[`/v1/payments/${co.body.provider_ref}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
+    const r = await http.post(`/v1/admin/payments/${co.body.payment_id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(r.body).toMatchObject({ id: co.body.payment_id, status: 'confirme', checked: true, outcome: 'confirmed' });
+    // A status with another amount is refused like a webhook.
+    const co2 = await checkout(m.token, m.id).expect(201);
+    queued[`/v1/payments/${co2.body.provider_ref}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 1 } }];
+    const r2 = await http.post(`/v1/admin/payments/${co2.body.payment_id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(r2.body.status).toBe('en_attente');
+  });
+
+  it('refunds a confirmed payment once, with a stable key, journaled; late events do not re-activate it', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const aauth = { authorization: `Bearer ${admin.token}` };
+    const co = await checkout(m.token, m.id).expect(201);
+    const id = co.body.payment_id;
+    await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(422); // not confirmed yet
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    await http.post(`/v1/admin/payments/${id}/refund`).set({ authorization: `Bearer ${m.token}` }).send({ reason: 'Erreur de formule' }).expect(403);
+    queued['/v1/refunds'] = [{ status: 503, body: {} }, { status: 200, body: { state: 'DONE', refund_id: 'RF-1' } }];
+    const unknown = await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(422);
+    expect(unknown.body.error.details).toMatchObject({ rule: 'PAY-REFUND-PENDING', error_code: 'http_503' });
+    expect(await status(m.token, id)).toBe('remboursement_en_cours');
+    const done = await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(200);
+    expect(done.body).toMatchObject({ id, status: 'rembourse', refund: expect.objectContaining({ status: 'rembourse', ref: 'RF-1', reason: 'Erreur de formule' }) });
+    const calls = received.filter((r) => r.path === '/v1/refunds');
+    expect(calls.slice(-2).map((c) => c.body.key)).toEqual([done.body.refund.id, done.body.refund.id]);
+    expect(calls[calls.length - 1].body).toMatchObject({ transaction: co.body.provider_ref, amount: 2500, reason: 'Erreur de formule' });
+    // Asking again does not call the aggregator a third time.
+    await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(200);
+    expect(received.filter((r) => r.path === '/v1/refunds')).toHaveLength(calls.length);
+    const audit = await db.query(`SELECT action FROM audit_log WHERE entity = 'payments' AND entity_id = $1 ORDER BY id`, [id]);
+    expect(audit.rows.map((r) => r.action)).toEqual(['refund_requested', 'refund_inconnu', 'refund_requested', 'refund_rembourse']);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'FAILED' }).expect(200);
+    expect(await status(m.token, id)).toBe('rembourse');
+    // A refusal puts the payment back to "confirme".
+    const co2 = await checkout(m.token, m.id).expect(201);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co2.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    queued['/v1/refunds'] = [{ status: 200, body: { state: 'REFUSED' } }];
+    const refused = await http.post(`/v1/admin/payments/${co2.body.payment_id}/refund`).set(aauth).send({ reason: 'Essai de refus' }).expect(422);
+    expect(refused.body.error.details.rule).toBe('PAY-REFUND-REFUSED');
+    expect(await status(m.token, co2.body.payment_id)).toBe('confirme');
+  });
+
+  it('daily reconciliation: aggregator list ↔ database, payments without subscription, connectors that cannot be checked', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const aauth = { authorization: `Bearer ${admin.token}` };
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala' }).format(new Date());
+    const ok = await checkout(m.token, m.id).expect(201);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: ok.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    const diverging = await checkout(m.token, m.id).expect(201);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: diverging.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    // A confirmed payment that lost its subscription link.
+    await db.query(`UPDATE payments SET subscription_id = NULL WHERE id = $1`, [ok.body.payment_id]);
+    queued['/v1/payments'] = [
+      {
+        status: 200,
+        body: {
+          items: [
+            { reference: ok.body.payment_id, transaction_id: ok.body.provider_ref, status: 'SUCCESS', amount: 2500 },
+            { reference: diverging.body.payment_id, transaction_id: diverging.body.provider_ref, status: 'FAILED', amount: 2500 },
+            { reference: 'inconnu', transaction_id: 'TX-ETRANGER', status: 'SUCCESS', amount: 900 },
+          ],
+        },
+      },
+    ];
+    await http.post('/v1/admin/payments/reconciliations').set({ authorization: `Bearer ${m.token}` }).send({ day: today }).expect(403);
+    const r = await http.post('/v1/admin/payments/reconciliations').set(aauth).send({ day: today }).expect(200);
+    const listCall = [...received].reverse().find((x) => x.path === '/v1/payments' && x.method === 'GET');
+    expect(listCall).toBeDefined();
+    expect(r.body.sources).toEqual([{ connector: 'fakeagg', source: 'liste' }]);
+    expect(r.body.confirmes_sans_abonnement).toEqual([expect.objectContaining({ payment_id: ok.body.payment_id })]);
+    expect(r.body.divergences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ payment_id: diverging.body.payment_id, base: 'confirme', fournisseur: 'FAILED', ecart: 'statut' }),
+        expect.objectContaining({ provider_ref: 'TX-ETRANGER', base: null, ecart: 'inconnu_en_base' }),
+      ]),
+    );
+    // Confirmed today but missing from the aggregator's list.
+    expect(r.body.divergences.filter((d: { ecart: string }) => d.ecart === 'absent_chez_fournisseur').length).toBeGreaterThan(0);
+    expect(r.body.totals.confirmed_amounts).toEqual([expect.objectContaining({ currency: 'XAF' })]);
+    const stored = await http.get(`/v1/admin/payments/reconciliations?day=${today}`).set(aauth).expect(200);
+    expect(stored.body.data[0]).toMatchObject({ day: today, divergences: expect.any(Array) });
+  });
+
+  it('reconciliation falls back on status queries without a list, reports unverifiable connectors, and runs once a day', async () => {
+    const admin = await login('+237690000009');
+    const aauth = { authorization: `Bearer ${admin.token}` };
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala' }).format(new Date());
+    // The aggregator's list is down: the connector is reported as not verified.
+    queued['/v1/payments'] = [{ status: 500, body: {} }];
+    const down = await http.post('/v1/admin/payments/reconciliations').set(aauth).send({ day: today }).expect(200);
+    expect(down.body.non_verifies).toEqual([{ connector: 'fakeagg', raison: 'http_500' }]);
+    // Same connector described without a list: each payment of the day is checked with the status query.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const registry = app.get(require('../src/connectors/connector-registry').CONNECTOR_REGISTRY);
+    const spec = registry.get('fakeagg').spec.payment;
+    const list = spec.list;
+    delete spec.list;
+    try {
+      const target = (await db.query(`SELECT id, provider_ref FROM payments WHERE status = 'confirme' AND raw->>'connector' = 'fakeagg' ORDER BY created_at DESC LIMIT 1`)).rows[0];
+      queued[`/v1/payments/${target.provider_ref}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 999 } }];
+      const r = await http.post('/v1/admin/payments/reconciliations').set(aauth).send({ day: today }).expect(200);
+      expect(r.body.sources).toEqual([{ connector: 'fakeagg', source: 'statut' }]);
+      expect(r.body.divergences).toEqual(expect.arrayContaining([expect.objectContaining({ payment_id: target.id, ecart: 'montant' })]));
+      // Neither list nor status query: not verifiable.
+      const status = spec.status;
+      delete spec.status;
+      const none = await http.post('/v1/admin/payments/reconciliations').set(aauth).send({ day: today }).expect(200);
+      spec.status = status;
+      expect(none.body.non_verifies).toEqual([{ connector: 'fakeagg', raison: 'ni liste ni requete de statut dans le connecteur' }]);
+    } finally {
+      spec.list = list;
+    }
+    // Hourly job: yesterday's report is produced once, after the configured local time (02:00).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const scheduler = app.get(require('../src/billing/payments.scheduler').PaymentsScheduler);
+    expect(await scheduler.reconcileIfDue(new Date(`${today}T00:30:00Z`))).toBeNull(); // 01:30 in Douala
+    queued['/v1/payments'] = [{ status: 200, body: { items: [] } }];
+    const day = await scheduler.reconcileIfDue(new Date(`${today}T12:00:00Z`));
+    expect(day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(day < today).toBe(true);
+    expect(await scheduler.reconcileIfDue(new Date(`${today}T13:00:00Z`))).toBeNull();
+    expect(await opsService().hasReport(day)).toBe(true);
   });
 });

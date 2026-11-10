@@ -1,5 +1,5 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { Inject, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AccessService } from '../common/access.service';
 import { AuthUser, hasPlatformRole } from '../common/auth';
@@ -17,12 +17,26 @@ export interface CheckoutInput {
   period: 'monthly' | 'yearly';
   method: string;
   phone: string;
+  /** UUID v4 created by the client: a repeated checkout with the same id returns the same payment. */
+  id?: string;
+  /** Alternative to `id` (header Idempotency-Key): the payment id is derived from (user, key). */
+  idempotency_key?: string;
+}
+
+/** Statuses after which nothing can change the money flow without an operator (refund in progress or done). */
+const REFUND_STATUSES = ['remboursement_en_cours', 'rembourse'];
+
+/** Payment id derived from (user, idempotency key): same key, same payment (RFC 9562 version 8 layout). */
+export function idFromKey(userId: string, key: string): string {
+  const h = createHash('sha256').update(`${userId}:${key}`).digest('hex');
+  const variant = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 const GRACE_DAYS = 7;
 
 @Injectable()
-export class BillingService {
+export class BillingService implements OnApplicationBootstrap {
   private readonly logger = new Logger('Billing');
 
   constructor(
@@ -39,12 +53,28 @@ export class BillingService {
     }
   }
 
+  /** Routed method codes absent from every published country pack are reported at start-up (m12). */
+  async onApplicationBootstrap(): Promise<void> {
+    const routed = this.provider.methods?.();
+    if (!routed?.length || config().openapiExport) return;
+    try {
+      const packs = await this.params.publishedPacks();
+      const known = new Set(packs.flatMap((p) => (p.doc.objects ?? []).filter((o) => o.kind === 'payment_method').map((o) => o.code)));
+      const unknown = routed.filter((m) => !known.has(m));
+      if (known.size && unknown.length) this.logger.warn(`routing.payment : moyens absents des packs pays publies : ${unknown.join(', ')}`);
+    } catch (e) {
+      this.logger.warn(`controle des moyens de paiement impossible : ${(e as Error).message}`);
+    }
+  }
+
   /** GET /plans: plans, prices (Money), features and quotas for a country. */
   async plans(country = 'CM') {
     const r = await this.params.resolveBase(country);
     const prices = Object.values(r.objects).filter((o) => o.kind === 'plan_price');
+    // Only methods that can actually be paid: with connectors, the routed ones (m12).
+    const routed = this.provider.methods?.();
     const methods = Object.values(r.objects)
-      .filter((o) => o.kind === 'payment_method')
+      .filter((o) => o.kind === 'payment_method' && (!routed || routed.includes(o.code)))
       .map((o) => ({ code: o.code, label: o.label }));
     const plans = this.params.plans(r).map((p) => {
       const price = prices.find((x) => x.code === p.code) as { currency: string; monthly_minor: number; yearly_minor: number; note?: string } | undefined;
@@ -94,8 +124,16 @@ export class BillingService {
     if (!catalog.payment_methods.some((m) => m.code === input.method)) throw Errors.validation({ method: 'moyen de paiement non disponible' });
     const price = input.period === 'yearly' ? plan.prices.yearly : plan.prices.monthly;
     const repo = this.ds.getRepository(Payment);
-    const payment = await repo.save(
-      repo.create({
+    // Idempotent checkout (M6): a double tap on a slow network gives one payment and one USSD prompt.
+    const id = input.id ?? (input.idempotency_key ? idFromKey(user.id, input.idempotency_key) : randomUUID());
+    const known = await repo.findOne({ where: { id } });
+    if (known) return this.replayCheckout(user, known, input, plan.code);
+    const inserted = await repo
+      .createQueryBuilder()
+      .insert()
+      .into(Payment)
+      .values({
+        id,
         payer_type: input.account_type,
         payer_id: input.account_id,
         purpose: 'abonnement',
@@ -107,8 +145,18 @@ export class BillingService {
         phone: input.phone,
         status: 'initie',
         created_by: user.id,
-      }),
-    );
+      })
+      .orIgnore()
+      .returning('id')
+      .execute();
+    if (!inserted.raw.length) {
+      // Same id created by a concurrent request a moment ago.
+      return this.replayCheckout(user, (await repo.findOne({ where: { id } }))!, input, plan.code);
+    }
+    // The routed connector is recorded before the call: a webhook faster than the HTTP answer is accepted.
+    const route = this.provider.routeOf?.(input.method);
+    if (route) await this.settle(id, {}, { connector: route });
+    const payment = (await repo.findOne({ where: { id } }))!;
     let init: Awaited<ReturnType<PaymentProvider['initiate']>>;
     try {
       init = await this.provider.initiate(payment);
@@ -119,33 +167,74 @@ export class BillingService {
       this.logger.warn(`payment ${payment.id}: initiation failed (${code}) ${(e as Error).message}`);
       if (known && e.definitive) {
         // Explicit refusal by the aggregator: nothing can have been debited.
-        payment.status = 'echoue';
-        payment.raw = { ...payment.raw, error_code: code, ...connector };
-        await repo.save(payment);
+        await this.settle(id, { status: 'echoue' }, { error_code: code, ...connector });
         throw Errors.business('PAY-INIT', 'Le paiement n’a pas pu être lancé. Réessayez dans quelques minutes.', { payment_id: payment.id, error_code: code });
       }
       // Unknown outcome (timeout, network, 5xx): the payer may still validate the request on the phone.
-      // The payment stays pending so that a later confirmation is applied, never lost.
-      payment.status = 'en_attente';
-      payment.raw = { ...payment.raw, error_code: code, ...connector };
-      await repo.save(payment);
+      // The payment stays pending so that a later confirmation (webhook or status query) is applied, never lost.
+      await this.settle(id, { status: 'en_attente' }, { error_code: code, ...connector });
       throw Errors.business('PAY-PENDING', 'Paiement en cours de vérification. Ne relancez pas : vous serez prévenu dès sa confirmation.', {
         payment_id: payment.id,
         status: 'en_attente',
         error_code: code,
       });
     }
-    payment.provider_ref = init.provider_ref;
-    payment.status = 'en_attente';
-    if (init.connector) payment.raw = { ...payment.raw, connector: init.connector };
-    await repo.save(payment);
+    await this.settle(
+      id,
+      { status: 'en_attente', provider_ref: init.provider_ref },
+      { ussd_push: init.ussd_push, ...(init.connector ? { connector: init.connector } : {}), ...(init.redirect_url ? { redirect_url: init.redirect_url } : {}) },
+    );
     return {
       payment_id: payment.id,
       status: 'initie' as const,
       ussd_push: init.ussd_push,
       ...(init.redirect_url ? { redirect_url: init.redirect_url } : {}),
       amount: { amount_minor: Number(payment.amount_minor), currency: payment.currency },
-      provider_ref: payment.provider_ref,
+      provider_ref: init.provider_ref,
+    };
+  }
+
+  /**
+   * Records the outcome of the initiation only while the payment is still "initie": a confirmation
+   * that arrived during the call is never overwritten. `raw` is merged, not replaced.
+   */
+  private async settle(id: string, set: { status?: string; provider_ref?: string }, raw: Record<string, unknown>): Promise<void> {
+    await this.ds.query(
+      `UPDATE payments SET status = COALESCE($2, status), provider_ref = COALESCE($3, provider_ref), raw = raw || $4::jsonb, updated_at = now()
+        WHERE id = $1 AND status = 'initie'`,
+      [id, set.status ?? null, set.provider_ref ?? null, JSON.stringify(raw)],
+    );
+  }
+
+  /**
+   * Answer to a repeated checkout: same payment, same outcome, the aggregator is not called again.
+   * The id belongs to its creator and to one set of parameters (409 otherwise).
+   */
+  private replayCheckout(user: AuthUser, p: Payment, input: CheckoutInput, plan: string) {
+    const period = input.period === 'yearly' ? 'annuel' : 'mensuel';
+    const same =
+      p.created_by === user.id && p.payer_type === input.account_type && p.payer_id === input.account_id && p.plan === plan && p.period === period && p.method === input.method && p.phone === input.phone;
+    if (!same) throw Errors.conflict('Identifiant de paiement déjà utilisé pour une autre demande', { rule: 'PAY-IDEMPOTENCY' });
+    const raw = (p.raw ?? {}) as { error_code?: string; ussd_push?: boolean; redirect_url?: string };
+    if (p.status === 'echoue') {
+      throw Errors.business('PAY-INIT', 'Le paiement n’a pas pu être lancé. Réessayez dans quelques minutes.', { payment_id: p.id, error_code: raw.error_code ?? null, replayed: true });
+    }
+    if (!p.provider_ref && raw.error_code && p.status !== 'confirme') {
+      throw Errors.business('PAY-PENDING', 'Paiement en cours de vérification. Ne relancez pas : vous serez prévenu dès sa confirmation.', {
+        payment_id: p.id,
+        status: p.status,
+        error_code: raw.error_code,
+        replayed: true,
+      });
+    }
+    return {
+      payment_id: p.id,
+      status: ['initie', 'en_attente'].includes(p.status) ? ('initie' as const) : p.status,
+      ussd_push: raw.ussd_push ?? true,
+      ...(raw.redirect_url ? { redirect_url: raw.redirect_url } : {}),
+      amount: { amount_minor: Number(p.amount_minor), currency: p.currency },
+      provider_ref: p.provider_ref,
+      replayed: true,
     };
   }
 
@@ -216,6 +305,12 @@ export class BillingService {
             warnings.push(`payment ${found.id}: confirmation refusee (montant ou devise differents)`);
             return found;
           }
+        }
+        if (REFUND_STATUSES.includes(found.status)) {
+          // Refunded money: a late provider event never re-activates nor fails it; the operator decides.
+          warnings.push(`payment ${found.id}: ${input.status} recu pendant ou apres remboursement (ignore)`);
+          if (from) await repo.save(found);
+          return found;
         }
         if (found.status === 'confirme') {
           if (!ok) warnings.push(`payment ${found.id}: echec recu apres confirmation (ignore)`);

@@ -335,6 +335,11 @@
             ],
             "type": "string"
           },
+          "id": {
+            "description": "UUID v4 cree par le client (recommande) : un nouvel envoi avec le meme id renvoie le meme paiement, sans second prelevement",
+            "format": "uuid",
+            "type": "string"
+          },
           "method": {
             "description": "Code d’un moyen de paiement du pack pays (GET /plans → payment_methods)",
             "example": "orange_money",
@@ -1411,6 +1416,19 @@
         ],
         "type": "object"
       },
+      "ReconcileDto": {
+        "properties": {
+          "day": {
+            "description": "Jour metier (fuseau du pays)",
+            "example": "2026-11-09",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "type": "object"
+      },
       "RefreshDto": {
         "properties": {
           "refresh_token": {
@@ -1419,6 +1437,20 @@
         },
         "required": [
           "refresh_token"
+        ],
+        "type": "object"
+      },
+      "RefundDto": {
+        "properties": {
+          "reason": {
+            "example": "Double paiement constate par le support",
+            "maxLength": 300,
+            "minLength": 5,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
         ],
         "type": "object"
       },
@@ -1888,6 +1920,191 @@
         ],
         "tags": [
           "notifications"
+        ]
+      }
+    },
+    "/v1/admin/payments": {
+      "get": {
+        "operationId": "AdminPayments_list",
+        "parameters": [
+          {
+            "description": "\"a_verifier\" : paiements dont le fournisseur n’a pas donne l’issue",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "initie",
+                "en_attente",
+                "a_verifier",
+                "confirme",
+                "echoue",
+                "remboursement_en_cours",
+                "rembourse"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Paiements (filtre par statut, ex. a_verifier)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/reconciliations": {
+      "get": {
+        "operationId": "AdminPayments_reports",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "day",
+            "required": false,
+            "schema": {
+              "example": "2026-11-09",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 366,
+              "minimum": 1,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rapports de rapprochement quotidien fournisseur ↔ base",
+        "tags": [
+          "billing"
+        ]
+      },
+      "post": {
+        "operationId": "AdminPayments_reconcile",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Relance le rapprochement d’un jour (remplace le rapport existant)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}/check": {
+      "post": {
+        "operationId": "AdminPayments_check",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Interroge tout de suite le fournisseur sur un paiement en attente ou a verifier",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}/refund": {
+      "post": {
+        "operationId": "AdminPayments_refund",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rembourse un paiement confirme (journalise ; une relance ne rembourse jamais deux fois)",
+        "tags": [
+          "billing"
         ]
       }
     },
@@ -2368,6 +2585,40 @@
       }
     },
     "/v1/connectors/{name}/dlr": {
+      "get": {
+        "operationId": "Connectors_dlrGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "enum": [
+                "sms",
+                "whatsapp"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Accuse de reception en GET (parametres d’URL)",
+        "tags": [
+          "connectors"
+        ]
+      },
       "post": {
         "operationId": "Connectors_dlr",
         "parameters": [
@@ -2376,6 +2627,18 @@
             "name": "name",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "enum": [
+                "sms",
+                "whatsapp"
+              ],
               "type": "string"
             }
           }
@@ -2396,7 +2659,7 @@
             "description": ""
           }
         },
-        "summary": "Accuse de reception d’un SMS (DLR)",
+        "summary": "Accuse de reception d’un SMS ou d’un message WhatsApp (?channel=whatsapp)",
         "tags": [
           "connectors"
         ]
@@ -2438,6 +2701,28 @@
       }
     },
     "/v1/connectors/{name}/sms": {
+      "get": {
+        "operationId": "Connectors_inboundSmsGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "SMS entrant en GET (parametres d’URL), pour les passerelles qui n’envoient pas de corps",
+        "tags": [
+          "connectors"
+        ]
+      },
       "post": {
         "operationId": "Connectors_inboundSms",
         "parameters": [
@@ -2501,7 +2786,7 @@
             "description": ""
           }
         },
-        "summary": "Etape de session USSD (menu du pack pays)",
+        "summary": "Etape de session USSD (menu du pack pays, saisie cumulee ou derniere saisie, ecrans pagines)",
         "tags": [
           "connectors"
         ]
@@ -5861,7 +6146,17 @@
     "/v1/subscriptions/checkout": {
       "post": {
         "operationId": "Billing_checkout",
-        "parameters": [],
+        "parameters": [
+          {
+            "description": "Alternative a `id` (1 a 100 caracteres) : meme cle, meme paiement",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
