@@ -1793,6 +1793,7 @@
     font-weight: 700;
     font-size: 11px;
     color: #fff;
+    background: var(--blue-600);
   }
   .pay-wait {
     display: flex;

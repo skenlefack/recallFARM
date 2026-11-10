@@ -2,9 +2,11 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
 import { api, listOf } from '../../api/endpoints';
-import type { PaymentMethod, PaymentStatus, Plan, PlanCode } from '../../api/types';
+import type { PaymentMethodOption, PaymentStatus, Plan, PlanCode } from '../../api/types';
 import { Card, Dialog, ErrorState, FieldErrors, Pill, Seg, Skeleton, useToast } from '../../components/ui';
 import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL } from '../../lib/format';
+import { t } from '../../lib/i18n';
+import { checkoutOutcome, methodInitials } from '../../lib/payment';
 import { priceOf } from '../../lib/plans';
 import { useAuth } from '../auth';
 import { usePageMeta } from '../hooks';
@@ -70,11 +72,16 @@ export function usePaymentPolling(paymentId: string | null) {
   return { status, done, timedOut: timedOut && !done, remaining: Math.max(0, Math.ceil((POLL_MAX_MS - elapsed) / 1000)), error: q.error };
 }
 
-function Checkout({ plan, period, onClose }: { plan: Plan | null; period: Period; onClose: () => void }) {
+function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; period: Period; methods: PaymentMethodOption[]; onClose: () => void }) {
   const { me, orgId } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
-  const [method, setMethod] = useState<PaymentMethod>('orange_money');
+  const [chosen, setChosen] = useState<string | null>(null);
+  const method = chosen && methods.some((x) => x.code === chosen) ? chosen : (methods[0]?.code ?? '');
+  const methodLabel = methods.find((x) => x.code === method)?.label ?? '';
+  /** PAY-PENDING : issue inconnue, on suit le paiement sans jamais relancer. */
+  const [unknownOutcome, setUnknownOutcome] = useState(false);
+  const statusRef = useRef<HTMLDivElement>(null);
   const [tel, setTel] = useState(me?.phone ? fmtPhone(me.phone) : '');
   const [paymentId, setPaymentId] = useState<string | null>(null);
   const poll = usePaymentPolling(paymentId);
@@ -106,21 +113,38 @@ function Checkout({ plan, period, onClose }: { plan: Plan | null; period: Period
         phone: normalizePhone(tel),
       }),
     onSuccess: (r) => setPaymentId(r.payment_id),
+    onError: (err) => {
+      const o = checkoutOutcome(err);
+      if (o.kind === 'pending') {
+        setUnknownOutcome(true);
+        setPaymentId(o.paymentId);
+      }
+    },
   });
+  const refused = m.isError && checkoutOutcome(m.error).kind === 'refused';
+  const otherError = m.isError && !refused && checkoutOutcome(m.error).kind === 'other';
   const price = plan ? priceOf(plan, plan.code, period) : null;
   const phoneErr = m.error instanceof ApiError ? m.error.fields?.phone : undefined;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (m.isPending || !method) return; // pas de double envoi
+    setUnknownOutcome(false);
     m.mutate();
   };
   const reset = () => {
+    setUnknownOutcome(false);
     setPaymentId(null);
     m.reset();
     announced.current = false;
   };
 
   const waiting = !!paymentId && !poll.done && !poll.timedOut;
+  const outcomeKey = `${paymentId ?? ''}|${poll.status ?? ''}|${poll.timedOut}|${refused}`;
+  useEffect(() => {
+    if (refused || (paymentId && (poll.done || poll.timedOut))) statusRef.current?.focus();
+  }, [outcomeKey, refused, paymentId, poll.done, poll.timedOut]);
+  const canRetry = poll.status === 'echoue' || (poll.timedOut && !unknownOutcome);
   return (
     <Dialog
       open={!!plan}
@@ -133,15 +157,15 @@ function Checkout({ plan, period, onClose }: { plan: Plan | null; period: Period
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Annuler
             </button>
-            <button type="submit" form="checkout-form" className="btn btn-primary" disabled={m.isPending}>
-              {m.isPending ? 'Envoi de la demande…' : 'Payer'}
+            <button type="submit" form="checkout-form" className="btn btn-primary" disabled={m.isPending || !method} aria-busy={m.isPending}>
+              {m.isPending ? t('pay.sending') : t('pay.pay')}
             </button>
           </>
         ) : poll.done || poll.timedOut ? (
           <>
-            {poll.status !== 'confirme' && (
+            {canRetry && (
               <button type="button" className="btn btn-ghost" onClick={reset}>
-                Réessayer
+                {t('pay.retry')}
               </button>
             )}
             <button type="button" className="btn btn-primary" onClick={onClose}>
@@ -159,37 +183,46 @@ function Checkout({ plan, period, onClose }: { plan: Plan | null; period: Period
         <form id="checkout-form" className="stack" onSubmit={submit} noValidate>
           <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, gap: 8 }}>
             <legend className="label" style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500, marginBottom: 6 }}>
-              Moyen de paiement
+              {t('pay.method.legend')}
             </legend>
-            <div className="methods">
-              <label className="method">
-                <input type="radio" name="method" value="orange_money" checked={method === 'orange_money'} onChange={() => setMethod('orange_money')} />
-                <span className="method-logo" style={{ background: '#FF7900' }} aria-hidden="true">
-                  OM
-                </span>
-                Orange Money
-              </label>
-              <label className="method">
-                <input type="radio" name="method" value="mtn_momo" checked={method === 'mtn_momo'} onChange={() => setMethod('mtn_momo')} />
-                <span className="method-logo" style={{ background: '#FFCB05', color: '#062B4F' }} aria-hidden="true">
-                  MTN
-                </span>
-                MTN MoMo
-              </label>
-            </div>
+            {methods.length === 0 ? (
+              <p className="muted">{t('pay.method.none')}</p>
+            ) : (
+              <div className="methods">
+                {methods.map((x) => (
+                  <label key={x.code} className="method">
+                    <input type="radio" name="method" value={x.code} checked={method === x.code} onChange={() => setChosen(x.code)} />
+                    <span className="method-logo" aria-hidden="true">
+                      {methodInitials(x.label)}
+                    </span>
+                    {x.label}
+                  </label>
+                ))}
+              </div>
+            )}
           </fieldset>
           <div className="field">
-            <label htmlFor="pay-phone">Numéro {method === 'orange_money' ? 'Orange Money' : 'MTN MoMo'}</label>
+            <label htmlFor="pay-phone">{t('pay.number', { method: methodLabel })}</label>
             <input id="pay-phone" className="input" type="tel" inputMode="tel" value={tel} onChange={(e) => setTel(e.target.value)} aria-invalid={!!phoneErr} aria-describedby="pay-phone-help" />
             <span id="pay-phone-help" className={phoneErr ? 'field-err' : 'muted small'}>
               {phoneErr ?? 'Vous recevrez une demande de confirmation sur ce téléphone.'}
             </span>
           </div>
-          {m.error && !phoneErr && <FieldErrors error={m.error} />}
+          {refused && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-crit" role="alert">
+              <b>{t('pay.init.title')}.</b> {t('pay.init.body')}
+            </div>
+          )}
+          {otherError && !phoneErr && <FieldErrors error={m.error} />}
         </form>
       ) : (
-        <div className="pay-wait" aria-live="polite">
-          {waiting && (
+        <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
+          {unknownOutcome && poll.status !== 'confirme' && poll.status !== 'echoue' && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              <b>{t('pay.pending.title')}.</b> {t('pay.pending.body')}
+            </p>
+          )}
+          {waiting && !unknownOutcome && (
             <>
               <div className="pay-phone" aria-hidden="true">
                 <div className="pay-ussd">
@@ -203,7 +236,7 @@ function Checkout({ plan, period, onClose }: { plan: Plan | null; period: Period
               <div>
                 <h3 style={{ fontSize: 17, fontWeight: 600 }}>Validez sur votre téléphone</h3>
                 <p className="muted">
-                  Une demande {method === 'orange_money' ? 'Orange Money' : 'MTN MoMo'} a été envoyée au {tel}. Saisissez votre code secret pour confirmer.
+                  Une demande {methodLabel} a été envoyée au {tel}. Saisissez votre code secret pour confirmer.
                 </p>
               </div>
               <p className="countdown">
@@ -211,9 +244,14 @@ function Checkout({ plan, period, onClose }: { plan: Plan | null; period: Period
               </p>
             </>
           )}
+          {waiting && unknownOutcome && (
+            <p className="countdown">
+              Vérification toutes les 5 s · {Math.floor(poll.remaining / 60)}:{String(poll.remaining % 60).padStart(2, '0')}
+            </p>
+          )}
           {poll.status === 'confirme' && (
             <p className="notice notice-ok" style={{ width: '100%' }}>
-              <b>Paiement confirmé.</b> Votre formule {PLAN_LABEL[plan?.code ?? '']} est active. Un reçu vous est envoyé par SMS.
+              <b>{t('pay.confirmed')}</b> Votre formule {PLAN_LABEL[plan?.code ?? '']} est active. Un reçu vous est envoyé par SMS.
             </p>
           )}
           {poll.status === 'echoue' && (
@@ -238,7 +276,9 @@ export default function Subscriptions() {
   const [period, setPeriod] = useState<Period>('monthly');
   const [buying, setBuying] = useState<Plan | null>(null);
   const sub = useQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription });
-  const plans = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM'), select: listOf });
+  const plansQ = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM') });
+  const plans = { ...plansQ, data: plansQ.data ? listOf(plansQ.data) : undefined };
+  const methods = (!Array.isArray(plansQ.data) && plansQ.data?.payment_methods) || [];
   const dash = useAuth();
   const current = sub.data?.plan;
   const currentPlan = plans.data?.find((p) => p.code === current);
@@ -382,9 +422,11 @@ export default function Subscriptions() {
             })}
           </div>
         )}
-        <p className="footnote">Paiement par Orange Money ou MTN MoMo. Les prix Structure dépendent du nombre d'éleveurs suivis.</p>
+        <p className="footnote">
+          {methods.length > 0 ? t('pay.footnote', { methods: methods.map((x) => x.label).join(', ') }) : t('pay.footnote.none')}
+        </p>
       </section>
-      <Checkout plan={buying} period={period} onClose={() => setBuying(null)} />
+      <Checkout plan={buying} period={period} methods={methods} onClose={() => setBuying(null)} />
     </>
   );
 }
