@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
 import { AccessService } from '../common/access.service';
@@ -9,6 +9,7 @@ import { User } from '../database/entities';
 import { HealthEventsService } from '../health/health-events.service';
 import { JournalService } from '../journal/journal.service';
 import { ParamsService } from '../params/params.service';
+import { UssdScreen } from '../connectors/ussd';
 import { MessagingService } from './messaging.service';
 
 /**
@@ -17,6 +18,8 @@ import { MessagingService } from './messaging.service';
  */
 @Injectable()
 export class InboundService {
+  private readonly logger = new Logger('Inbound');
+
   constructor(
     private readonly ds: DataSource,
     private readonly health: HealthEventsService,
@@ -76,51 +79,61 @@ export class InboundService {
     return { handled: !!reminderId, reminder_id: reminderId, reply };
   }
 
-  /** Handles one USSD hop; the response starts with "CON " (continue) or "END " (close). */
-  async handleUssd(sessionId: string, phone: string, text: string): Promise<{ response: string }> {
+  /**
+   * One screen of the pilot USSD menu (02 E80, EF-NOT-05) for the inputs typed so far in the session.
+   * Every path asks for at most 3 inputs: menu, then at most two more screens before the closing message.
+   * Paging, session state and the response format are handled by UssdSessionService and the connector.
+   */
+  async ussdScreen(sessionId: string, phone: string, parts: string[]): Promise<UssdScreen> {
+    const cont = (text: string): UssdScreen => ({ text, end: false });
+    const end = (text: string): UssdScreen => ({ text, end: true });
     const user = await this.userByPhone(phone);
-    if (!user) return { response: 'END Numéro inconnu de RecallFarm.' };
+    if (!user) return end('Numéro inconnu de RecallFarm.');
     const resolved = await this.params.resolveBase();
     const menu = Object.values(resolved.objects).find((o) => o.kind === 'ussd_menu') as { items?: string[] } | undefined;
     const items = menu?.items ?? ['rappels_du_jour', 'confirmer_rappel', 'declarer_mortalite'];
-    const parts = text ? text.split('*') : [];
     if (!parts.length) {
-      return { response: `CON RecallFarm\n${items.map((it, i) => `${i + 1}. ${this.params.label(resolved, it)}`).join('\n')}` };
+      return cont(`RecallFarm\n${items.map((it, i) => `${i + 1}. ${this.params.label(resolved, it)}`).join('\n')}`);
     }
     const choice = items[Number(parts[0]) - 1];
     if (choice === 'rappels_du_jour') {
       const list = await this.openReminders(user, true);
-      if (!list.length) return { response: 'END Aucun rappel pour aujourd’hui.' };
-      return { response: `END ${list.map((r) => `${this.params.label(resolved, r.disease)} ${r.subject_ref} (code ${r.short_code})`).join('\n')}` };
+      if (!list.length) return end('Aucun rappel pour aujourd’hui.');
+      return end(list.map((r) => `${this.params.label(resolved, r.disease)} ${r.subject_ref} (code ${r.short_code})`).join('\n'));
     }
     if (choice === 'confirmer_rappel') {
-      if (parts.length < 2) return { response: 'CON Entrez le code du rappel :' };
+      if (parts.length < 2) return cont('Entrez le code du rappel :');
       const r = await this.confirmByCode(user, parts[1].trim().toUpperCase(), 'ussd');
-      return { response: r ? `END Merci, rappel ${this.params.label(resolved, r.disease)} confirmé.` : 'END Code introuvable ou déjà confirmé.' };
+      return end(r ? `Merci, rappel ${this.params.label(resolved, r.disease)} confirmé.` : 'Code introuvable ou déjà confirmé.');
     }
     if (choice === 'declarer_mortalite') {
       const ids = await this.access.farmIds(user);
       const batches: Array<{ id: string; name: string; farm_id: string }> = ids.length
         ? await this.ds.query(`SELECT id, name, farm_id FROM batches WHERE farm_id = ANY($1) AND deleted_at IS NULL AND status = 'en_cours' ORDER BY name LIMIT 8`, [ids])
         : [];
-      if (!batches.length) return { response: 'END Aucun lot en cours.' };
-      if (parts.length < 2) return { response: `CON Quel lot ?\n${batches.map((b, i) => `${i + 1}. ${b.name}`).join('\n')}` };
+      if (!batches.length) return end('Aucun lot en cours.');
+      if (parts.length < 2) return cont(`Quel lot ?\n${batches.map((b, i) => `${i + 1}. ${b.name}`).join('\n')}`);
       const b = batches[Number(parts[1]) - 1];
-      if (!b) return { response: 'END Choix invalide.' };
-      if (parts.length < 3) return { response: `CON Nombre de morts aujourd’hui (${b.name}) :` };
+      if (!b) return end('Choix invalide.');
+      if (parts.length < 3) return cont(`Nombre de morts aujourd’hui (${b.name}) :`);
       const n = Number(parts[2]);
-      if (!Number.isInteger(n) || n < 0) return { response: 'END Nombre invalide.' };
+      if (!/^\d{1,6}$/.test(parts[2].trim()) || !Number.isInteger(n)) return end('Nombre invalide.');
       const today = todayIn();
       const existing = await this.journal.findBySubjectDate('batch', b.id, today);
-      const res = await this.journal.save(
-        user,
-        b.farm_id,
-        { id: existing?.id ?? randomUUID(), subject_type: 'batch', subject_id: b.id, log_date: today, mortality: (existing?.mortality ?? 0) + n, ...(existing?.eggs !== undefined && existing?.eggs !== null ? { eggs: existing.eggs } : {}) },
-        { mode: 'upsert', deviceId: `ussd:${sessionId}` },
-      ).catch((e) => ({ error: e }));
-      if ('error' in res) return { response: 'END Saisie impossible, complétez le journal dans l’application.' };
-      return { response: `END ${n} mort(s) enregistré(s) pour ${b.name}.${res.alerts.length ? ' Alerte transmise.' : ''}` };
+      try {
+        const res = await this.journal.save(
+          user,
+          b.farm_id,
+          { id: existing?.id ?? randomUUID(), subject_type: 'batch', subject_id: b.id, log_date: today, mortality: (existing?.mortality ?? 0) + n, ...(existing?.eggs !== undefined && existing?.eggs !== null ? { eggs: existing.eggs } : {}) },
+          { mode: 'upsert', deviceId: `ussd:${sessionId}` },
+        );
+        return end(`${n} mort(s) enregistré(s) pour ${b.name}.${res.alerts.length ? ' Alerte transmise.' : ''}`);
+      } catch (e) {
+        // The farmer is told to use the app; the cause is kept in the logs (m11: no silent catch).
+        this.logger.warn(`ussd ${sessionId}: mortalite non enregistree (${(e as Error).message})`);
+        return end('Saisie impossible, complétez le journal dans l’application.');
+      }
     }
-    return { response: 'END Choix invalide.' };
+    return end('Choix invalide.');
   }
 }

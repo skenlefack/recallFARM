@@ -196,6 +196,8 @@ export class OutboundMessage {
   @Column('text', { nullable: true }) body: string | null;
   @Column('text', { default: 'en_file' }) status: string;
   @Column('int', { nullable: true }) plan_offset: number | null;
+  /** Adapter that sent the message (connector name, "simulator", "http"); scopes delivery reports. */
+  @Column('text', { nullable: true }) provider: string | null;
   @Column('text', { nullable: true }) provider_ref: string | null;
   @Column('bigint', { nullable: true }) cost_minor: number | null;
   @Column('text', { nullable: true }) currency: string | null;

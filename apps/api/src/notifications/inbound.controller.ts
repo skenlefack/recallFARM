@@ -9,7 +9,9 @@ import { AuthUser, CurrentUser, hasPlatformRole, Public } from '../common/auth';
 import { Errors } from '../common/errors';
 import { decodeCursor, encodeCursor, PageQuery } from '../common/pagination';
 import { config } from '../config';
+import { ussdOptions } from '../connectors/ussd';
 import { InboundService } from './inbound.service';
+import { UssdSessionService } from './ussd-session.service';
 
 export class InboundSmsDto {
   @ApiProperty({ example: '+237690000001' }) @IsString() @MaxLength(20) from: string;
@@ -37,6 +39,7 @@ export class InboundController {
     private readonly ds: DataSource,
     private readonly access: AccessService,
     private readonly inbound: InboundService,
+    private readonly sessions: UssdSessionService,
   ) {}
 
   private checkSecret(secret?: string) {
@@ -69,7 +72,9 @@ export class InboundController {
   @HttpCode(200)
   async ussd(@Headers('x-inbound-secret') secret: string | undefined, @Body() dto: InboundUssdDto) {
     this.checkSecret(secret);
-    return this.inbound.handleUssd(dto.session_id, dto.phone, dto.text);
+    // Generic entry point: cumulative input, 160-character screens paged with "0. Suite".
+    const screen = await this.sessions.hop('inbound', dto.session_id, dto.phone, dto.text, ussdOptions());
+    return { response: `${screen.end ? 'END' : 'CON'} ${screen.text}` };
   }
 
   /** Outbound journal: platform admins see everything, organisation managers see their members. */

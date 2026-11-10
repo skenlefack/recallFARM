@@ -4,9 +4,9 @@ import { resolve } from 'path';
 import { ConnectorPaymentProvider, PaymentProviderError } from '../billing/payment.providers';
 import { reloadConfig } from '../config';
 import { Payment } from '../database/entities';
-import { ConnectorMessageProvider } from '../notifications/providers';
-import { ConnectorHttp, FetchFn, verifyInbound } from './connector-http';
-import { ConnectorConfigError, ConnectorRegistry, parseProvidersConfig } from './connector-registry';
+import { ConnectorMessageProvider, parseMinor, SimulatorSmsProvider } from '../notifications/providers';
+import { ConnectorHttp, FetchFn, inspectInbound, parseTimestamp, verifyInbound } from './connector-http';
+import { assertUssdLockBackend, ConnectorConfigError, ConnectorRegistry, parseProvidersConfig } from './connector-registry';
 import { ConnectorSpec, ProvidersConfig } from './connector.types';
 import { missingEnv, validateProvidersConfig } from './connector.validation';
 import { amountMajor, formatPhone, getPath, render, renderText, resolveEnv, smsSegments, TemplateError, toE164 } from './template';
@@ -100,6 +100,17 @@ describe('template helpers', () => {
     expect(smsSegments('ê'.repeat(71)).segments).toBe(2);
   });
 
+  it('never splits an extension character or a surrogate pair across two segments (m14)', () => {
+    // 152 septets then "€" (2 septets): the phone moves "€" to part 2, then 153 more septets need part 3.
+    const gsm = `${'a'.repeat(152)}€${'a'.repeat(152)}`;
+    expect(smsSegments(gsm)).toEqual({ encoding: 'gsm7', units: 306, segments: 3 });
+    expect(smsSegments('a'.repeat(306)).segments).toBe(2);
+    // 66 UTF-16 units then an emoji (2 units): the pair moves to part 2.
+    const ucs = `${'ê'.repeat(66)}😀${'ê'.repeat(66)}`;
+    expect(smsSegments(ucs)).toEqual({ encoding: 'ucs2', units: 134, segments: 3 });
+    expect(smsSegments('ê'.repeat(134)).segments).toBe(2);
+  });
+
   it('writes major-unit amounts without floating point', () => {
     expect(amountMajor(2500, 'XAF')).toBe('2500');
     expect(amountMajor(1999, 'EUR')).toBe('19.99');
@@ -163,6 +174,140 @@ describe('providers configuration validation', () => {
     expect(validateProvidersConfig(ussd).join()).toContain('inbound_auth: obligatoire');
     const authed = { connectors: { ag: { ...withInbound.connectors.ag, inbound_auth: { type: 'header', name: 'x', value: 'y' } } } };
     expect(validateProvidersConfig(authed)).toEqual([]);
+  });
+
+  it('validates the USSD options (text mode, screen size, session, response values)', () => {
+    const auth = { type: 'header', name: 'x', value: 'y' };
+    const ok = {
+      connectors: {
+        uu: {
+          inbound_auth: auth,
+          ussd: {
+            inbound: { session_id: 's', phone: 'p', text: 't', text_mode: 'last', separator: '*' },
+            max_chars: 182,
+            session_ttl_s: 120,
+            more: { key: '99', label: 'Plus' },
+            response: { type: 'json', body: { m: '{{message}}', a: '{{continue}}' }, continue_values: { continue: 'request', end: 'end' }, headers: { Freeflow: '{{continue}}' } },
+          },
+        },
+      },
+    };
+    expect(validateProvidersConfig(ok)).toEqual([]);
+    const bad = {
+      connectors: {
+        uu: {
+          inbound_auth: auth,
+          ussd: {
+            inbound: { session_id: 's', phone: 'p', text: 't', text_mode: 'diff', separator: '**' },
+            max_chars: 20,
+            session_ttl_s: 5,
+            more: { key: 'x', label: '' },
+            response: { type: 'text', continue_prefix: 1, headers: { a: 1 }, continue_values: { continue: {} } },
+          },
+        },
+        vv: { inbound_auth: auth, ussd: { inbound: {}, response: { type: 'json' }, more: 'x' } },
+      },
+    };
+    const joined = validateProvidersConfig(bad).join('\n');
+    for (const f of [
+      'ussd.inbound.text_mode',
+      'ussd.inbound.separator',
+      'ussd.max_chars',
+      'ussd.session_ttl_s',
+      'ussd.more.key',
+      'ussd.more.label',
+      'ussd.response.continue_prefix',
+      'ussd.response.headers',
+      'ussd.response.continue_values',
+      'connectors.vv.ussd.inbound: session_id, phone et text requis',
+      'connectors.vv.ussd.more: objet attendu',
+      'connectors.vv.ussd.response.body: requis',
+    ])
+      expect(joined).toContain(f);
+    expect(validateProvidersConfig({ connectors: { ww: { inbound_auth: auth, ussd: 'x' } } }).join()).toContain('ussd: objet attendu');
+    expect(validateProvidersConfig({ connectors: { ww: { inbound_auth: auth, ussd: { inbound: { session_id: 's', phone: 'p', text: 't' }, response: { type: 'xml' } } } } }).join()).toContain(
+      'ussd.response.type',
+    );
+  });
+
+  it('validates the optional payment operations (status, refund, list)', () => {
+    const base = {
+      base_url: 'https://h.example',
+      inbound_auth: { type: 'header', name: 'x', value: 'y' },
+      payment: {
+        initiate: { url: '/c', result: { ref: 'id' } },
+        webhook: { ref: 'id', status: 's', status_map: { OK: 'confirme' } },
+        status: { method: 'GET', url: '/p/{{provider_ref}}', result: { status: 'state', status_map: { OK: 'confirme', KO: 'echoue' } } },
+        refund: { url: '/r', body: { key: '{{refund_id}}' }, result: { ref: 'id', status: 's', status_map: { DONE: 'rembourse' } } },
+        list: { method: 'GET', url: '/tx?date={{date}}', result: { items: 'data', ref: 'id', status: 's', status_map: { OK: 'confirme' } } },
+      },
+    };
+    expect(validateProvidersConfig({ connectors: { pp: base } })).toEqual([]);
+    const bad = {
+      connectors: {
+        pp: {
+          ...base,
+          payment: {
+            ...base.payment,
+            status: { url: '/p', result: { status_map: {} } },
+            refund: { url: '/r', result: { status_map: { DONE: 'paye' } } },
+            list: { url: '/l', result: { items: 'data', status: 's', status_map: { OK: 'x' } } },
+          },
+        },
+        qq: { ...base, payment: { ...base.payment, status: { url: '/p', result: { status: 's', status_map: [] } }, refund: { url: '/r', result: 'x' }, list: { url: '/l' } } },
+      },
+    };
+    const joined = validateProvidersConfig(bad).join('\n');
+    for (const f of [
+      'connectors.pp.payment.status.result.status: requis',
+      'connectors.pp.payment.refund.result.status: requis avec status_map',
+      'payment.refund.result.status_map.DONE: rembourse, echoue ou en_attente',
+      'connectors.pp.payment.list.result: payment_id ou ref requis',
+      'payment.list.result.status_map.OK: confirme, echoue ou en_attente',
+      'connectors.qq.payment.status.result.status_map: objet requis',
+      'connectors.qq.payment.refund.result: objet attendu',
+      'connectors.qq.payment.list.result: items et status requis',
+      "connectors.pp.payment.refund: {{refund_id}} requis (url, headers ou body) comme cle d'idempotence",
+    ])
+      expect(joined).toContain(f);
+  });
+
+  it('requires {{refund_id}} in refunds and validates http_map and refund_status (M3)', () => {
+    const pay = (extra: Record<string, unknown>) => ({
+      connectors: {
+        pp: {
+          base_url: 'https://h.example',
+          inbound_auth: { type: 'header', name: 'x', value: 'y' },
+          payment: { initiate: { url: '/c', result: { ref: 'id' } }, webhook: { ref: 'id', status: 's', status_map: { OK: 'confirme' } }, ...extra },
+        },
+      },
+    });
+    const refund = { url: '/r/{{refund_id}}', result: { http_map: { '409': 'rembourse', '202': 'en_attente' } } };
+    const refundStatus = { method: 'GET', url: '/r/{{refund_id}}', result: { status: 's', status_map: { OK: 'rembourse' } } };
+    expect(validateProvidersConfig(pay({ refund, refund_status: refundStatus }))).toEqual([]);
+    expect(validateProvidersConfig(pay({ refund: { url: '/r', headers: { 'Idempotency-Key': '{{refund_id}}' } } }))).toEqual([]);
+    const joined = [
+      ...validateProvidersConfig(pay({ refund: { url: '/r/{{refund_id}}', result: { http_map: { abc: 'rembourse', '409': 'fait' } } }, refund_status: { url: '/s', result: {} } })),
+      ...validateProvidersConfig(pay({ refund_status: refundStatus })),
+    ].join('\n');
+    for (const f of [
+      'payment.refund.result.http_map.abc: code HTTP attendu',
+      'payment.refund.result.http_map.409: rembourse, echoue ou en_attente',
+      'payment.refund_status.result.status: requis',
+      'payment.refund_status: demande payment.refund',
+    ])
+      expect(joined).toContain(f);
+  });
+
+  it('validates the HMAC anti-replay options', () => {
+    const c = (a: Record<string, unknown>) => ({ connectors: { hh: { inbound_auth: { type: 'hmac_sha256', header: 's', secret: 'k', ...a } } } });
+    expect(validateProvidersConfig(c({ timestamp_header: 'x-ts', tolerance_s: 120, signed_payload: '{{timestamp}}.{{body}}' }))).toEqual([]);
+    const joined = [
+      ...validateProvidersConfig(c({ timestamp_header: '', tolerance_s: 1, signed_payload: 'x' })),
+      ...validateProvidersConfig(c({ signed_payload: '{{timestamp}}.{{body}}' })),
+    ].join('\n');
+    for (const f of ['timestamp_header: texte requis', 'tolerance_s: entre 10 et 3600', 'signed_payload: doit contenir {{body}} une seule fois', '{{timestamp}} demande timestamp_header'])
+      expect(joined).toContain(f);
   });
 
   it('rejects non-objects and invalid JSON', () => {
@@ -260,6 +405,40 @@ describe('ConnectorHttp', () => {
     expect(f.calls[4].headers.authorization).toBe('Bearer T2');
   });
 
+  it('shares one OAuth2 token request between concurrent calls, and renews a revoked token on 401 (m7)', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((ok) => (release = ok));
+    const calls: string[] = [];
+    let tokenN = 0;
+    const fn: FetchFn = async (input, init) => {
+      const url = String(input);
+      calls.push(`${url} ${(init?.headers as Record<string, string>).authorization ?? ''}`);
+      if (url.endsWith('/token')) {
+        await gate;
+        tokenN++;
+        return new Response(JSON.stringify({ access_token: `T${tokenN}`, expires_in: 3600 }));
+      }
+      const auth = (init?.headers as Record<string, string>).authorization;
+      return new Response('{}', { status: auth === 'Bearer T1' && url.endsWith('/revoked') ? 401 : 200 });
+    };
+    const http = new ConnectorHttp('o', { base_url: 'https://h.example', auth: { type: 'oauth2_client_credentials', token_url: 'https://h.example/token', client_id: 'i', client_secret: 's' } }, fn);
+    const all = Promise.all([http.call({ url: '/a' }, {}), http.call({ url: '/b' }, {}), http.call({ url: '/c' }, {})]);
+    release();
+    await all;
+    expect(calls.filter((c) => c.includes('/token'))).toHaveLength(1);
+    const res = await http.call({ url: '/revoked' }, {});
+    expect(res.ok).toBe(true);
+    expect(calls.slice(-3)).toEqual([
+      expect.stringMatching(/\/revoked Bearer T1$/),
+      expect.stringMatching(/\/token Basic /),
+      expect.stringMatching(/\/revoked Bearer T2$/),
+    ]);
+    // Without OAuth2 a 401 is returned as is (no retry).
+    const plain = fakeFetch([{ status: 401 }]);
+    expect((await new ConnectorHttp('p', { base_url: 'https://h.example' }, plain.fn).call({ url: '/x' }, {})).http_status).toBe(401);
+    expect(plain.calls).toHaveLength(1);
+  });
+
   it('puts OAuth2 client credentials in the body when asked, and fails without a token', async () => {
     const f = fakeFetch([{ body: { token: 'T' } }, { body: {} }, { body: {} }]);
     const auth = { type: 'oauth2_client_credentials' as const, token_url: 'https://h.example/t2', client_id: 'id', client_secret: 's', client_auth: 'body' as const, token_path: 'token', extra: { audience: 'x' } };
@@ -309,6 +488,30 @@ describe('verifyInbound', () => {
     const b64 = createHmac('sha512', 'k').update(body).digest('base64');
     expect(verifyInbound({ type: 'hmac_sha512', header: 'sig', secret: 'k', encoding: 'base64' }, { headers: { sig: b64 }, query: {}, rawBody: body })).toBe(true);
   });
+
+  it('refuses stale or future signing times and signs "{{timestamp}}.{{body}}" (anti-replay, m8)', () => {
+    const now = Date.parse('2026-11-10T10:00:00Z');
+    const ts = String(Math.floor(now / 1000));
+    const a = { type: 'hmac_sha256' as const, header: 'x-sig', secret: 'k', timestamp_header: 'x-ts', tolerance_s: 60, signed_payload: '{{timestamp}}.{{body}}' };
+    const sign = (t: string) => createHmac('sha256', 'k').update(`${t}.${body.toString()}`).digest('hex');
+    const ok = inspectInbound(a, { headers: { 'x-sig': sign(ts), 'x-ts': ts }, query: {}, rawBody: body }, now);
+    expect(ok).toEqual({ ok: true, replay_key: `sha256:${sign(ts)}`, replay_ttl_ms: 120_000 });
+    const old = String(Math.floor(now / 1000) - 61);
+    expect(inspectInbound(a, { headers: { 'x-sig': sign(old), 'x-ts': old }, query: {}, rawBody: body }, now)).toEqual({ ok: false, reason: 'timestamp' });
+    expect(inspectInbound(a, { headers: { 'x-sig': sign(ts) }, query: {}, rawBody: body }, now)).toEqual({ ok: false, reason: 'timestamp' });
+    // The time is part of the signature: changing it breaks the signature.
+    const shifted = String(Number(ts) + 1);
+    expect(inspectInbound(a, { headers: { 'x-sig': sign(ts), 'x-ts': shifted }, query: {}, rawBody: body }, now)).toEqual({ ok: false, reason: 'signature' });
+    expect(inspectInbound({ type: 'header', name: 'x', value: 'v' }, { headers: { x: 'w' }, query: {} })).toEqual({ ok: false, reason: 'secret' });
+  });
+
+  it('reads signing times in seconds, milliseconds or ISO 8601', () => {
+    expect(parseTimestamp('1762768800')).toBe(1762768800000);
+    expect(parseTimestamp('1762768800123')).toBe(1762768800123);
+    expect(parseTimestamp('2026-11-10T10:00:00Z')).toBe(Date.parse('2026-11-10T10:00:00Z'));
+    expect(parseTimestamp('demain')).toBeNull();
+    expect(parseTimestamp('2026-11-10')).toBeNull();
+  });
 });
 
 describe('ConnectorMessageProvider (SMS through any aggregator)', () => {
@@ -336,7 +539,8 @@ describe('ConnectorMessageProvider (SMS through any aggregator)', () => {
     expect(res).toEqual({ status: 'envoye', provider_ref: 'MSG-1', cost_minor: 25, currency: 'XAF' });
     const sent = JSON.parse(calls[0].body!);
     expect(sent).toMatchObject({ from: 'RecallFarm', to: '237690000001', message: 'Rappel vaccin' });
-    expect(sent.client_ref).toMatch(/^[0-9a-f]{16}$/);
+    // Without a journal id (admin test), a fresh UUID is used as idempotency key.
+    expect(sent.client_ref).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(calls[0].url).toBe('https://api.agregateur.example/v1/sms/messages');
   });
 
@@ -344,6 +548,39 @@ describe('ConnectorMessageProvider (SMS through any aggregator)', () => {
     const { p } = provider([{ body: { data: { id: 'MSG-2' } } }]);
     const res = await p.send('+237690000001', 'a'.repeat(200));
     expect(res.cost_minor).toBe(30);
+  });
+
+  it('sends our journal id as {{message_id}}, the provider idempotency key (m6)', async () => {
+    const { p, calls } = provider([{ body: { data: { id: 'MSG-3' } } }]);
+    await p.send('+237690000001', 'x', { message_id: '0b7c6f2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f' });
+    expect(JSON.parse(calls[0].body!).client_ref).toBe('0b7c6f2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f');
+  });
+
+  it('keeps a cost only with its currency, and only an integer or a string of digits (m3)', async () => {
+    expect([parseMinor(25), parseMinor('25'), parseMinor(' 7 ')]).toEqual([25, 25, 7]);
+    for (const bad of ['', true, 1.5, -3, '2.5', '12a', null, undefined, {}]) expect(parseMinor(bad)).toBeUndefined();
+    const registry = new ConnectorRegistry(example, fakeFetch([{ body: { data: { id: 'A', cost: '' } } }, { body: { data: { id: 'B', cost: 40, cur: 'EUR' } } }, { body: { data: { id: 'C', cost: 9 } } }]).fn);
+    const { client, spec } = registry.get('agregateur_exemple')!;
+    // Empty cost string: not "0", the per-segment fallback applies.
+    expect(await new ConnectorMessageProvider(client, spec.sms!).send('+237690000001', 'x')).toMatchObject({ cost_minor: 15, currency: 'XAF' });
+    // Currency read in the response wins over the configured one.
+    const withCurrency = { ...spec.sms!, send: { ...spec.sms!.send, result: { ...spec.sms!.send.result, currency: 'data.cur' } } };
+    expect(await new ConnectorMessageProvider(client, withCurrency).send('+237690000001', 'x')).toMatchObject({ cost_minor: 40, currency: 'EUR' });
+    // No currency anywhere: no cost recorded.
+    const noCurrency = { ...spec.sms!, cost: undefined };
+    expect(await new ConnectorMessageProvider(client, noCurrency).send('+237690000001', 'x')).toEqual({ status: 'envoye', provider_ref: 'C' });
+  });
+
+  it('simulator: records a cost only when SMS_SIM_CURRENCY is set (no currency in code, m4)', async () => {
+    const sim = new SimulatorSmsProvider();
+    process.env.SMS_SIM_CURRENCY = '';
+    reloadConfig();
+    expect(await sim.send('+237690000001', 'x')).toEqual({ status: 'envoye', provider_ref: expect.stringMatching(/^SIMSMS-/) });
+    process.env.SMS_SIM_CURRENCY = 'XOF';
+    reloadConfig();
+    expect(await sim.send('+237690000001', 'a'.repeat(161))).toMatchObject({ cost_minor: 30, currency: 'XOF' });
+    delete process.env.SMS_SIM_CURRENCY;
+    reloadConfig();
   });
 
   it('reports HTTP and network failures without throwing', async () => {
@@ -406,5 +643,17 @@ describe('ConnectorPaymentProvider (mobile money through any aggregator)', () =>
     const noRef = new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ body: {} }]).fn));
     await expect(noRef.initiate(payment('orange_money'))).rejects.toBeInstanceOf(PaymentProviderError);
     await expect(new ConnectorPaymentProvider(new ConnectorRegistry(example, fakeFetch([{ body: {} }]).fn)).initiate(payment('orange_money'))).rejects.toMatchObject({ definitive: false });
+  });
+});
+
+describe('USSD lock backend (revue N1)', () => {
+  const example = JSON.parse(readFileSync(EXAMPLE, 'utf8')) as ProvidersConfig;
+  const registry = new ConnectorRegistry(example);
+
+  it('requires REDIS_URL in production when a connector serves USSD', () => {
+    expect(() => assertUssdLockBackend(registry, { NODE_ENV: 'production' })).toThrow(/REDIS_URL requis/);
+    expect(() => assertUssdLockBackend(registry, { NODE_ENV: 'production', REDIS_URL: 'redis://r:6379' })).not.toThrow();
+    expect(() => assertUssdLockBackend(registry, { NODE_ENV: 'development' })).not.toThrow();
+    expect(() => assertUssdLockBackend(ConnectorRegistry.empty(), { NODE_ENV: 'production' })).not.toThrow();
   });
 });

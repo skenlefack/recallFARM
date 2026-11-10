@@ -65,11 +65,18 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
 - **SMS** `SMS_PROVIDER=simulator` stores messages (readable at `/v1/dev/outbox`); `http` posts `{from,to,text}` to `SMS_HTTP_URL`;
   `connector` uses any aggregator described in JSON (`PROVIDERS_CONFIG_FILE`, ADR-002, `infra/providers/README.md`).
 - **Connectors** `src/connectors/`: declarative SMS / WhatsApp / USSD / mobile-money aggregators; callbacks on
-  `/v1/connectors/:name/{sms,dlr,ussd,payment}`; `GET /v1/admin/connectors`, `POST /v1/admin/connectors/:name/test-sms`.
+  `/v1/connectors/:name/{sms,dlr,ussd,payment}` (`sms` and `dlr` also as GET; `dlr?channel=whatsapp`);
+  `GET /v1/admin/connectors`, `POST /v1/admin/connectors/:name/test-sms`.
+- **USSD sessions** (`src/connectors/ussd.ts`, `notifications/ussd-session.service.ts`): cumulative or last-input mode,
+  state in Redis (`REDIS_URL`) or the `ussd_sessions` table (180 s), screens paged at 160 characters ("0. Suite").
+- **Payment operations** (`billing/payment-ops.service.ts`, `payments.scheduler.ts`): status queries for pending payments
+  (capped exponential backoff, then `a_verifier`), refunds (`POST /v1/admin/payments/:id/refund`, `audit_log`), daily
+  reconciliation (`/v1/admin/payments/reconciliations`). Checkout is idempotent (`id` from the client or `Idempotency-Key`).
 - **WhatsApp**: simulator only. **Push** = journaled (`channel=push`), delivered through `/inbox` and sync.
 - **Payments** `PAYMENT_PROVIDER=simulator`: checkout returns `{payment_id, status:"initie", ussd_push:true}` and auto-confirms after
   `PAYMENT_SIM_AUTOCONFIRM_MS` (5 s) through the webhook code path; `POST /v1/dev/payments/:id/confirm|fail` for manual control.
-  Real webhook: `X-Signature` = hex HMAC-SHA256 of the raw body with `PAYMENT_WEBHOOK_SECRET`. Orange/MTN classes exist, not wired.
+  Simulator webhook: `X-Signature` = hex HMAC-SHA256 of the raw body with `PAYMENT_WEBHOOK_SECRET` (closed when
+  `PAYMENT_PROVIDER=connector`: results then arrive only on `/v1/connectors/:name/payment`).
 - **IoT**: `POST /v1/ingest/telemetry` with `X-Device-Key`; rules = device config or pack `sensor_profile.default_alert`.
 - `/v1/dev/*` exists only when `NODE_ENV !== 'production'`.
 

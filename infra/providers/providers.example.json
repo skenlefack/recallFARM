@@ -26,8 +26,11 @@
         }
       },
       "ussd": {
-        "inbound": { "session_id": "sessionId", "phone": "phoneNumber", "text": "text" },
-        "response": { "type": "text" }
+        "inbound": { "session_id": "sessionId", "phone": "phoneNumber", "text": "text", "text_mode": "cumulative" },
+        "max_chars": 160,
+        "session_ttl_s": 180,
+        "more": { "key": "0", "label": "Suite" },
+        "response": { "type": "text", "continue_prefix": "CON ", "end_prefix": "END " }
       },
       "payment": {
         "initiate": {
@@ -52,6 +55,45 @@
           "status": "status",
           "status_map": { "SUCCESS": "confirme", "FAILED": "echoue", "CANCELLED": "echoue", "PENDING": "en_attente" },
           "fees_minor": "fees"
+        },
+        "status": {
+          "method": "GET",
+          "url": "/payments/by-reference/{{reference}}",
+          "result": {
+            "status": "status",
+            "status_map": { "SUCCESS": "confirme", "FAILED": "echoue", "CANCELLED": "echoue", "PENDING": "en_attente" },
+            "fees_minor": "fees",
+            "amount_minor": "amount",
+            "currency": "currency"
+          }
+        },
+        "refund": {
+          "method": "POST",
+          "url": "/payments/refunds",
+          "body": { "idempotency_key": "{{refund_id}}", "transaction_id": "{{provider_ref}}", "amount": "{{amount_minor}}", "reason": "{{reason}}" },
+          "result": {
+            "ref": "refund_id",
+            "status": "state",
+            "status_map": { "DONE": "rembourse", "QUEUED": "en_attente", "REJECTED": "echoue" },
+            "http_map": { "409": "rembourse" }
+          }
+        },
+        "refund_status": {
+          "method": "GET",
+          "url": "/payments/refunds/{{refund_id}}",
+          "result": { "status": "state", "status_map": { "DONE": "rembourse", "QUEUED": "en_attente", "REJECTED": "echoue" } }
+        },
+        "list": {
+          "method": "GET",
+          "url": "/payments?date={{date}}",
+          "result": {
+            "items": "data",
+            "payment_id": "reference",
+            "ref": "transaction_id",
+            "status": "status",
+            "status_map": { "SUCCESS": "confirme", "FAILED": "echoue", "CANCELLED": "echoue" },
+            "amount_minor": "amount"
+          }
         }
       }
     },

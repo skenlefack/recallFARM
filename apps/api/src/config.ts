@@ -39,7 +39,8 @@ export function loadConfig() {
     smsSenderId: env.SMS_SENDER_ID || 'RecallFarm',
     /** Cost recorded by the SMS simulator per segment (ISO 4217 minor units). */
     smsSimCostMinor: int(env.SMS_SIM_COST_MINOR, 15),
-    smsSimCurrency: env.SMS_SIM_CURRENCY || 'XAF',
+    /** ISO 4217 code of the simulated cost; empty = no cost recorded (no currency in code). */
+    smsSimCurrency: env.SMS_SIM_CURRENCY || '',
     whatsappProvider: (env.WHATSAPP_PROVIDER || 'simulator') as 'simulator' | 'connector',
     paymentProvider: (env.PAYMENT_PROVIDER || 'simulator') as 'simulator' | 'connector',
     /** Public base URL of the API, used for aggregator callbacks (…/v1/connectors/:name/payment). */
@@ -47,6 +48,12 @@ export function loadConfig() {
     publicAppUrl: env.PUBLIC_APP_URL || 'http://localhost:8080',
     paymentWebhookSecret: env.PAYMENT_WEBHOOK_SECRET || (production ? '' : `${DEV_SECRET}-webhook`),
     paymentSimAutoConfirmMs: int(env.PAYMENT_SIM_AUTOCONFIRM_MS, 5000),
+    /** Pending payments: first status query after N minutes, then N, 2N, 4N... capped (M6). */
+    paymentStatusAfterMin: Math.max(1, int(env.PAYMENT_STATUS_AFTER_MIN, 5)),
+    paymentStatusMaxAttempts: Math.max(1, int(env.PAYMENT_STATUS_MAX_ATTEMPTS, 6)),
+    paymentStatusBackoffCapMin: Math.max(1, int(env.PAYMENT_STATUS_BACKOFF_CAP_MIN, 60)),
+    /** Local time (country time zone) after which yesterday's reconciliation is produced. */
+    paymentReconcileAt: /^\d{2}:\d{2}$/.test(env.PAYMENT_RECONCILE_AT ?? '') ? (env.PAYMENT_RECONCILE_AT as string) : '02:00',
     corsOrigins: (env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:8080')
       .split(',')
       .map((s) => s.trim())

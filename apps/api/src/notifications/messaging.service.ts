@@ -3,6 +3,8 @@ import { DataSource } from 'typeorm';
 import { OutboundMessage } from '../database/entities';
 import { SMS_PROVIDER, SmsProvider, WHATSAPP_PROVIDER, WhatsAppProvider } from './providers';
 
+export type DeliveryStatus = 'delivre' | 'echoue' | 'envoye';
+
 export interface OutboundInput {
   channel: 'sms' | 'whatsapp' | 'push';
   phone: string;
@@ -56,26 +58,46 @@ export class MessagingService {
       // Push is delivered through the app inbox / sync in the MVP; journaled as sent.
       return this.record(input, 'envoye', { sent_at: new Date(), provider_ref: 'app' });
     }
-    const provider = input.channel === 'whatsapp' ? this.whatsapp : this.sms;
-    const res = await provider.send(input.phone, input.text);
-    return this.record(input, res.status, {
-      provider_ref: res.provider_ref ?? null,
-      error_code: res.error_code ?? null,
-      sent_at: res.status === 'envoye' ? new Date() : null,
-      cost_minor: res.status === 'envoye' && res.cost_minor !== undefined ? res.cost_minor : null,
-      currency: res.status === 'envoye' && res.cost_minor !== undefined ? (res.currency ?? null) : null,
-    });
+    return this.sendWith(input.channel === 'whatsapp' ? this.whatsapp : this.sms, input);
   }
 
-  /** Applies a delivery report (DLR) to the journal entry with this provider reference. Returns the rows updated. */
-  async applyDeliveryReport(providerRef: string, status: 'delivre' | 'echoue' | 'envoye', errorCode?: string): Promise<number> {
+  /**
+   * Journals the message first ("en_file"), then sends it with the journal id as idempotency key
+   * (`{{message_id}}`, m6), then stores the outcome. A delivery report can quote either reference.
+   */
+  async sendWith(provider: SmsProvider | WhatsAppProvider, input: OutboundInput): Promise<OutboundMessage> {
+    const row = await this.record(input, 'en_file', { provider: provider.name });
+    const res = await provider.send(input.phone, input.text, { message_id: row.id });
+    const sent = res.status === 'envoye';
+    Object.assign(row, {
+      status: res.status,
+      provider_ref: res.provider_ref ?? null,
+      error_code: res.error_code ?? null,
+      sent_at: sent ? new Date() : null,
+      cost_minor: sent && res.cost_minor !== undefined && res.currency ? res.cost_minor : null,
+      currency: sent && res.cost_minor !== undefined && res.currency ? res.currency : null,
+    });
+    return this.ds.getRepository(OutboundMessage).save(row);
+  }
+
+  /**
+   * Applies a delivery report (DLR) to the message sent by `provider` on `channel` whose provider
+   * reference, or our own id (message_id), is `ref`. Statuses never go back (m5):
+   * en_file < envoye < echoue | delivre; "delivre" is final. Returns the rows updated.
+   */
+  async applyDeliveryReport(provider: string, channel: 'sms' | 'whatsapp', ref: string, status: DeliveryStatus, errorCode?: string): Promise<number> {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref);
     const res: [unknown[], number] = await this.ds.query(
       `UPDATE outbound_messages
-          SET status = $2,
-              delivered_at = CASE WHEN $2 = 'delivre' THEN now() ELSE delivered_at END,
-              error_code = CASE WHEN $2 = 'echoue' THEN COALESCE($3, error_code, 'non_delivre') ELSE error_code END
-        WHERE provider_ref = $1 AND status <> 'delivre'`,
-      [providerRef, status, errorCode ?? null],
+          SET status = $4,
+              delivered_at = CASE WHEN $4 = 'delivre' THEN now() ELSE delivered_at END,
+              error_code = CASE WHEN $4 = 'echoue' THEN COALESCE($5, error_code, 'non_delivre') ELSE error_code END
+        WHERE provider = $1 AND channel = $2
+          AND (provider_ref = $3 ${isUuid ? 'OR id = $3::uuid' : ''})
+          AND status <> 'delivre'
+          AND NOT ($4 = 'envoye' AND status = 'echoue')
+          AND NOT ($4 = status)`,
+      [provider, channel, ref, status, errorCode ?? null],
     );
     return res[1] ?? 0;
   }

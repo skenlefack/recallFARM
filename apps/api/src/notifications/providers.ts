@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { config } from '../config';
 import { ConnectorHttp } from '../connectors/connector-http';
 import { SmsSpec } from '../connectors/connector.types';
@@ -14,17 +14,29 @@ export interface SendResult {
   currency?: string;
 }
 
+/** Per-message options: `message_id` is our journal id (outbound_messages.id), sent as the provider idempotency key (m6). */
+export interface SendOptions {
+  message_id?: string;
+}
+
 /** SMS adapter (simulator | generic HTTP | declarative connector). */
 export interface SmsProvider {
   readonly name: string;
   /** Whether message bodies may be stored in outbound_messages (simulator only). */
   readonly storesBody: boolean;
-  send(to: string, text: string): Promise<SendResult>;
+  send(to: string, text: string, opts?: SendOptions): Promise<SendResult>;
 }
 
 export interface WhatsAppProvider {
   readonly name: string;
-  send(to: string, text: string): Promise<SendResult>;
+  send(to: string, text: string, opts?: SendOptions): Promise<SendResult>;
+}
+
+/** Integer cost in minor units read from a response: a JSON integer or a string of digits, nothing else (m3). */
+export function parseMinor(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0) return v;
+  if (typeof v === 'string' && /^\d{1,15}$/.test(v.trim())) return Number(v.trim());
+  return undefined;
 }
 
 export const SMS_PROVIDER = 'SMS_PROVIDER';
@@ -40,12 +52,10 @@ export class SimulatorSmsProvider implements SmsProvider {
   async send(to: string, text: string): Promise<SendResult> {
     this.logger.debug(`SMS → ${to}: ${text}`);
     const cfg = config();
-    return {
-      status: 'envoye',
-      provider_ref: `SIMSMS-${randomBytes(4).toString('hex')}`,
-      cost_minor: cfg.smsSimCostMinor * smsSegments(text).segments,
-      currency: cfg.smsSimCurrency,
-    };
+    const ref = `SIMSMS-${randomBytes(4).toString('hex')}`;
+    // No currency in code (m4): without SMS_SIM_CURRENCY, the simulated cost is not recorded.
+    if (!cfg.smsSimCurrency) return { status: 'envoye', provider_ref: ref };
+    return { status: 'envoye', provider_ref: ref, cost_minor: cfg.smsSimCostMinor * smsSegments(text).segments, currency: cfg.smsSimCurrency };
   }
 }
 
@@ -101,7 +111,7 @@ export class ConnectorMessageProvider implements SmsProvider, WhatsAppProvider {
     return this.client.name;
   }
 
-  async send(to: string, text: string): Promise<SendResult> {
+  async send(to: string, text: string, opts: SendOptions = {}): Promise<SendResult> {
     const seg = smsSegments(text);
     const c = this.client.spec;
     try {
@@ -112,16 +122,19 @@ export class ConnectorMessageProvider implements SmsProvider, WhatsAppProvider {
         sender: this.spec.sender_id ?? config().smsSenderId,
         segments: seg.segments,
         encoding: seg.encoding,
-        message_id: randomBytes(8).toString('hex'),
+        message_id: opts.message_id ?? randomUUID(),
       });
       if (!res.ok) return { status: 'echoue', error_code: `http_${res.http_status}` };
-      const costRaw = getPath(res.body, this.spec.send.result?.cost_minor);
-      const cost = Number.isInteger(Number(costRaw)) && costRaw !== undefined && costRaw !== null ? Number(costRaw) : undefined;
+      const result = this.spec.send.result;
+      const read = parseMinor(getPath(res.body, result?.cost_minor));
+      const readCurrency = getString(res.body, result?.currency);
+      const currency = readCurrency && /^[A-Z]{3}$/.test(readCurrency) ? readCurrency : this.spec.cost?.currency;
+      const cost = read ?? (this.spec.cost ? this.spec.cost.per_segment_minor * seg.segments : undefined);
+      // A cost is recorded only with its currency (amount + currency rule, m3).
       return {
         status: 'envoye',
-        provider_ref: getString(res.body, this.spec.send.result?.ref),
-        cost_minor: cost ?? (this.spec.cost ? this.spec.cost.per_segment_minor * seg.segments : undefined),
-        currency: this.spec.cost?.currency,
+        provider_ref: getString(res.body, result?.ref),
+        ...(cost !== undefined && currency ? { cost_minor: cost, currency } : {}),
       };
     } catch (e) {
       this.logger.warn(`${this.name}: envoi impossible (${(e as Error).message})`);
