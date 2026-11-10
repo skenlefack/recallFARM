@@ -226,7 +226,8 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
         res = await api.post('/sync/push', body);
         _batchSize = nextPushBatchSize(_batchSize, timedOut: false);
       } on ApiException catch (e) {
-        if (e.isNetwork) _batchSize = nextPushBatchSize(_batchSize, timedOut: true);
+        // Too slow or too big: smaller batches. Plain offline: keep the size.
+        if (shouldShrinkBatch(e)) _batchSize = nextPushBatchSize(_batchSize, timedOut: true);
         rethrow;
       }
       final handled = <String>{};
@@ -315,7 +316,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
         });
         _pullLimit = nextPageSize(_pullLimit, timedOut: false, minimum: 50, maximum: AppConfig.pullLimit);
       } on ApiException catch (e) {
-        if (e.isNetwork) {
+        if (shouldShrinkBatch(e)) {
           _pullLimit = nextPageSize(_pullLimit, timedOut: true, minimum: 50, maximum: AppConfig.pullLimit);
         }
         rethrow;
@@ -417,3 +418,7 @@ int nextPageSize(int current, {required bool timedOut, required int minimum, req
   final next = timedOut ? current ~/ 2 : current * 2;
   return next.clamp(minimum, maximum);
 }
+
+/// A failure that calls for smaller batches/pages: timeout (slow link) or
+/// 413 (payload too large). Not plain « no network » (airplane mode).
+bool shouldShrinkBatch(ApiException e) => e.isTimeout || e.status == 413;

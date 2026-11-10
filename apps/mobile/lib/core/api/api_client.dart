@@ -16,7 +16,12 @@ class ApiException implements Exception {
     this.status,
     this.fields = const {},
     this.details = const {},
+    this.isTimeout = false,
   });
+
+  /// The link was up but too slow (connect/send/receive timeout), as opposed
+  /// to no network at all: the sync engine shrinks its batches only then.
+  final bool isTimeout;
 
   final String code;
   final String message;
@@ -36,10 +41,11 @@ class ApiException implements Exception {
   static ApiException fromDio(DioException e) {
     switch (e.type) {
       case DioExceptionType.connectionError:
+        return ApiException(code: 'NETWORK', message: e.message ?? 'network');
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
-        return ApiException(code: 'NETWORK', message: e.message ?? 'network');
+        return ApiException(code: 'NETWORK', message: e.message ?? 'timeout', isTimeout: true);
       default:
         break;
     }
@@ -81,9 +87,10 @@ class ApiClient {
           options.headers['Authorization'] = 'Bearer $t';
         }
         options.headers['Accept-Language'] = language;
-        final zipped = gzipJsonBody(options.data);
+        final zipped = gzipEnabled && options.extra['noGzip'] != true ? gzipJsonBody(options.data) : null;
         if (zipped != null) {
           // 2G: a push of 200 changes is ~10x smaller (API body parser inflates it).
+          options.extra['jsonBody'] = options.data;
           options.data = zipped;
           options.headers['Content-Encoding'] = 'gzip';
         }
@@ -96,6 +103,20 @@ class ApiClient {
       onError: (err, handler) async {
         final status = err.response?.statusCode;
         final opts = err.requestOptions;
+        if (status == 415 && opts.extra.containsKey('jsonBody') && opts.extra['noGzip'] != true) {
+          // A server (or proxy) refusing gzip bodies: send this request once
+          // more uncompressed, and stop compressing for this client.
+          gzipEnabled = false;
+          opts.extra['noGzip'] = true;
+          opts.data = opts.extra.remove('jsonBody');
+          opts.headers.remove('Content-Encoding');
+          try {
+            handler.resolve(await dio.fetch<dynamic>(opts));
+          } on DioException catch (e) {
+            handler.next(e);
+          }
+          return;
+        }
         if (status == 401 && opts.extra['retried'] != true && opts.extra['noAuth'] != true) {
           final ok = await _refresh();
           if (ok) {
@@ -173,6 +194,9 @@ class ApiClient {
       throw ApiException.fromDio(e);
     }
   }
+
+  /// False after a 415 (gzip body refused): later requests are sent plain.
+  bool gzipEnabled = true;
 
   /// JSON bodies at least this large are sent gzip-compressed.
   static const int gzipThreshold = 1024;
