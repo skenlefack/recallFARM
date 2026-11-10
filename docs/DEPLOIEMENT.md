@@ -94,3 +94,21 @@ Désactiver `OTP_DEV_ECHO` et `SEED_ON_START` avant toute ouverture au public.
 ## 9. Application mobile
 L'APK est produit par la CI (job `mobile`, artefact `recallfarm-apk`) avec `API_BASE_URL` = URL publique `/v1`.
 Distribution du pilote : lien direct ou Firebase App Distribution ; Google Play en V1.
+
+## Recette sur le serveur partagé avec RecallVet (Infomaniak, décision D-01 du 2026-11-10)
+
+Hébergement **provisoire** : recette et démonstration avec données fictives. Le pilote réel sera
+déplacé au Cameroun (loi 2024/017) au passage en production réelle.
+
+- Serveur : 179.237.97.57 (Infomaniak, Suisse), Ubuntu, 1 vCPU, 2 Go RAM + 2 Go swap, partagé avec RecallVet.
+- Fichiers : `infra/deploy/infomaniak/` (surcharge compose avec limites mémoire ≈ 1 Go au total,
+  passerelle sans port public, `deploy.sh`, blocs nginx pour `recallfarm.com`).
+- Déploiement : `SSH_KEY=<clé du serveur> infra/deploy/infomaniak/deploy.sh` (construit les images sur le
+  poste, les transfère, crée `.env` avec des secrets aléatoires au premier passage, démarre, contrôle `/v1/health`).
+- Accès public : le nginx de RecallVet (80/443) relaie `recallfarm.com` vers `recallfarm-gateway` sur le réseau
+  Docker `recallvet_recallvet`. Il faut : (1) l'enregistrement DNS A `recallfarm.com` et `www` → 179.237.97.57 ;
+  (2) ajouter `infra/deploy/infomaniak/recallfarm.nginx.conf` à la configuration nginx de RecallVet ;
+  (3) obtenir le certificat :
+  `docker exec recallvet-certbot certbot certonly --webroot -w /var/www/certbot -d recallfarm.com -d www.recallfarm.com`.
+- Contrôle sans DNS : `ssh ubuntu@179.237.97.57 curl -s http://127.0.0.1:8090/v1/health`.
+- Sauvegardes : profil `backup` actif, dumps dans `/home/ubuntu/backups/recallfarm`.

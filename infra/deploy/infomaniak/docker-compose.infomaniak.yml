@@ -1,0 +1,53 @@
+# RecallFarm sur le serveur partage avec RecallVet (Infomaniak, 1 vCPU, 2 Go + 2 Go swap).
+# Recette et demonstration uniquement (donnees fictives) ; le pilote reel sera heberge au Cameroun (D-01).
+#   docker compose -f docker-compose.yml -f infra/deploy/infomaniak/docker-compose.infomaniak.yml up -d
+# Pas de port public : le nginx de RecallVet (80/443) relaie recallfarm.com vers la passerelle
+# via le reseau partage "recallvet_recallvet". Le port 127.0.0.1:8090 sert aux controles par SSH.
+# Les limites de memoire evitent que RecallFarm ne prive RecallVet de ressources.
+
+services:
+  postgres:
+    mem_limit: 384m
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=40
+
+  redis:
+    mem_limit: 64m
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD}"]
+
+  api:
+    mem_limit: 448m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=320
+
+  web:
+    mem_limit: 48m
+
+  gateway:
+    mem_limit: 48m
+    ports: !override
+      - "127.0.0.1:8090:80"
+    volumes:
+      - ./infra/deploy/infomaniak/gateway-real-ip.conf:/etc/nginx/conf.d/00-real-ip.conf:ro
+    networks:
+      frontend: {}
+      recallvet:
+        aliases: [recallfarm-gateway]
+
+  backup:
+    mem_limit: 128m
+
+networks:
+  recallvet:
+    name: recallvet_recallvet
+    external: true
