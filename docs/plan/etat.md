@@ -21,6 +21,10 @@ Derniere mise a jour : 2026-11-10 (mesures relancees ce jour ; precedente : 2026
 (docs/plan/revues/ est vide), la couverture n'atteint pas 80 %, le lint API et web est rouge
 (voir indicateurs). Les portes "socle sain" et "Go pilote" ne sont donc pas formellement franchies.
 
+## Environnement de recette
+
+**https://recallfarm.com** en ligne depuis le 2026-11-10 (serveur RecallVet, Infomaniak ; simulateurs SMS/paiement ; donnees fictives).
+
 ## 1. Lots termines
 
 | Lot | Date | Resume | PR |

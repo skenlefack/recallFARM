@@ -112,3 +112,10 @@ déplacé au Cameroun (loi 2024/017) au passage en production réelle.
   `docker exec recallvet-certbot certbot certonly --webroot -w /var/www/certbot -d recallfarm.com -d www.recallfarm.com`.
 - Contrôle sans DNS : `ssh ubuntu@179.237.97.57 curl -s http://127.0.0.1:8090/v1/health`.
 - Sauvegardes : profil `backup` actif, dumps dans `/home/ubuntu/backups/recallfarm`.
+
+### État au 2026-11-10
+- **En ligne : https://recallfarm.com** (certificat Let's Encrypt jusqu'au 2027-02-08, `www` et HTTP redirigés).
+- Fichier nginx actif : `/home/ubuntu/recallvet/docker/nginx/ssl/sites/recallfarm.conf` (= `infra/deploy/infomaniak/recallfarm.nginx.conf`) ;
+  ligne `include` aussi proposée dans le dépôt RecallVet (branche `chore/nginx-include-sites`).
+- **Renouvellement des certificats à rétablir** : le conteneur `recallvet-certbot` est arrêté (sortie 255) ; en attendant :
+  `cd recallvet && docker compose -f docker-compose.prod.yml run --rm --entrypoint certbot certbot renew && docker exec recallvet-nginx nginx -s reload`.
