@@ -301,7 +301,7 @@ Future<void> pumpScreen(
   Size size = const Size(360, 640),
   double textScale = 1.3,
 }) async {
-  RfType.useGoogleFonts = false;
+  RfType.useBundledFonts = false;
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);

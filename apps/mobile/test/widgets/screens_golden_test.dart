@@ -119,7 +119,7 @@ class Case {
 
 void main() {
   setUpAll(() {
-    RfType.useGoogleFonts = false;
+    RfType.useBundledFonts = false;
     Dates.clock = () => DateTime(2026, 11, 10, 12);
   });
   tearDownAll(() => Dates.clock = DateTime.now);
