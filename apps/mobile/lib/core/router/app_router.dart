@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -56,16 +58,38 @@ String? onboardingRedirect(OnboardingStage stage, String location) {
   return null;
 }
 
+/// Where to go when the session moves from [previous] to [current]: the new
+/// step when it is a later one (« Continuer » on E01, OTP verified, consents
+/// given, farm saved), null otherwise (back navigation, other changes).
+/// Needed because [onboardingRedirect] keeps earlier steps reachable, so a
+/// router refresh alone leaves the user on the step he just completed.
+String? onboardingAdvanceTarget(OnboardingStage previous, OnboardingStage current) {
+  if (current.index <= previous.index) return null;
+  return current == OnboardingStage.ready ? '/home' : _stagePaths[current];
+}
+
 GoRouter buildRouter(AppSession session, GlobalKey<NavigatorState> rootKey) {
   final shellKey = GlobalKey<NavigatorState>(debugLabel: 'shell');
   String? q(GoRouterState s, String name) => s.uri.queryParameters[name];
+  late final GoRouter router;
+  var lastStage = session.stage;
+  var disposed = false;
+  void followAdvance() {
+    final target = onboardingAdvanceTarget(lastStage, session.stage);
+    lastStage = session.stage;
+    if (target == null) return;
+    // After the current notification round (the refresh may still be running).
+    scheduleMicrotask(() {
+      if (disposed) return;
+      final current = router.routerDelegate.currentConfiguration;
+      if (current.isNotEmpty && current.uri.path == target) return;
+      router.go(target);
+    });
+  }
 
-  return GoRouter(
-    navigatorKey: rootKey,
-    initialLocation: '/home',
-    refreshListenable: session,
-    redirect: (context, state) => onboardingRedirect(session.stage, state.matchedLocation),
-    routes: [
+  session.addListener(followAdvance);
+
+  final routes = <RouteBase>[
       GoRoute(path: '/', redirect: (_, __) => '/home'),
       GoRoute(path: '/onboarding/speculation', builder: (_, __) => const SpeculationScreen()),
       GoRoute(path: '/onboarding/account', builder: (_, __) => const AccountScreen()),
@@ -147,6 +171,40 @@ GoRouter buildRouter(AppSession session, GlobalKey<NavigatorState> rootKey) {
       GoRoute(path: '/subscription', parentNavigatorKey: rootKey, builder: (_, __) => const SubscriptionScreen()),
       GoRoute(path: '/my-data', parentNavigatorKey: rootKey, builder: (_, __) => const MyDataScreen()),
       GoRoute(path: '/settings', parentNavigatorKey: rootKey, builder: (_, __) => const SettingsScreen()),
-    ],
+  ];
+  final config = ValueNotifier(RoutingConfig(
+    routes: routes,
+    redirect: (context, state) => onboardingRedirect(session.stage, state.matchedLocation),
+  ));
+  router = _RfGoRouter(
+    onDispose: () {
+      disposed = true;
+      session.removeListener(followAdvance);
+      config.dispose();
+    },
+    routingConfig: config,
+    navigatorKey: rootKey,
+    initialLocation: '/home',
+    refreshListenable: session,
   );
+  return router;
+}
+
+/// GoRouter that also releases what [buildRouter] attached to the session.
+class _RfGoRouter extends GoRouter {
+  _RfGoRouter({
+    required this.onDispose,
+    required super.routingConfig,
+    super.navigatorKey,
+    super.initialLocation,
+    super.refreshListenable,
+  }) : super.routingConfig();
+
+  final VoidCallback onDispose;
+
+  @override
+  void dispose() {
+    onDispose();
+    super.dispose();
+  }
 }

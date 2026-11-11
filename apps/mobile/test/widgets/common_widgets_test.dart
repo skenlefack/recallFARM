@@ -8,7 +8,7 @@ import 'package:recallfarm/core/widgets/common.dart';
 import 'test_app.dart';
 
 void main() {
-  setUpAll(() => RfType.useGoogleFonts = false);
+  setUpAll(() => RfType.useBundledFonts = false);
 
   group('onboarding guard', () {
     test('sends the user to the first unfinished step', () {

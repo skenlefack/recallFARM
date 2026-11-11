@@ -2,13 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app.dart';
 import 'core/api/api_client.dart';
 import 'core/api/token_store.dart';
-import 'core/config/app_config.dart';
 import 'core/data/providers.dart';
 import 'core/db/local_db.dart';
 import 'core/entitlements/entitlements.dart';
@@ -17,10 +15,11 @@ import 'core/params/params_repository.dart';
 import 'core/session/session.dart';
 import 'core/sync/connectivity_service.dart';
 import 'core/sync/sync_engine.dart';
+import 'core/theme/typography.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  GoogleFonts.config.allowRuntimeFetching = AppConfig.allowFontFetching;
+  RfType.registerFontLicenses();
   await initializeDateFormatting('fr');
   await initializeDateFormatting('en');
 

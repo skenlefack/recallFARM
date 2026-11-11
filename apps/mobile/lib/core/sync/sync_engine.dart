@@ -52,6 +52,12 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _retry;
   int _failures = 0;
   bool _running = false;
+  int _batchSize = AppConfig.pushBatchSize;
+  int _pullLimit = AppConfig.pullLimit;
+
+  /// Current push batch size (adapts to the network, see [nextPushBatchSize]).
+  int get pushBatchSize => _batchSize;
+  bool _disposed = false;
   bool _wasOnline = true;
   StreamSubscription<String>? _dbSub;
 
@@ -74,6 +80,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _disposed = true;
     _timer?.cancel();
     _retry?.cancel();
     _dbSub?.cancel();
@@ -102,7 +109,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     if (now && !_wasOnline) unawaited(sync());
     if (!now) {
       phase = SyncPhase.offline;
-      notifyListeners();
+      _notify();
     }
     _wasOnline = now;
   }
@@ -111,11 +118,18 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     final c = await db.pendingCount();
     if (c != pending) {
       pending = c;
-      notifyListeners();
+      _notify();
     }
   }
 
+  /// A sync still in flight when the engine is disposed (app closed, account
+  /// switched) must neither notify nor schedule a retry.
+  void _notify() {
+    if (!_disposed) notifyListeners();
+  }
+
   void _scheduleRetry() {
+    if (_disposed) return;
     _failures++;
     final seconds = min(15 * 60, 30 * pow(2, _failures - 1).toInt());
     _retry?.cancel();
@@ -124,19 +138,34 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Runs a full sync cycle. Safe to call concurrently (single flight).
   Future<bool> sync({bool manual = false}) async {
-    if (_running) return false;
+    if (_running || _disposed) return false;
+    final run = _run(manual: manual);
+    _inFlight = run;
+    return run;
+  }
+
+  Future<bool>? _inFlight;
+
+  /// Completes when no sync is running (call before closing the database:
+  /// app shutdown, sign-out, tests).
+  Future<void> idle() async {
+    final f = _inFlight;
+    if (f != null) await f;
+  }
+
+  Future<bool> _run({required bool manual}) async {
     if (!session.isAuthenticated) {
       await _refreshPending();
       return false;
     }
     if (!connectivity.osOnline) {
       phase = SyncPhase.offline;
-      notifyListeners();
+      _notify();
       return false;
     }
     _running = true;
     phase = SyncPhase.syncing;
-    notifyListeners();
+    _notify();
     try {
       await _push();
       await _replayActions();
@@ -164,8 +193,10 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     } finally {
       _running = false;
-      pending = await db.pendingCount();
-      notifyListeners();
+      if (!_disposed) {
+        pending = await db.pendingCount();
+        _notify();
+      }
     }
   }
 
@@ -175,7 +206,7 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     while (true) {
       final all = await db.pendingChanges();
       if (all.isEmpty) return;
-      final chunk = all.take(AppConfig.pushBatchSize).toList();
+      final chunk = all.take(_batchSize).toList();
       final byId = {for (final e in chunk) e.entityId: e};
       final body = {
         'device_id': session.deviceId,
@@ -190,16 +221,26 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
             }
         ],
       };
-      final res = await api.post('/sync/push', body);
+      final Map<String, dynamic> res;
+      try {
+        res = await api.post('/sync/push', body);
+        _batchSize = nextPushBatchSize(_batchSize, timedOut: false);
+      } on ApiException catch (e) {
+        // Too slow or too big: smaller batches. Plain offline: keep the size.
+        if (shouldShrinkBatch(e)) _batchSize = nextPushBatchSize(_batchSize, timedOut: true);
+        rethrow;
+      }
       final handled = <String>{};
 
+      final acks = <PushAck>[];
       for (final a in ApiClient.asList(res['applied'])) {
         final id = a['id']?.toString();
         final entry = byId[id];
         if (id == null || entry == null) continue;
         handled.add(id);
-        await db.markPushed(entry.entity, id, entry.clientRev, (a['sync_version'] as num?)?.toInt() ?? 0);
+        acks.add(PushAck(entry.entity, id, entry.clientRev, (a['sync_version'] as num?)?.toInt() ?? 0));
       }
+      await db.markPushedAll(acks); // one transaction per batch of 200
       for (final c in ApiClient.asList(res['conflicts'])) {
         final id = c['id']?.toString();
         final entry = byId[id];
@@ -266,12 +307,23 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     var since = int.tryParse(await db.getKv(_kCursor) ?? '') ?? 0;
     final entities = kSyncedEntities.join(',');
     for (var page = 0; page < 50; page++) {
-      final res = await api.get('/sync/pull', query: {
-        'since': since,
-        'entities': entities,
-        'limit': AppConfig.pullLimit,
-      });
+      final Map<String, dynamic> res;
+      try {
+        res = await api.get('/sync/pull', query: {
+          'since': since,
+          'entities': entities,
+          'limit': _pullLimit,
+        });
+        _pullLimit = nextPageSize(_pullLimit, timedOut: false, minimum: 50, maximum: AppConfig.pullLimit);
+      } on ApiException catch (e) {
+        if (shouldShrinkBatch(e)) {
+          _pullLimit = nextPageSize(_pullLimit, timedOut: true, minimum: 50, maximum: AppConfig.pullLimit);
+        }
+        rethrow;
+      }
       final changes = res['changes'] is List ? res['changes'] as List : const [];
+      final rows = <RemoteRow>[];
+      final alerts = <Map<String, dynamic>>[];
       for (final raw in changes) {
         if (raw is! Map) continue;
         final c = Map<String, dynamic>.from(raw);
@@ -284,10 +336,11 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
         _normaliseMoney(data);
         final Object? version = c['sync_version'] ?? data['sync_version'];
         final deleted = c['op'] == 'delete' || data['deleted_at'] != null;
-        await db.applyRemote(entity, data,
-            syncVersion: version is num ? version.toInt() : 0, deleted: deleted);
-        if (entity == 'alerts' && !deleted) onAlertPulled?.call(data);
+        rows.add(RemoteRow(entity, data, syncVersion: version is num ? version.toInt() : 0, deleted: deleted));
+        if (entity == 'alerts' && !deleted) alerts.add(data);
       }
+      await db.applyRemoteAll(rows); // one transaction per page
+      alerts.forEach(onAlertPulled ?? (_) {});
       final sv = res['server_version'];
       if (sv is num) since = sv.toInt();
       if (sv is String) since = int.tryParse(sv) ?? since;
@@ -350,3 +403,22 @@ class SyncEngine extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 }
+
+/// Push batch size after a push: halved after a network failure (2G: each
+/// request must finish within the timeouts, and what was sent is kept when the
+/// link drops), doubled back after a success, between 25 and
+/// [AppConfig.pushBatchSize].
+int nextPushBatchSize(int current, {required bool timedOut}) =>
+    nextPageSize(current, timedOut: timedOut, minimum: 25, maximum: AppConfig.pushBatchSize);
+
+/// Generic adaptive page size (push batches, pull pages): halved after a
+/// network failure, doubled after a success, kept within [minimum, maximum].
+/// The pull cursor is saved after every page, so smaller pages keep progress.
+int nextPageSize(int current, {required bool timedOut, required int minimum, required int maximum}) {
+  final next = timedOut ? current ~/ 2 : current * 2;
+  return next.clamp(minimum, maximum);
+}
+
+/// A failure that calls for smaller batches/pages: timeout (slow link) or
+/// 413 (payload too large). Not plain « no network » (airplane mode).
+bool shouldShrinkBatch(ApiException e) => e.isTimeout || e.status == 413;

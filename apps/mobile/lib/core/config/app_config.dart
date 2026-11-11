@@ -10,10 +10,6 @@ class AppConfig {
   static const String defaultCountry =
       String.fromEnvironment('DEFAULT_COUNTRY', defaultValue: 'CM');
 
-  /// Allow google_fonts to download fonts at runtime (set false once fonts are bundled).
-  static const bool allowFontFetching =
-      bool.fromEnvironment('ALLOW_FONT_FETCHING', defaultValue: true);
-
   /// Sync period while the app is in the foreground.
   static const Duration syncPeriod = Duration(minutes: 15);
 

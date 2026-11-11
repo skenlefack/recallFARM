@@ -12,3 +12,7 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+.kotlin/
+# keystore encode pour les secrets CI : jamais dans le depot
+*.b64
+*.jks.b64

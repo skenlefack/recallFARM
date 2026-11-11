@@ -1,10 +1,10 @@
 # RecallFarm — application mobile (Flutter)
 
 Application éleveur **hors ligne d'abord** (volaille + chiens, Afrique francophone), Android d'abord.
-Flutter 3.24 / Dart 3.5, Riverpod 2, go_router 14, SQLCipher, **aucune génération de code**.
+Flutter 3.38 (local et CI) / Dart 3.x, Riverpod 2, go_router 14, SQLCipher, **aucune génération de code**.
 
-> ⚠️ Ce code a été écrit sans SDK Flutter disponible (environnement sans accès à pub.dev). Il n'a donc
-> **jamais été compilé ni exécuté**. Voir « Vérifications au premier `flutter analyze` » en bas de page.
+> Compilé et exécuté depuis le lot P0.1 : `flutter analyze` 0, `flutter test` vert, APK release par ABI
+> < 25 Mo, tests d'intégration sur émulateur. Build release, signature, taille et mesures : **§ 9**.
 
 ---
 
@@ -52,22 +52,12 @@ et dans `<application>` (récepteurs de flutter_local_notifications pour la repl
 Pour un serveur de dev en HTTP (`http://10.0.2.2:8080`), ajouter `android:usesCleartextTraffic="true"` sur
 `<application>` **en debug uniquement** (ou un `network_security_config` limité à 10.0.2.2 / IP du poste).
 
-`android/app/build.gradle` :
+`android/app/build.gradle.kts` (versionné) : desugaring (flutter_local_notifications 17), Java 17,
+`minSdk = flutter.minSdkVersion` = **24 (Android 7)** — le dossier 08 vise Android 8 (API 26) ; Android 6
+(API 23) ne compile plus avec url_launcher_android 6.3.30 (Q-MOB-01, tranché le 10/11/2026 : Android 7 minimum) —,
+bibliothèques natives compressées, signature release lue hors dépôt (§ 9).
 
-```gradle
-android {
-    compileSdk 34
-    defaultConfig { minSdk 23 }            // dossier 08 vise Android 8 (API 26) : 23 ≤ 26, compatible
-    compileOptions {
-        coreLibraryDesugaringEnabled true  // requis par flutter_local_notifications 17
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-}
-dependencies { coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4' }
-```
-
-APK léger (ENF-PER-04 ≤ 25 Mo) : `flutter build apk --release --split-per-abi`.
+APK léger (ENF-PER-04 ≤ 25 Mo) : `flutter build apk --release --split-per-abi` (§ 9).
 
 ### iOS (plus tard)
 `Info.plist` : rien d'obligatoire pour le MVP ; `NSCameraUsageDescription` si un scanner est ajouté.
@@ -95,16 +85,14 @@ s'affiche sous le champ.
 |---|---|---|
 | `API_BASE_URL` | `http://10.0.2.2:8080/v1` | base de l'API (gateway) |
 | `DEFAULT_COUNTRY` | `CM` | pays prérempli (E04) |
-| `ALLOW_FONT_FETCHING` | `true` | google_fonts peut télécharger les polices ; mettre `false` quand elles sont embarquées |
 
-### Polices hors ligne
-Les maquettes utilisent Bricolage Grotesque (titres), IBM Plex Sans (texte) et IBM Plex Mono (chiffres),
-chargées via `google_fonts` (téléchargées au premier lancement puis mises en cache). Pour un usage
-réellement hors ligne dès l'installation : télécharger les TTF (OFL) depuis fonts.google.com, les placer dans
-`assets/google_fonts/` (noms d'origine, ex. `IBMPlexSans-Regular.ttf`), déclarer le dossier dans
-`pubspec.yaml` (`assets: - assets/google_fonts/`) et lancer avec `--dart-define=ALLOW_FONT_FETCHING=false` :
-google_fonts utilise alors les fichiers embarqués. En l'absence de police, la police système est utilisée
-(`RfType` attrape l'exception de google_fonts).
+### Polices (embarquées, ADR-003)
+Bricolage Grotesque (titres 600/700/800), IBM Plex Sans (texte 400–700) et IBM Plex Mono (chiffres
+400–600) sont **embarquées** dans `assets/fonts/` (TTF statiques, sous-ensemble latin Fontsource 5.3.0,
+SIL OFL 1.1, ~500 Ko ; licences dans `assets/fonts/OFL-*.txt`, affichées par `showLicensePage`).
+Aucun téléchargement au premier lancement. Un glyphe hors sous-ensemble bascule sur la police système.
+`google_fonts` a été retiré : `GoogleFonts.getFont(nom)` gardait la table des ~1 500 familles dans le
+binaire (libapp.so arm64 16,1 → 8,5 Mo).
 
 ## 3. Architecture
 
@@ -266,3 +254,113 @@ plafonnée à 1,3 et mises en page testées à 360×640 (test `form_renderer_tes
 - [ ] Test d'accessibilité `androidTapTargetGuideline` du formulaire journal (360×640, ×1,3).
 - [ ] Sur appareil : autorisation notifications (Android 13+), notification planifiée visible, alerte critique
       plein écran, synchronisation après mode avion, base chiffrée (fichier illisible sans clé).
+
+## 9. Build release, signature, taille et mesures (lot P0.1)
+
+### Signature release (aucune clé dans le dépôt)
+
+`android/app/build.gradle.kts` lit la clé, par ordre de priorité :
+
+1. variables d'environnement (CI) : `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+   `ANDROID_KEY_PASSWORD` (par défaut = mot de passe du keystore) ;
+2. `android/key.properties` (ignoré par git, comme `*.jks` / `*.keystore`) :
+   ```properties
+   storeFile=C:/secrets/recallfarm-upload.jks   # relatif à android/ ou absolu, HORS dépôt
+   storePassword=...
+   keyAlias=upload
+   keyPassword=...
+   ```
+
+**Sans keystore complet, toute tâche release échoue** (`RecallFarm : release refusee, ...`) : un APK release
+signé avec la clé de debug ne pourrait pas être mis à jour par la vraie release, et la désinstallation
+forcée détruirait les saisies non synchronisées. Les builds debug (et `flutter test`, `integration_test`)
+ne sont jamais bloqués. Pour un essai local uniquement : `RECALLFARM_ALLOW_DEBUG_SIGNED_RELEASE=true`
+(signature debug + `WARNING: ... APK d'essai, a ne jamais distribuer`).
+
+Générer la clé d'upload (une fois), **hors du dépôt** (ex. `~/secrets/`, puis coffre de l'équipe) :
+
+```bash
+mkdir -p ~/secrets && cd ~/secrets
+keytool -genkeypair -v -keystore recallfarm-upload.jks -storetype PKCS12 \
+  -keyalg RSA -keysize 2048 -validity 10000 -alias upload \
+  -dname "CN=RecallFarm, O=RecallFarm, C=CM"
+base64 -w0 recallfarm-upload.jks > recallfarm-upload.jks.b64   # valeur du secret ANDROID_KEYSTORE_BASE64
+```
+
+`*.jks`, `*.keystore`, `key.properties`, `*.b64` et `*.jks.b64` sont ignorés par git dans `android/`, par
+sécurité seulement : ne jamais créer ces fichiers dans le dépôt.
+
+Secrets CI attendus (GitHub, environnement `release`) : `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. La CI décode le keystore dans `$RUNNER_TEMP` et exporte
+`ANDROID_KEYSTORE_PATH` (étapes demandées dans docs/plan/requests.md, R-01).
+
+Vérifier : `apksigner verify --print-certs build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`.
+
+### Taille (ENF-PER-04 : APK < 25 Mo)
+
+```bash
+flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
+```
+
+Un APK par ABI ; l'APK universel n'est plus l'artefact de référence. Leviers (ADR-003) : polices embarquées
+au lieu de `google_fonts` (libapp.so arm64 16,1 → 8,5 Mo) et bibliothèques natives compressées.
+
+À mesurer sur téléphone réel (D-10) : avec `useLegacyPackaging` les `.so` sont extraits à l'installation,
+la **taille installée** (téléchargement + bibliothèques extraites) peut dépasser celle sans compression ;
+comparer `adb shell dumpsys package app.recallfarm.recallfarm` / Paramètres > Stockage avec et sans,
+sur un appareil 2 Go à stockage réduit.
+
+| APK release (2026-11-10, Flutter 3.38.3) | Avant | Après |
+|---|---|---|
+| arm64-v8a | 33,95 Mo (33 950 458 o) | 12,61 Mo (12 613 359 o) |
+| armeabi-v7a | 30,03 Mo (30 026 586 o) | 11,87 Mo (11 869 135 o) |
+| x86_64 (émulateur) | 36,85 Mo (36 851 838 o) | 13,03 Mo (13 028 891 o) |
+
+### Tests d'intégration (émulateur)
+
+| Fichier | Contenu |
+|---|---|
+| `integration_test/smoke_test.dart` | E01 → E02 → compte hors ligne → E03, sans réseau |
+| `integration_test/pilot_journey_test.dart` | MVP-SCOPE §6 par l'interface : OTP (dev_code) → consentements → exploitation → lot (E12) → saisie du jour (E13) → synchro → rappels (moteur local + serveur, écran Santé) |
+| `integration_test/offline_sync_test.dart` | 50 cycles « mode avion » (saisies hors ligne, relance de l'app hors ligne tous les 10 cycles, coupure **après** envoi tous les 5 cycles), puis serveur = téléphone ; synchro chronométrée de 500 changements |
+| `integration_test/db_key_migration_test.dart` | migration de la clé SQLCipher (phrase de passe → clé brute) ; app tuée **entre le rekey et l'écriture du marqueur** (pas pendant le rekey : cas couvert par l'atomicité de SQLCipher, non testé) ; rekey en échec (disque plein simulé) deux lancements de suite → app ouverte sur l'ancienne clé, données lisibles, marqueur absent, puis migration |
+| `integration_test/startup_probe_test.dart` | coût d'ouverture de la base chiffrée sur l'appareil |
+
+```bash
+# API : recette (données fictives, OTP renvoyé en dev_code) ou pile locale vue de l'émulateur
+flutter test integration_test/pilot_journey_test.dart -d emulator-5554 --dart-define=API_BASE_URL=https://recallfarm.com/v1
+flutter test integration_test/offline_sync_test.dart -d emulator-5554 --dart-define=API_BASE_URL=https://recallfarm.com/v1 \
+  --dart-define=CYCLES=50 --dart-define=BULK=500
+```
+
+Si Gradle ne joint pas `dl.google.com` (cas du 2026-11-10 sur le poste de dev), construire l'APK de test hors
+ligne puis le lancer avec `flutter drive` :
+
+```bash
+flutter build apk --debug --config-only
+(cd android && ./gradlew assembleDebug --offline -Ptarget=integration_test/pilot_journey_test.dart \
+   -Ptarget-platform=android-x64 -Pdart-defines=<API_BASE_URL=... encodé en base64>)
+flutter drive --driver=integration_test/driver/integration_test_driver.dart \
+  --target=integration_test/pilot_journey_test.dart \
+  --use-application-binary=build/app/outputs/flutter-apk/app-debug.apk -d emulator-5554 \
+  --dart-define=API_BASE_URL=https://recallfarm.com/v1
+```
+
+Démarrage à froid : `integration_test/scripts/measure_cold_start.sh <apk> [runs]` (`am start -W` ;
+FlutterActivity retarde le premier dessin Android jusqu'à la première frame Flutter). 2G simulée :
+`adb emu network speed edge && adb emu network delay edge` (retour : `speed full`, `delay none`).
+
+### Mesures (émulateur Pixel 7, Android 16 / API 36, x86_64, **2 Go de RAM**, API de recette)
+
+Mesures du 2026-11-10, poste de dev Windows (émulateur x86_64 non accéléré au mieux, hôte chargé) :
+à refaire sur un vrai téléphone 2 Go (D-10).
+
+| Exigence | Cible | Mesure | Statut |
+|---|---|---|---|
+| Taille APK (ENF-PER-04) | < 25 Mo | 12,6 Mo (arm64), 11,9 Mo (armv7), signés | ✅ |
+| Démarrage à froid jusqu'à E01 | < 3 s | médianes 3,2 à 3,9 s, min 2,1 à 2,4 s (`am start -W`, 2×6 lancements entrelacés avant/après) ; une série au calme : médiane 2,65 s | ❌ non démontré : bruit de l'hôte > écart entre versions |
+| Ouverture base chiffrée | — | 276 ms (phrase de passe, PBKDF2) → 13 ms (clé brute) | ✅ gain mesuré |
+| 50 cycles mode avion | 0 perte | 50/50 journaux, 50/50 dépenses au centime, 0 doublon ; 5 relances hors ligne, 10 coupures après envoi ; dernière modification hors ligne conservée | ✅ |
+| 500 changements, réseau normal | — | 37,2 s → 10,8 s (dont ~8 s de traitement serveur des 3 push) | amélioré |
+| 500 changements, 2G simulée (EDGE) | < 10 s | avant : jamais (chaque push > 40 s, file bloquée) ; après (gzip + lots adaptatifs) : file vidée en ~70 s (push 30 s + 28 s + 8 s) | ❌ cible non atteinte (serveur ~8 s + modèle EDGE de l'émulateur ; voir docs/plan/requests.md) |
+| Parcours pilote | vert 3 fois de suite | 3/3 verts (OTP → exploitation → lot → saisie → 5 rappels locaux + 5 serveur) | ✅ |

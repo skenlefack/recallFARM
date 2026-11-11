@@ -1,5 +1,7 @@
 import 'dart:async';
-import 'dart:io' show HttpDate;
+import 'dart:convert';
+import 'dart:io' show HttpDate, gzip;
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
@@ -14,7 +16,12 @@ class ApiException implements Exception {
     this.status,
     this.fields = const {},
     this.details = const {},
+    this.isTimeout = false,
   });
+
+  /// The link was up but too slow (connect/send/receive timeout), as opposed
+  /// to no network at all: the sync engine shrinks its batches only then.
+  final bool isTimeout;
 
   final String code;
   final String message;
@@ -34,10 +41,11 @@ class ApiException implements Exception {
   static ApiException fromDio(DioException e) {
     switch (e.type) {
       case DioExceptionType.connectionError:
+        return ApiException(code: 'NETWORK', message: e.message ?? 'network');
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
-        return ApiException(code: 'NETWORK', message: e.message ?? 'network');
+        return ApiException(code: 'NETWORK', message: e.message ?? 'timeout', isTimeout: true);
       default:
         break;
     }
@@ -79,6 +87,13 @@ class ApiClient {
           options.headers['Authorization'] = 'Bearer $t';
         }
         options.headers['Accept-Language'] = language;
+        final zipped = gzipEnabled && options.extra['noGzip'] != true ? gzipJsonBody(options.data) : null;
+        if (zipped != null) {
+          // 2G: a push of 200 changes is ~10x smaller (API body parser inflates it).
+          options.extra['jsonBody'] = options.data;
+          options.data = zipped;
+          options.headers['Content-Encoding'] = 'gzip';
+        }
         handler.next(options);
       },
       onResponse: (response, handler) {
@@ -88,6 +103,20 @@ class ApiClient {
       onError: (err, handler) async {
         final status = err.response?.statusCode;
         final opts = err.requestOptions;
+        if (status == 415 && opts.extra.containsKey('jsonBody') && opts.extra['noGzip'] != true) {
+          // A server (or proxy) refusing gzip bodies: send this request once
+          // more uncompressed, and stop compressing for this client.
+          gzipEnabled = false;
+          opts.extra['noGzip'] = true;
+          opts.data = opts.extra.remove('jsonBody');
+          opts.headers.remove('Content-Encoding');
+          try {
+            handler.resolve(await dio.fetch<dynamic>(opts));
+          } on DioException catch (e) {
+            handler.next(e);
+          }
+          return;
+        }
         if (status == 401 && opts.extra['retried'] != true && opts.extra['noAuth'] != true) {
           final ok = await _refresh();
           if (ok) {
@@ -164,6 +193,22 @@ class ApiClient {
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }
+  }
+
+  /// False after a 415 (gzip body refused): later requests are sent plain.
+  bool gzipEnabled = true;
+
+  /// JSON bodies at least this large are sent gzip-compressed.
+  static const int gzipThreshold = 1024;
+
+  /// Gzip-compressed UTF-8 JSON of [data] when it is a JSON object/array of at
+  /// least [gzipThreshold] bytes; null otherwise (sent as is).
+  static Uint8List? gzipJsonBody(Object? data) {
+    // TypedData: already bytes (e.g. the gzip body re-sent after a 401 refresh).
+    if (data is TypedData || (data is! Map && data is! List)) return null;
+    final raw = utf8.encode(jsonEncode(data));
+    if (raw.length < gzipThreshold) return null;
+    return Uint8List.fromList(gzip.encode(raw));
   }
 
   static Map<String, dynamic> asMap(dynamic d) =>

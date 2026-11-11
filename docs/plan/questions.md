@@ -24,6 +24,8 @@ L'orchestrateur ou le proprietaire du produit repond et deplace la reponse dans 
 - **Q-QA-02** — EF-CON-03 demande « JSON + CSV » : seul le JSON existe. Livrer le CSV ou amender l exigence (decision PO) ?
 - **Q-QA-03** — RG-ABO-01 prevoit une « lecture seule » des modules payants apres la grace ; le code retire les modules (retour a la formule Decouverte). Comportement voulu ?
 - **Q-QA-04** — Cible de couverture des moteurs Dart : `flutter test --coverage` ne mesure que les lignes (pas les branches). Accepter 100 % des lignes comme equivalent de 100 % des branches, ou ajouter un outil de couverture de branches (ADR) ?
+
+
 ## Questions ouvertes — P1.1 / P1.2 integrations (agent integrations, 2026-11-10)
 
 | ID | Question | Hypothese retenue en attendant |
@@ -34,3 +36,12 @@ L'orchestrateur ou le proprietaire du produit repond et deplace la reponse dans 
 | Q-INT-04 | Qui peut rembourser ? | Administrateur plateforme seulement (`platform_admin`) ; lecture des paiements et rapports : `ops`, `support`. |
 | Q-INT-05 | Pages officielles de l'agregateur (D-07) a citer dans l'ADR : aucun agregateur retenu. | Descripteur generique ; les pages seront citees avec le premier fichier de connecteur reel. |
 | Q-INT-06 | Libelle « Suite » et textes du menu USSD : en dur en francais dans l'API (comme avant). Les passer en `message_template` du pack pays ? | `more.label` configurable par connecteur ; les textes du menu restent a migrer vers le pack. |
+
+
+## Questions mobile-socle (P0.1, 2026-11-10)
+
+| ID | Question | Contexte | Proposition |
+|----|----------|----------|-------------|
+| Q-MOB-01 | Accepter Android 7 (API 24) comme minimum au lieu d'Android 6 (API 23) ? | Mesure 2026-11-10 : avec minSdk 23 le build release echoue (« minSdkVersion 23 cannot be smaller than version 24 declared in library [:url_launcher_android] ») et Flutter 3.38 avertit que l'API 23 sera abandonnee. Forcer (`tools:overrideLibrary`) exposerait a des plantages. | **TRANCHE le 10/11/2026 par le proprietaire du produit : Android 7 minimum, minSdk 24 accepte** (`flutter.minSdkVersion`, deja applique). |
+| Q-MOB-02 | D-09 (polices embarquees ou Google Fonts) : tranche par le lot P0.1 ? | Le lot P0.1 §1 demande « embarque les polices (pas de telechargement a l'execution) » alors que D-09 est « En attente ». `GoogleFonts.getFont(nom)` conservait toute la table des ~1 500 familles dans libapp.so. | Polices embarquees (sous-ensemble latin, OFL) appliquees dans ce lot, ADR-003. A confirmer par le proprietaire du produit (D-09). |
+| Q-MOB-03 | Dossier v2.2 absent du depot | `docs/dossier/` n'existe pas dans le depot : les ID ENF de performance/taille ne peuvent pas etre cites exactement (seul ENF-PER-04 « APK <= 25 Mo » apparait dans apps/mobile/README.md). | Ajouter le dossier au depot ou fournir les ID ENF de demarrage a froid et de synchro 2G. |

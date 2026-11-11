@@ -16,3 +16,52 @@ L'orchestrateur la route vers le proprietaire du fichier.
 | 2026-11-10 | integrations | apps/web, apps/mobile (ecran de paiement) | web-frontend, mobile-ecrans | Checkout idempotent : envoyer `id` (UUID v4 cree a l'appui, reutilise pour toute relance du meme paiement) dans `POST /v1/subscriptions/checkout` (ou l'en-tete `Idempotency-Key`). Une relance renvoie `replayed: true` et le meme `payment_id` ; une relance d'un refus renvoie la meme erreur 422 `PAY-INIT`. `409 CONFLICT` (`rule: PAY-IDEMPOTENCY`) si le meme id sert a une autre demande. | Ouvert |
 | 2026-11-10 | integrations | apps/web, apps/mobile (suivi du paiement) | web-frontend, mobile-ecrans | Nouveaux statuts de paiement : `a_verifier` (issue inconnue apres plusieurs interrogations : afficher « Paiement en cours de verification, nous vous prevenons »), `remboursement_en_cours`, `rembourse`. `GET /plans` ne renvoie plus que les moyens de paiement reellement branches. | Ouvert |
 | 2026-11-10 | integrations | apps/web (administration) | web-frontend | Ecrans admin : liste `GET /v1/admin/payments?status=a_verifier`, bouton « Interroger » (`POST /v1/admin/payments/:id/check`), « Rembourser » avec motif (`POST /v1/admin/payments/:id/refund`, administrateur plateforme), rapports `GET /v1/admin/payments/reconciliations`. | Ouvert |
+| 2026-11-10 | mobile-socle (P0.1) | .github/workflows/ci.yml (job `mobile`) | devops-sre | Signature release + APK par ABI, detail ci-dessous (R-01) | Ouvert |
+| 2026-11-10 | mobile-socle (P0.1) | apps/mobile/lib/features/onboarding/consents_screen.dart (l. 41) ou DTO API `/me/consents` | mobile-ecrans (ou api) | **Bug conformite** : E03 envoie `granted_at` dans `POST /me/consents`, l'API repond 422 « granted_at : champ non autorise » (vu sur la recette, integration_test/pilot_journey_test.dart). L'action est marquee `rejected` dans l'outbox : le consentement n'est jamais enregistre cote serveur. Retirer le champ (ou l'accepter cote API, contrat d'abord) + test de contrat. | Corrige (e5f49a3, fix/ci-vague3 ; cherry-pick sur feat/P0.1-mobile-socle) |
+| 2026-11-10 | mobile-socle (P0.1) | apps/api/src/sync/sync.service.ts | api | **Performance 2G (cible « 500 changements < 10 s en 2G »)** : mesure sur la recette, `POST /sync/push` de 200 journaux = 4,0 a 4,7 s de traitement serveur (~21 ms par changement : recu, lecture, ecriture, relecture une par une) ; 500 changements = ~8 s cote serveur avant tout reseau. Et `GET /sync/pull` renvoie a l'appareil ses propres changements qu'il vient de pousser (500 lignes re-telechargees en 2G). Demande : traitement par lot du push (une transaction, lectures groupees), et exclure du pull les lignes dont `last_device_id` = appareil appelant et `client_rev` = revision poussee. | Ouvert |
+| 2026-11-10 | mobile-socle (P0.1, revue M3) | apps/api (e2e sync), docs/contracts, apps/api/openapi.json | api | **Corps gzip** : le mobile envoie les corps JSON >= 1 Ko avec `Content-Encoding: gzip` (verifie a la main sur la recette : 200). Demande : test e2e `POST /v1/sync/push` avec corps gzip (et un corps gzip invalide -> 400, pas 500), limite de taille apres decompression explicite, et contrat documente (openapi : `Content-Encoding: gzip` accepte sur /v1/sync/push). Le mobile renvoie la requete une fois en JSON simple sur 415 et coupe la compression. | Ouvert |
+
+### R-01 — CI mobile : APK release signe et par ABI (P0.1, ENF taille < 25 Mo)
+
+La config Gradle (apps/mobile/android/app/build.gradle.kts) lit la cle depuis l'environnement ;
+**sans cle, toute tache release echoue** (revue M1) ; `RECALLFARM_ALLOW_DEBUG_SIGNED_RELEASE=true`
+autorise une release signee en debug (essais). Les builds debug ne sont jamais bloques.
+Changements demandes dans le job `mobile` :
+
+1. Secrets GitHub (environnement `release`) : `ANDROID_KEYSTORE_BASE64` (keystore upload encode
+   en base64), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+2. Avant le build :
+   ```yaml
+   - name: Keystore release
+     run: |
+       if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+         echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+       fi
+     env: { ANDROID_KEYSTORE_BASE64: "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" }
+   ```
+3. Build (remplace la ligne actuelle) :
+   ```yaml
+   - run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --dart-define=API_BASE_URL=...
+     env:
+       ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/upload.jks
+       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+       # PR sans secrets : release d'essai signee en debug ; main : la cle est obligatoire
+       RECALLFARM_ALLOW_DEBUG_SIGNED_RELEASE: ${{ github.ref != 'refs/heads/main' && 'true' || 'false' }}
+   ```
+   Sur `main` le build echoue sans cle ; sur les PR (secrets absents) il est signe en debug (artefact d'essai,
+   a ne pas publier). Sans cette variable, le `flutter build apk --release` actuel de la CI echouera.
+4. Garde de taille (ENF < 25 Mo) apres le build :
+   ```yaml
+   - run: |
+       for f in build/app/outputs/flutter-apk/app-*-release.apk; do
+         s=$(stat -c %s "$f"); echo "$f $s"; test "$s" -lt 26214400 || { echo "APK > 25 Mo"; exit 1; }
+       done
+   - run: rm -f "$RUNNER_TEMP/upload.jks"
+     if: always()
+   ```
+5. Artefact : `path: apps/mobile/build/app/outputs/flutter-apk/app-*-release.apk` (le nom
+   `app-release.apk` n'existe plus avec `--split-per-abi`).
+6. Facultatif (job manuel, emulateur) : `flutter test integration_test/... --dart-define=API_BASE_URL=...`
+   via `reactivecircus/android-emulator-runner` contre la pile docker du job (voir apps/mobile/README.md §9).

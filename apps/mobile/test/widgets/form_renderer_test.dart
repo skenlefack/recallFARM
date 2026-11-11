@@ -54,7 +54,7 @@ class _HostState extends State<_Host> {
 
 void main() {
   setUpAll(() async {
-    RfType.useGoogleFonts = false;
+    RfType.useBundledFonts = false;
     await initializeDateFormatting('fr');
   });
 

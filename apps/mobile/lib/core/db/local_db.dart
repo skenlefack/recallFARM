@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
@@ -40,6 +41,25 @@ const Set<String> kLocalOnlyFields = {'_local'};
 int entityRank(String entity) {
   final i = kSyncedEntities.indexOf(entity);
   return i < 0 ? 999 : i;
+}
+
+/// A server row to apply locally (pull).
+class RemoteRow {
+  RemoteRow(this.table, this.data, {required this.syncVersion, this.deleted = false});
+  final String table;
+  final Map<String, dynamic> data;
+  final int syncVersion;
+  final bool deleted;
+}
+
+/// Server acknowledgement of a pushed change.
+class PushAck {
+  PushAck(this.entity, this.id, this.pushedRev, this.syncVersion, {this.serverData});
+  final String entity;
+  final String id;
+  final int pushedRev;
+  final int syncVersion;
+  final Map<String, dynamic>? serverData;
 }
 
 class OutboxEntry {
@@ -102,6 +122,36 @@ class LocalDb {
   static const _dbName = 'recallfarm.db';
   static const _version = 1;
 
+  /// Secure-storage marker telling how the database at [dbPath] is keyed.
+  /// Value `raw`: SQLCipher raw key. Absent: legacy passphrase (before P0.1).
+  @visibleForTesting
+  static String keyModeMarker(String dbPath) => 'rf_db_key_mode_v1:${p.basename(dbPath)}';
+
+  /// SQLCipher raw key literal (`x'<64 hex>'`) for the stored 256-bit key.
+  /// A raw key skips SQLCipher's PBKDF2 (256 000 iterations) at every open:
+  /// measured on a 2 GB emulator, 276 ms → 13 ms per cold start, more on low-end ARM.
+  @visibleForTesting
+  static String rawKey(String storedKey) =>
+      "x'${base64Url.decode(storedKey).map((b) => b.toRadixString(16).padLeft(2, '0')).join()}'";
+
+  /// Re-encrypts [db] with [rawKey]. Replaceable in tests to simulate a
+  /// failure (disk full: SQLITE_FULL, app killed...).
+  @visibleForTesting
+  static Future<void> Function(Database db, String rawKey) rekey = defaultRekey;
+
+  static Future<void> defaultRekey(Database db, String rawKey) => db.rawQuery('PRAGMA rekey = "$rawKey"');
+
+  /// Opens the encrypted store. Key handling (dossier 04 §2, review B1):
+  /// - new database: created with the raw key;
+  /// - marker `raw`: opened with the raw key (falls back to the passphrase if
+  ///   the marker is wrong);
+  /// - legacy database (passphrase, before P0.1): opened with the passphrase,
+  ///   then `PRAGMA rekey`. If the rekey fails, the app keeps working on the
+  ///   passphrase connection and retries at the next launch.
+  /// The marker is written only after a verification read succeeded with the
+  /// raw key on a fresh connection. Every open uses `singleInstance: false`:
+  /// sqflite would otherwise hand back an already-open connection without
+  /// checking the key.
   static Future<LocalDb> open({FlutterSecureStorage? storage, String? path}) async {
     final secure = storage ?? const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
     var key = await secure.read(key: _keyName);
@@ -110,13 +160,85 @@ class LocalDb {
       key = base64Url.encode(List<int>.generate(32, (_) => rnd.nextInt(256)));
       await secure.write(key: _keyName, value: key);
     }
+    final passphrase = key;
     final dbPath = path ?? p.join(await getDatabasesPath(), _dbName);
-    final db = await openDatabase(
-      dbPath,
-      password: key,
-      version: _version,
-      onCreate: (db, version) async => _createSchema(db),
-    );
+    final marker = keyModeMarker(dbPath);
+    final raw = rawKey(passphrase);
+
+    if (!await databaseExists(dbPath)) {
+      final db = await _openVerified(dbPath, raw);
+      if (db == null) throw StateError('cannot create the encrypted database');
+      await secure.write(key: marker, value: 'raw');
+      return LocalDb._(db);
+    }
+
+    if (await secure.read(key: marker) == 'raw') {
+      final db = await _openVerified(dbPath, raw);
+      if (db != null) return LocalDb._(db);
+      // Marker without a successful rekey (should not happen): treat as legacy.
+      await secure.delete(key: marker);
+    }
+
+    final legacy = await _openVerified(dbPath, passphrase);
+    if (legacy == null) {
+      // Killed after the rekey but before the marker was saved: already raw.
+      final db = await _openVerified(dbPath, raw);
+      if (db == null) throw StateError('encrypted database: neither key opens it');
+      await secure.write(key: marker, value: 'raw');
+      return LocalDb._(db);
+    }
+    return LocalDb._(await _migrateToRawKey(legacy, dbPath, passphrase, raw, () => secure.write(key: marker, value: 'raw')));
+  }
+
+  /// Opens a NEW connection with [password] and proves it with a read;
+  /// null when the key does not open the file (the connection is closed).
+  static Future<Database?> _openVerified(String dbPath, String password) async {
+    Database? db;
+    try {
+      db = await openDatabase(
+        dbPath,
+        password: password,
+        version: _version,
+        singleInstance: false,
+        onCreate: (db, version) async => _createSchema(db),
+      );
+      await db.rawQuery('SELECT count(*) FROM sqlite_master');
+      return db;
+    } on DatabaseException {
+      if (db != null && db.isOpen) await db.close();
+      return null;
+    }
+  }
+
+  /// Re-encrypts a legacy database with the raw key. On any failure the
+  /// passphrase connection is kept (no data loss, no marker) and the rekey is
+  /// retried at the next launch.
+  static Future<Database> _migrateToRawKey(
+      Database legacy, String dbPath, String passphrase, String raw, Future<void> Function() writeMarker) async {
+    try {
+      await rekey(legacy, raw);
+    } on Exception catch (e) {
+      debugPrint('LocalDb: rekey failed, keeping the passphrase until next launch: $e');
+      return legacy;
+    }
+    await legacy.close();
+    final check = await _openVerified(dbPath, raw);
+    if (check != null) {
+      await writeMarker();
+      return check;
+    }
+    debugPrint('LocalDb: rekey reported success but the raw key does not open the file; passphrase kept');
+    final back = await _openVerified(dbPath, passphrase);
+    if (back == null) throw StateError('encrypted database: neither key opens it after rekey');
+    return back;
+  }
+
+  /// Test seam: wraps an already-open database (e.g. sqflite_common_ffi) and
+  /// creates the schema when empty.
+  @visibleForTesting
+  static Future<LocalDb> forTesting(Database db) async {
+    final tables = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='kv'");
+    if (tables.isEmpty) await _createSchema(db);
     return LocalDb._(db);
   }
 
@@ -389,87 +511,141 @@ class LocalDb {
   /// Applies a server row. Dirty local fields win until pushed (the server then
   /// resolves per-field last-write-wins).
   Future<void> applyRemote(String table, Map<String, dynamic> remote,
-      {required int syncVersion, bool deleted = false}) async {
-    final id = remote['id'].toString();
+      {required int syncVersion, bool deleted = false}) =>
+      applyRemoteAll([RemoteRow(table, remote, syncVersion: syncVersion, deleted: deleted)]);
+
+  /// Applies a page of server rows in ONE transaction: existing rows are read
+  /// with `id IN (...)` and all writes go in one [Batch] — a pull of 500 changes
+  /// costs a handful of platform-channel calls and one commit, not 1 000 calls
+  /// and 500 commits (measured: integration_test/offline_sync_test.dart).
+  Future<void> applyRemoteAll(List<RemoteRow> rows) async {
+    if (rows.isEmpty) return;
     await _db.transaction((txn) async {
-      final rows = await txn.query(table, where: 'id = ?', whereArgs: [id], limit: 1);
-      final existing = rows.isEmpty ? null : rows.first;
-      final data = Map<String, dynamic>.from(_clean(remote));
-      var dirty = 0;
-      String? dirtyFields;
-      var clientRev = (remote['client_rev'] as num?)?.toInt() ?? 0;
-      if (existing != null && (existing['dirty'] as int? ?? 0) == 1) {
-        final local = Map<String, dynamic>.from(jsonDecode(existing['data'] as String) as Map);
-        final fields = existing['dirty_fields'] == null
-            ? <String>[]
-            : (jsonDecode(existing['dirty_fields'] as String) as List).cast<String>();
-        for (final f in fields) {
-          if (local.containsKey(f)) data[f] = local[f];
-        }
-        dirty = 1;
-        dirtyFields = existing['dirty_fields'] as String?;
-        clientRev = existing['client_rev'] as int? ?? clientRev;
+      final existing = <String, Map<String, Map<String, Object?>>>{};
+      for (final table in {for (final r in rows) r.table}) {
+        existing[table] =
+            await _rowsById(txn, table, [for (final r in rows) if (r.table == table) r.data['id'].toString()]);
       }
-      // Rule: a locally confirmed reminder wins over `manque`/`envoye`.
-      if (table == 'reminders' && existing != null) {
-        final local = jsonDecode(existing['data'] as String) as Map;
-        if (local['status'] == 'confirme' &&
-            (data['status'] == 'manque' || data['status'] == 'envoye')) {
-          data['status'] = 'confirme';
-        }
+      final batch = txn.batch();
+      for (final r in rows) {
+        final id = r.data['id'].toString();
+        batch.insert(r.table, mergeRemote(r, existing[r.table]![id]), conflictAlgorithm: ConflictAlgorithm.replace);
       }
-      final deletedAt = deleted ? (data['deleted_at'] ?? Dates.nowIso()).toString() : data['deleted_at'] as String?;
-      data['deleted_at'] = deletedAt;
-      await txn.insert(
-        table,
-        {
-          'id': id,
-          ..._columns(table, data),
-          'data': jsonEncode(data),
-          'created_at': data['created_at']?.toString(),
-          'updated_at': data['updated_at']?.toString(),
-          'deleted_at': deletedAt,
-          'sync_version': syncVersion,
-          'client_rev': clientRev,
-          'dirty': dirty,
-          'dirty_fields': dirtyFields,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await batch.commit(noResult: true);
     });
-    _notify(table);
+    for (final t in {for (final r in rows) r.table}) {
+      _notify(t);
+    }
+  }
+
+  /// Local rows of [table] by id (chunks of 500: SQLite bound-variable limit).
+  static Future<Map<String, Map<String, Object?>>> _rowsById(
+      DatabaseExecutor db, String table, List<String> ids) async {
+    final out = <String, Map<String, Object?>>{};
+    final unique = ids.toSet().toList();
+    for (var i = 0; i < unique.length; i += 500) {
+      final chunk = unique.sublist(i, min(i + 500, unique.length));
+      final marks = List.filled(chunk.length, '?').join(',');
+      final rows = await db.query(table, where: 'id IN ($marks)', whereArgs: chunk);
+      for (final row in rows) {
+        out[row['id'] as String] = row;
+      }
+    }
+    return out;
+  }
+
+  /// Row values for a server row. Dirty local fields win until pushed (the
+  /// server then resolves per-field last-write-wins).
+  @visibleForTesting
+  static Map<String, Object?> mergeRemote(RemoteRow r, Map<String, Object?>? existing) {
+    final table = r.table;
+    final remote = r.data;
+    final id = remote['id'].toString();
+    final data = Map<String, dynamic>.from(_clean(remote));
+    var dirty = 0;
+    String? dirtyFields;
+    var clientRev = (remote['client_rev'] as num?)?.toInt() ?? 0;
+    if (existing != null && (existing['dirty'] as int? ?? 0) == 1) {
+      final local = Map<String, dynamic>.from(jsonDecode(existing['data'] as String) as Map);
+      final fields = existing['dirty_fields'] == null
+          ? <String>[]
+          : (jsonDecode(existing['dirty_fields'] as String) as List).cast<String>();
+      for (final f in fields) {
+        if (local.containsKey(f)) data[f] = local[f];
+      }
+      dirty = 1;
+      dirtyFields = existing['dirty_fields'] as String?;
+      clientRev = existing['client_rev'] as int? ?? clientRev;
+    }
+    // Rule: a locally confirmed reminder wins over `manque`/`envoye`.
+    if (table == 'reminders' && existing != null) {
+      final local = jsonDecode(existing['data'] as String) as Map;
+      if (local['status'] == 'confirme' && (data['status'] == 'manque' || data['status'] == 'envoye')) {
+        data['status'] = 'confirme';
+      }
+    }
+    final deletedAt =
+        r.deleted ? (data['deleted_at'] ?? Dates.nowIso()).toString() : data['deleted_at'] as String?;
+    data['deleted_at'] = deletedAt;
+    return {
+      'id': id,
+      ..._columns(table, data),
+      'data': jsonEncode(data),
+      'created_at': data['created_at']?.toString(),
+      'updated_at': data['updated_at']?.toString(),
+      'deleted_at': deletedAt,
+      'sync_version': r.syncVersion,
+      'client_rev': clientRev,
+      'dirty': dirty,
+      'dirty_fields': dirtyFields,
+    };
   }
 
   /// Marks a pushed change as applied. Only clears the dirty flag when no newer
   /// local edit happened meanwhile.
   Future<void> markPushed(String entity, String id, int pushedRev, int syncVersion,
-      {Map<String, dynamic>? serverData}) async {
+      {Map<String, dynamic>? serverData}) =>
+      markPushedAll([PushAck(entity, id, pushedRev, syncVersion, serverData: serverData)]);
+
+  /// Acknowledges a whole push batch in ONE transaction and one [Batch]
+  /// (see [applyRemoteAll]).
+  Future<void> markPushedAll(List<PushAck> acks) async {
+    if (acks.isEmpty) return;
     await _db.transaction((txn) async {
-      if (entity != '_action') {
-        final rows = await txn.query(entity, where: 'id = ?', whereArgs: [id], limit: 1);
-        if (rows.isNotEmpty) {
-          final row = rows.first;
+      final existing = <String, Map<String, Map<String, Object?>>>{};
+      for (final entity in {for (final a in acks) a.entity}) {
+        if (entity == '_action') continue;
+        existing[entity] = await _rowsById(txn, entity, [for (final a in acks) if (a.entity == entity) a.id]);
+      }
+      final batch = txn.batch();
+      for (final a in acks) {
+        final row = existing[a.entity]?[a.id];
+        if (row != null) {
           final currentRev = row['client_rev'] as int? ?? 0;
-          final values = <String, Object?>{'sync_version': syncVersion};
-          if (currentRev <= pushedRev) {
+          final values = <String, Object?>{'sync_version': a.syncVersion};
+          if (currentRev <= a.pushedRev) {
             values['dirty'] = 0;
             values['dirty_fields'] = null;
+            final serverData = a.serverData;
             if (serverData != null) {
               final merged = <String, dynamic>{
                 ...Map<String, dynamic>.from(jsonDecode(row['data'] as String) as Map),
                 ..._clean(serverData),
               };
               values['data'] = jsonEncode(merged);
-              values.addAll(_columns(entity, merged));
+              values.addAll(_columns(a.entity, merged));
             }
           }
-          await txn.update(entity, values, where: 'id = ?', whereArgs: [id]);
+          batch.update(a.entity, values, where: 'id = ?', whereArgs: [a.id]);
         }
+        batch.delete('outbox',
+            where: 'entity = ? AND entity_id = ? AND client_rev <= ?', whereArgs: [a.entity, a.id, a.pushedRev]);
       }
-      await txn.delete('outbox',
-          where: 'entity = ? AND entity_id = ? AND client_rev <= ?', whereArgs: [entity, id, pushedRev]);
+      await batch.commit(noResult: true);
     });
-    _notify(entity);
+    for (final e in {for (final a in acks) a.entity}) {
+      _notify(e);
+    }
     _notify('outbox');
   }
 
