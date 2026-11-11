@@ -106,7 +106,7 @@ jobs:
           --min-total=16
           --scope=core/params:79
           --scope=core/params/expr:91 --scope=core/params/resolution:86 --scope=core/params/form_engine:92
-          --scope=core/params/inbreeding:81 --scope=core/params/reminder_engine:93
+          --scope=core/params/inbreeding:100 --scope=core/params/reminder_engine:93
           --json=apps/mobile/coverage/summary.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -114,11 +114,25 @@ jobs:
           name: coverage-mobile
           path: apps/mobile/coverage/
           retention-days: 14
-      - run: flutter build apk --release --dart-define=API_BASE_URL=${{ vars.PILOT_API_URL || 'https://pilote.recallfarm.app/v1' }}
+      # Controle de build uniquement : sans cle de signature (R-01, secrets a venir), la release
+      # est signee debug par opt-in explicite. Ces APK ne doivent jamais etre diffuses.
+      - name: Build APK release par ABI
+        env:
+          RECALLFARM_ALLOW_DEBUG_SIGNED_RELEASE: 'true'
+        run: flutter build apk --release --split-per-abi --dart-define=API_BASE_URL=${{ vars.PILOT_API_URL || 'https://recallfarm.com/v1' }}
+      - name: Taille < 25 Mo et pas de libsqlite3.so (ENF-PER-04, ADR-004)
+        run: |
+          set -e
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            size=$(stat -c %s "$apk"); echo "$apk : $size octets"
+            test "$size" -lt 26214400 || { echo "::error::$apk depasse 25 Mo"; exit 1; }
+            if unzip -l "$apk" | grep -q 'libsqlite3.so'; then echo "::error::libsqlite3.so dans $apk"; exit 1; fi
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: recallfarm-apk
-          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          name: recallfarm-apk-non-diffusable
+          path: apps/mobile/build/app/outputs/flutter-apk/app-*-release.apk
+          retention-days: 7
 
   parity:
     needs: [api, mobile]

@@ -36,4 +36,52 @@ void main() {
     expect(r.expectedCoef, 0);
     expect(r.verdict, 'ok');
   });
+
+  test('inbreedingOf: offspring of full siblings → 25 %, memoised, unknown parents → 0', () {
+    // Built at runtime (not const) so the constructor itself is exercised.
+    final ped = <String, PedigreeNode>{
+      for (final n in [
+        // ignore: prefer_const_constructors
+        PedigreeNode(id: 'A', sireId: 'S', damId: 'D', label: 'A'),
+        // ignore: prefer_const_constructors
+        PedigreeNode(id: 'B', sireId: 'S', damId: 'D'),
+        // ignore: prefer_const_constructors
+        PedigreeNode(id: 'X', sireId: 'A', damId: 'B'),
+      ])
+        n.id: n,
+    };
+    final engine = Inbreeding(ped);
+    expect(engine.inbreedingOf('X'), closeTo(0.25, 1e-12));
+    expect(engine.inbreedingOf('X'), closeTo(0.25, 1e-12), reason: 'memoised value');
+    expect(engine.inbreedingOf('S'), 0, reason: 'founder without known parents');
+    expect(engine.inbreedingOf('inconnu'), 0);
+    expect(Inbreeding(ped, maxGenerations: 0).inbreedingOf('X', 1), 0, reason: 'beyond max depth');
+  });
+
+  test('MatingCheckResult.fromJson: API response and defaults', () {
+    final r = MatingCheckResult.fromJson({
+      'expected_coef': 0.125,
+      'verdict': 'a_eviter',
+      'common_ancestors': [
+        {'id': 'V-002'},
+        {'name': 'Rex'},
+        {'other': 1},
+        'T-031',
+      ],
+      'threshold': 0.1,
+      'complete': false,
+    });
+    expect(r.expectedCoef, 0.125);
+    expect(r.verdict, 'a_eviter');
+    expect(r.commonAncestors, ['V-002', 'Rex', '', 'T-031']);
+    expect(r.threshold, 0.1);
+    expect(r.complete, isFalse);
+
+    final d = MatingCheckResult.fromJson(const {});
+    expect(d.expectedCoef, 0);
+    expect(d.verdict, 'ok');
+    expect(d.commonAncestors, isEmpty);
+    expect(d.threshold, Inbreeding.defaultThreshold);
+    expect(d.complete, isTrue);
+  });
 }
