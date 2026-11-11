@@ -72,8 +72,10 @@ void main() {
     await legacy.close();
 
     var calls = 0;
+    final failedOn = <Database>[];
     LocalDb.rekey = (db, raw) async {
       calls++;
+      failedOn.add(db);
       throw Exception('SQLITE_FULL: database or disk is full (simule)');
     };
     addTearDown(() => LocalDb.rekey = LocalDb.defaultRekey);
@@ -81,6 +83,8 @@ void main() {
     // Two launches in a row with a failing rekey: the app opens every time.
     for (var launch = 1; launch <= 2; launch++) {
       final db = await LocalDb.open(path: path);
+      // Review N1: the connection whose rekey failed is closed, never reused.
+      expect(failedOn.last.isOpen, isFalse, reason: 'connexion du rekey en echec fermee');
       expect(await db.getKv('k'), 'saisie hors ligne', reason: 'lancement $launch');
       await db.setKv('k$launch', 'ecrit au lancement $launch');
       await db.close();

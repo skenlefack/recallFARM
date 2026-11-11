@@ -211,15 +211,24 @@ class LocalDb {
   }
 
   /// Re-encrypts a legacy database with the raw key. On any failure the
-  /// passphrase connection is kept (no data loss, no marker) and the rekey is
-  /// retried at the next launch.
+  /// database stays on the passphrase (no data loss, no marker) and the rekey
+  /// is retried at the next launch.
   static Future<Database> _migrateToRawKey(
       Database legacy, String dbPath, String passphrase, String raw, Future<void> Function() writeMarker) async {
     try {
       await rekey(legacy, raw);
     } on Exception catch (e) {
       debugPrint('LocalDb: rekey failed, keeping the passphrase until next launch: $e');
-      return legacy;
+      // Never keep writing on the connection whose rekey failed: SQLCipher may
+      // already use the new key for its writes. Reopen with the key that
+      // actually opens the file.
+      if (legacy.isOpen) await legacy.close();
+      final again = await _openVerified(dbPath, passphrase);
+      if (again != null) return again;
+      final rekeyed = await _openVerified(dbPath, raw);
+      if (rekeyed == null) throw StateError('encrypted database: neither key opens it after a failed rekey');
+      await writeMarker();
+      return rekeyed;
     }
     await legacy.close();
     final check = await _openVerified(dbPath, raw);
