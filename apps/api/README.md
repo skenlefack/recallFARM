@@ -72,17 +72,30 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
 - **Payment operations** (`billing/payment-ops.service.ts`, `payments.scheduler.ts`): status queries for pending payments
   (capped exponential backoff, then `a_verifier`), refunds (`POST /v1/admin/payments/:id/refund`, `audit_log`), daily
   reconciliation (`/v1/admin/payments/reconciliations`). Checkout is idempotent (`id` from the client or `Idempotency-Key`).
-  `GET /v1/payments/:id` and `GET /v1/admin/payments/:id` return `events` (provider journal: `at`, `status`, `source`
-  webhook|statut; never the raw aggregator body).
-- **PAY-OPEN (EF-ABO-01)**: one open payment (`initie`, `en_attente`, `a_verifier`) per payer and plan. A checkout with another
-  id or key meanwhile answers `409 CONFLICT` `details: {rule: 'PAY-OPEN', payment_id, status}` (the client follows that payment);
-  the replay of the same id/key is still a replay. Enforced by the partial unique index `payments_open_payer_plan_uq`
-  (migration 1761500000005), so concurrent requests give one payment. **Runbook**: the migration stops if a payer already has
-  several open payments for a plan and lists them; settle them first (`POST /v1/admin/payments/:id/check`, or the aggregator's
-  answer), then run the migration again. A payment stuck in `a_verifier` blocks new checkouts of that plan for its payer until
-  an operator settles it (see `GET /v1/admin/payments?status=a_verifier`).
-- **Currency**: always the country pack's (`pays.<CC>.json` → `currency`, or the `plan_price` currency). Without one,
-  `GET /plans` (and `/subscriptions/current` for a subscription stored without currency) answer `422 PAY-CURRENCY`.
+  `GET /v1/payments/:id` and `GET /v1/admin/payments/:id` return `events` (journal: `at`, `status`, `source`
+  webhook|statut|operateur, written by the API when the event is recorded; never the raw aggregator body). Events refused
+  (other amount, other currency, other connector) are kept with `ignored: true, reason`; the payer view leaves them out.
+- **PAY-OPEN (EF-ABO-01)**: one open subscription payment (`initie`, `en_attente`, `a_verifier`) per payer, **whatever the plan**
+  (an account has one subscription). A checkout with another id, key or plan meanwhile answers `409 CONFLICT`
+  `details: {rule: 'PAY-OPEN', payment_id, status, plan}` (the client follows that payment); the replay of the same id/key is still a
+  replay; `id` and `Idempotency-Key` that designate different payments answer 422. Enforced by the partial unique index
+  `payments_open_payer_uq` (migration 1761500000005), so concurrent requests give one payment (`409 PAY-RETRY` in the rare case
+  where the open payment changes state during the request: try again).
+- **Runbook — payments**:
+  - *Migration 1761500000005 stops* ("plusieurs paiements d'abonnement ouverts"): it locks `payments` against writes, lists the
+    payers with several open payments (id, plan, status) and changes nothing. Settle all but one of each payer's payments (below),
+    then run the migration again.
+  - *Payment `a_verifier`* (no answer after the status queries, or connector without status query): it blocks every new checkout
+    of its payer. List: `GET /v1/admin/payments?status=a_verifier`. First `POST /v1/admin/payments/:id/check` (ops). Without an
+    answer from the aggregator, check its statement / back office, then a platform administrator decides with
+    `POST /v1/admin/payments/:id/resolve` `{outcome: 'confirme'|'echoue', reason}` (reason >= 5 characters: the evidence seen).
+    `confirme` activates the subscription; `echoue` frees the payer. Only from `a_verifier` (409 `PAY-RESOLVE-STATUS` otherwise);
+    the decision and its reason are in `audit_log` (`resolve_confirme` / `resolve_echoue`, actor) and the journal (`operateur`).
+    If money arrives later on a payment decided `echoue`, the aggregator's confirmation still activates it (a confirmation always
+    wins); refund through `/refund` if needed.
+- **Currency**: always the country pack's (`pays.<CC>.json` → `currency`, or the `plan_price` currency). Without one, `GET /plans`
+  answers `422 PAY-CURRENCY`; `/subscriptions/current` gives `price: null` (warning in the log) for a subscription stored without
+  currency.
 - **WhatsApp**: simulator only. **Push** = journaled (`channel=push`), delivered through `/inbox` and sync.
 - **Payments** `PAYMENT_PROVIDER=simulator`: checkout returns `{payment_id, status:"initie", ussd_push:true}` and auto-confirms after
   `PAYMENT_SIM_AUTOCONFIRM_MS` (5 s) through the webhook code path; `POST /v1/dev/payments/:id/confirm|fail` for manual control.
