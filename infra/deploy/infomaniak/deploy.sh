@@ -24,7 +24,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 echo "==> 1/6 Construction des images (tag $TAG)"
-TAG="$TAG" docker compose build api web
+# Les mots de passe ne servent qu aux conteneurs du serveur : valeurs factices pour lire le compose au build.
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-build-only}" REDIS_PASSWORD="${REDIS_PASSWORD:-build-only}" TAG="$TAG" docker compose build api web
 
 echo "==> 2/6 Transfert des images vers $SERVER"
 docker save "recallfarm/api:$TAG" "recallfarm/web:$TAG" | gzip -1 | "${SSH[@]}" 'gunzip | docker load'
