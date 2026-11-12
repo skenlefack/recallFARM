@@ -18,12 +18,38 @@ export function asPercent(v: number): number {
   return Math.abs(v) <= 1 ? v * 100 : v;
 }
 
-export function money(amountMinor: number | null | undefined, currency = 'XAF'): string {
-  if (amountMinor === null || amountMinor === undefined) return '—';
-  // XAF/XOF have no minor unit (ISO 4217 exponent 0)
-  const exp = currency === 'XAF' || currency === 'XOF' ? 0 : 2;
-  const label = currency === 'XAF' || currency === 'XOF' ? 'FCFA' : currency;
-  return `${num(amountMinor / 10 ** exp)}${NBSP}${label}`;
+/** Formats Intl en cache (la construction d'un Intl.NumberFormat est couteuse). */
+const currencyFormats = new Map<string, Intl.NumberFormat | null>();
+function currencyFormat(currency: string): Intl.NumberFormat | null {
+  const key = currency.toUpperCase();
+  if (!currencyFormats.has(key)) {
+    try {
+      currencyFormats.set(key, new Intl.NumberFormat('fr-FR', { style: 'currency', currency: key }));
+    } catch {
+      currencyFormats.set(key, null); // code de devise inconnu de l'environnement
+    }
+  }
+  return currencyFormats.get(key) ?? null;
+}
+
+/**
+ * Montant en unite mineure ISO 4217 + devise recue de l'API (jamais de devise par defaut).
+ * L'exposant (0 pour XAF/XOF, 2 pour EUR...) et le symbole viennent d'Intl, pas du code.
+ * Sans devise connue, seul le nombre est affiche : pas d'unite inventee.
+ */
+export function money(amountMinor: number | null | undefined, currency: string | null | undefined): string {
+  if (amountMinor === null || amountMinor === undefined || Number.isNaN(amountMinor)) return '—';
+  const f = currency ? currencyFormat(currency) : null;
+  if (!f) return currency ? `${num(amountMinor)}${NBSP}${currency}` : num(amountMinor);
+  const digits = f.resolvedOptions().maximumFractionDigits ?? 0;
+  return f.format(amountMinor / 10 ** digits);
+}
+
+/** Libelle court d'une devise (symbole Intl, sinon code ISO), pour un champ de saisie. */
+export function currencyLabel(currency: string | null | undefined): string {
+  if (!currency) return '';
+  const f = currencyFormat(currency);
+  return f?.formatToParts(0).find((p) => p.type === 'currency')?.value ?? currency;
 }
 
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];

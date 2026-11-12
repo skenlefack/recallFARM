@@ -4,28 +4,30 @@ import { ApiError } from '../../api/client';
 import { api, listOf } from '../../api/endpoints';
 import type { Plan } from '../../api/types';
 import { Check } from '../../components/icons';
-import { num } from '../../lib/format';
+import { money } from '../../lib/format';
 import { SiteFooter, SiteHeader, useDocumentTitle } from './SiteChrome';
 
 import { priceOf, type Period } from '../../lib/plans';
 
-function Price({ plans, code, period, loading }: { plans: Plan[] | undefined; code: string; period: Period; loading: boolean }) {
+function Price({ plans, currency, code, period, loading }: { plans: Plan[] | undefined; currency: string | undefined; code: string; period: Period; loading: boolean }) {
   if (loading) return <div className="price" aria-busy="true"><span className="price-skel" /></div>;
-  const { amount, from } = priceOf(plans?.find((p) => p.code === code), code, period);
+  const { amount, currency: cur, from } = priceOf(plans?.find((p) => p.code === code), code, period, currency);
   if (amount === null) return <div className="price">Sur devis</div>;
-  const unit = amount === 0 ? 'FCFA' : `FCFA / ${period === 'yearly' ? 'an' : 'mois'}`;
+  if (amount === undefined) return <div className="price"><span aria-hidden="true">—</span><span className="sr-only">Tarif indisponible pour le moment</span></div>;
   return (
     <div className="price">
       {from && <small>dès </small>}
-      {num(amount)} <small>{unit}</small>
+      {money(amount, cur)}
+      {amount > 0 && <small> / {period === 'yearly' ? 'an' : 'mois'}</small>}
     </div>
   );
 }
 
 function Pricing() {
   const [period, setPeriod] = useState<Period>('monthly');
-  const q = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM'), select: (x) => listOf(x), retry: 1, staleTime: 3_600_000 });
-  const plans = q.isError ? undefined : q.data;
+  const q = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM'), select: (x) => ({ plans: listOf(x), currency: Array.isArray(x) ? undefined : x.currency }), retry: 1, staleTime: 3_600_000 });
+  const plans = q.isError ? undefined : q.data?.plans;
+  const currency = q.isError ? undefined : q.data?.currency;
   const loading = q.isLoading;
   return (
     <section id="tarifs" className="light tarifs on-light" aria-labelledby="tarifs-title">
@@ -44,7 +46,7 @@ function Pricing() {
         <div className="plans" aria-live="polite">
           <article className="plan">
             <h3>Découverte</h3>
-            <Price plans={plans} code="decouverte" period={period} loading={loading} />
+            <Price plans={plans} currency={currency} code="decouverte" period={period} loading={loading} />
             <ul>
               <li>1 exploitation</li>
               <li>Carnet et rappels sur le téléphone</li>
@@ -60,7 +62,7 @@ function Pricing() {
               <h3>Pro</h3>
               <span className="badge-lime">Le plus choisi</span>
             </div>
-            <Price plans={plans} code="pro" period={period} loading={loading} />
+            <Price plans={plans} currency={currency} code="pro" period={period} loading={loading} />
             <ul>
               <li>Rappels SMS et WhatsApp</li>
               <li>Certificats QR, généalogie</li>
@@ -74,7 +76,7 @@ function Pricing() {
           </article>
           <article className="plan">
             <h3>Structure</h3>
-            <Price plans={plans} code="structure" period={period} loading={loading} />
+            <Price plans={plans} currency={currency} code="structure" period={period} loading={loading} />
             <ul>
               <li>Multi-utilisateurs, mode agent</li>
               <li>Campagnes et couverture</li>
