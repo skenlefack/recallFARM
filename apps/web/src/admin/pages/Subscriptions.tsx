@@ -53,15 +53,14 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const [tel, setTel] = useState(me?.phone ? fmtPhone(me.phone) : '');
 
   // la fenetre ouverte garde une issue definitive a l'ecran jusqu'a sa fermeture
+  const { setViewing, clearError } = tr;
   useEffect(() => {
-    tr.setViewing(open);
-    return () => tr.setViewing(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    setViewing(open);
+    return () => setViewing(false);
+  }, [open, setViewing]);
   useEffect(() => {
-    if (!open) tr.clearError();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    if (!open) clearError();
+  }, [open, clearError]);
 
   const price = plan ? priceOf(plan, plan.code, period, currency) : null;
   /** Pas de paiement connu : formulaire (y compris pendant l'envoi). */
@@ -89,13 +88,16 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
     );
   };
   const retrySend = () => {
-    if (attempt) tr.submit(attempt.body, { planName: attempt.planName, amount: attempt.amount });
+    if (attempt?.body) tr.submit(attempt.body, { planName: attempt.planName, amount: attempt.amount });
   };
 
   // textes du paiement suivi : ceux de la tentative figee, jamais la formule regardee ensuite
   const frozen = attempt;
   const frozenAmount = frozen?.amount ? money(frozen.amount.amount_minor, frozen.amount.currency) : '';
-  const frozenMethod = methods.find((x) => x.code === frozen?.body.method)?.label ?? frozen?.body.method ?? '';
+  const frozenMethod = methods.find((x) => x.code === frozen?.method)?.label ?? frozen?.method ?? '';
+  /** Reessayer exige le corps complet (memoire ou sessionStorage) ; apres 3 essais sans reponse, ou corps perdu : Abandonner (sur grace a PAY-OPEN). */
+  const canRetrySend = !!frozen?.body;
+  const canAbandon = !!frozen && (frozen.tries >= 3 || !frozen.body);
   const tracking = !!frozen && !!frozen.paymentId;
   const terminal = isTerminal(status);
   const review = isUnderReview(status);
@@ -103,10 +105,10 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const mmss = `${Math.floor(tr.remaining / 60)}:${String(tr.remaining % 60).padStart(2, '0')}`;
   const everyS = String(Math.round(pollTiming.intervalMs / 1000));
 
-  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}`;
+  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}`;
   useEffect(() => {
-    if (refused || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
-  }, [outcomeKey, refused, tracking, terminal, review, tr.timedOut, tr.notFound]);
+    if (refused || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
+  }, [outcomeKey, refused, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
 
   const closeAfterGone = () => {
     tr.dismiss();
@@ -133,9 +135,16 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
         <button type="button" className="btn btn-ghost" onClick={onClose}>
           {t('pay.cancel')}
         </button>
-        <button type="button" className="btn btn-primary" onClick={retrySend} disabled={tr.submitting} aria-busy={tr.submitting}>
-          {tr.submitting ? t('pay.sending') : t('pay.retry')}
-        </button>
+        {canAbandon && (
+          <button type="button" className="btn btn-ghost" onClick={closeAfterGone}>
+            {t('pay.abandon')}
+          </button>
+        )}
+        {canRetrySend && (
+          <button type="button" className="btn btn-primary" onClick={retrySend} disabled={tr.submitting} aria-busy={tr.submitting}>
+            {tr.submitting ? t('pay.sending') : t('pay.retry')}
+          </button>
+        )}
       </>
     );
   } else if (tr.notFound) {
@@ -217,7 +226,10 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
       ) : frozen.unsent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
           <p className="notice notice-warn" style={{ width: '100%' }}>
-            <b>{t('pay.unsent.title')}.</b> {t('pay.unsent.body')}
+            <b>{t('pay.unsent.title')}.</b> {t(canRetrySend ? 'pay.unsent.body' : 'pay.unsent.nobody')}
+          </p>
+          <p className="muted">
+            {t('pay.unsent.plan', { plan: frozen.planName, amount: frozenAmount })}
           </p>
           {tr.submitError != null && <FieldErrors error={tr.submitError} />}
         </div>
@@ -225,7 +237,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
           {frozen.existing && !terminal && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
-              {t('pay.open.body')}
+              {t('pay.open.body', { plan: frozen.planName })}
             </p>
           )}
           {frozen.unknown && !frozen.existing && !terminal && !review && !tr.timedOut && !tr.notFound && (
@@ -246,7 +258,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
               </div>
               <div>
                 <h3 style={{ fontSize: 17, fontWeight: 600 }}>{t('pay.validate.title')}</h3>
-                <p className="muted">{t('pay.validate.body', { method: frozenMethod, phone: frozen.body.phone })}</p>
+                <p className="muted">{t('pay.validate.body', { method: frozenMethod, phone: frozen.body?.phone ?? frozen.phoneMasked })}</p>
               </div>
               <p className="countdown">{t('pay.countdown.line', { state: t(status === 'en_attente' ? 'pay.countdown.waiting' : 'pay.countdown.sent'), s: everyS, time: mmss })}</p>
             </>
@@ -313,7 +325,7 @@ export default function Subscriptions() {
     <>
       {tracker.attempt && !isTerminal(tracker.status) && (
         <div className="notice notice-warn" role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <span>{t('pay.banner', { plan: tracker.attempt.planName })}</span>
+          <span>{t(tracker.notFound ? 'pay.banner.notfound' : 'pay.banner', { plan: tracker.attempt.planName })}</span>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setTrackOpen(true)}>
             {t('pay.banner.view')}
           </button>

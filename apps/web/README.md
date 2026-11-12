@@ -99,6 +99,21 @@ simulation offsets read from `events[].notifications`; inherited labels fetched 
   would replay the same refusal) or when phone/method change (`409 PAY-IDEMPOTENCY`).
   `PAY-PENDING` never re-sends: « Paiement en cours de vérification », the payment is polled. Statuses handled:
   `initie, en_attente, a_verifier, confirme, echoue, remboursement_en_cours, rembourse` (`lib/payment.ts`).
+- **Payment tracking** (`admin/paymentTracker.tsx`, mounted in `AdminApp`): one attempt per account, followed app-wide
+  (the « Paiement reçu » toast arrives on any page). While the outcome is open the attempt is kept so that closing,
+  reloading or navigating never creates a 2nd payment; `a_verifier` / `remboursement_en_cours` are followed with a
+  back-off (15 s, 60 s, 5 min), no background polling past 2 min; 403/404 stop the tracking.
+  - **What is stored, and why**: `localStorage` `rf.payment.v1.<userId>` holds only non-personal data
+    (`id, ownerId, paymentId, plan, planName, period, method, amount, sentAt, unsent, unknown, existing`, masked phone
+    `••••••11`; no phone number, no account id). The full request body (needed by « Réessayer » with the same id) lives in
+    `sessionStorage` `rf.payment.body.v1.<userId>` only. All `rf.payment.*` keys are purged on sign-out and on session
+    expiry; the server finds an open payment again through `409 PAY-OPEN`. Another tab is followed through the `storage`
+    event (an attempt cleared elsewhere is never rewritten). A response that arrives after a sign-out or an account switch
+    is ignored (`ownerId`). Storage errors only log a `console.warn`; tracking stays in memory.
+  - `409 PAY-OPEN` (`details: { payment_id, status, plan }`): the account already has an open payment, whatever the plan;
+    the screen says so with that plan and follows it, the announcement names `details.plan`.
+  - `unsent` (network, 5xx, timeout): no new checkout for any plan; only « Réessayer » (same id, same body); « Abandonner »
+    after 3 failed retries or when the body is gone (new tab).
 - **Administration** (`/admin/paiements`, `pages/Payments.tsx`): list filtered by status, detail with history, « Interroger »
   (`ops`), « Rembourser » with a reason (`platform_admin` only), daily reconciliation reports and manual run
   (`platform_admin`). Rights mirror `admin-payments.controller.ts` (`paymentRights`). Texts: `lib/i18n-payments.ts` (fr + en keys).

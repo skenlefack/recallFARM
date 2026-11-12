@@ -44,18 +44,20 @@ describe('mock : suivi et rejeu du checkout', () => {
     expect((await call('GET', `/v1/payments/${r.payment_id}`, await tokenOf('+237690000009'))).status).toBe(200);
   });
 
-  it('PAY-OPEN : un 2e paiement de la meme formule renvoie 409 avec le paiement ouvert ; une autre formule passe', async () => {
-    const owner = await tokenOf('+237690000002');
-    const first = (await (await checkout(owner, '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e70', '+237690000011', 'structure')).json()) as { payment_id: string };
-    const second = await checkout(owner, '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e71', '+237690000011', 'structure');
+  it('PAY-OPEN : un 2e paiement du meme compte, meme pour une AUTRE formule, renvoie 409 avec le paiement ouvert et sa formule', async () => {
+    const user = await tokenOf('+237690000001');
+    const first = (await (await checkout(user, '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e70', '+237690000011', 'structure')).json()) as { payment_id: string };
+    const second = await checkout(user, '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e71', '+237690000011', 'pro');
     expect(second.status).toBe(409);
-    const err = ((await second.json()) as { error: { code: string; details: { rule: string; payment_id: string } } }).error;
+    const err = ((await second.json()) as { error: { code: string; details: { rule: string; payment_id: string; plan: string; status: string } } }).error;
     expect(err.code).toBe('CONFLICT');
-    expect(err.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: first.payment_id });
+    expect(err.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: first.payment_id, plan: 'structure', status: 'initie' });
+    // un autre compte n'est pas concerne
+    expect((await checkout(await tokenOf('+237690000003'), '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e72', '+237690000011', 'pro')).status).toBe(200);
   });
 
   it('PAY-PENDING rejoue tant qu\'il n\'y a pas de reference fournisseur ni de confirmation', async () => {
-    const owner = await tokenOf('+237690000002');
+    const owner = await tokenOf('+237690000004');
     const id = '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e60';
     expect((await checkout(owner, id, '+237690000096', 'decouverte')).status).toBe(422);
     const again = await checkout(owner, id, '+237690000096', 'decouverte');
