@@ -33,7 +33,7 @@ const prefixed = () => Object.keys(localStorage).concat(Object.keys(sessionStora
 const ID = '5d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e5f';
 const BODY = { account_type: 'organisation', account_id: 'org-1', plan: 'structure', period: 'monthly', method: 'orange_money', phone: '+237690000002' };
 function seed(over: Record<string, unknown> = {}) {
-  const a = { id: ID, ownerId: userId, subSnap: null, paymentId: 'pay-7', plan: 'pro', planName: 'Pro', period: 'monthly', method: 'orange_money', amount: null, sentAt: Date.now(), unsent: false, unknown: false, existing: false, phoneMasked: '••••••02', ...over };
+  const a = { id: ID, ownerId: userId, subSnap: null, subKnown: false, paymentId: 'pay-7', plan: 'pro', planName: 'Pro', period: 'monthly', method: 'orange_money', amount: null, sentAt: Date.now(), unsent: false, unknown: false, existing: false, phoneMasked: '••••••02', ...over };
   localStorage.setItem(storeKey(), JSON.stringify(a));
   return a;
 }
@@ -141,7 +141,7 @@ describe('A1 : rechargement et navigation', () => {
     const raw = localStorage.getItem(storeKey())!;
     const saved = JSON.parse(raw) as Record<string, unknown>;
     expect(saved).toMatchObject({ paymentId: 'pay-1', ownerId: userId, plan: 'structure', planName: 'Structure', period: 'monthly', unsent: false, existing: false });
-    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'sentAt', 'subSnap', 'unknown', 'unsent']);
+    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'sentAt', 'subKnown', 'subSnap', 'unknown', 'unsent']);
     expect(raw).not.toContain('690000002');
     expect(raw).not.toContain('account_id');
     expect(saved.phoneMasked).toBe('••••••02');
@@ -566,12 +566,12 @@ describe('A-1 : Abandonner et reponses tardives', () => {
 });
 
 describe('A-2 : corps absent, un autre onglet envoie peut-etre', () => {
-  it('envoi recent : « Envoi en cours dans un autre onglet », ni Abandonner ni Reessayer', async () => {
+  it('envoi recent : « Peut-être en cours d’envoi dans un autre onglet », ni Abandonner ni Reessayer', async () => {
     seed({ paymentId: null, unsent: true });
     setTransport(backend({}).transport);
     renderApp(<Subscriptions />);
     await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
-    expect(screen.getByText(/Envoi en cours dans un autre onglet/)).toBeInTheDocument();
+    expect(screen.getByText(/Peut-être en cours d’envoi dans un autre onglet/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Abandonner' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Réessayer' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
@@ -657,5 +657,132 @@ describe('S-5 et S-6', () => {
     setTransport(backend({}).transport);
     renderApp(<Subscriptions />);
     expect(await screen.findByRole('button', { name: 'Voir le paiement' })).toBeInTheDocument();
+  });
+});
+
+describe('B-A : 409 PAY-RETRY', () => {
+  const retry409 = () => json(409, { error: { code: 'CONFLICT', message: 'Message brut du serveur', details: { rule: 'PAY-RETRY' } } });
+  const subLoaded = async () => {
+    await screen.findByText('Formule actuelle');
+    await screen.findByText('Active');
+  };
+
+  it('texte dedie (jamais le texte brut du serveur), abonnement recharge, Payer bloque jusqu\'a son retour', async () => {
+    let release: (r: Response) => void = () => undefined;
+    let subCalls = 0;
+    const b = backend({ checkout: () => retry409() });
+    setTransport(async (m, u, i) => {
+      if (u.includes('/subscriptions/current')) {
+        subCalls++;
+        if (subCalls > 1) {
+          const real = await mockTransport(m, u, i);
+          return new Promise<Response>((r) => (release = () => r(real)));
+        }
+      }
+      return b.transport(m, u, i);
+    });
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText('Un autre paiement de ce compte vient de se terminer. Vérifiez votre formule avant de payer de nouveau.')).toBeInTheDocument();
+    expect(screen.queryByText(/Message brut du serveur/)).toBeNull();
+    // l'abonnement est en cours de rechargement : pas de Payer actif
+    const busy = await screen.findByRole('button', { name: 'Vérification de votre formule…' });
+    expect(busy).toBeDisabled();
+    expect(b.bodies).toHaveLength(1);
+    release(new Response());
+    expect(await screen.findByText('Vérifiez votre formule actuelle avant de payer de nouveau.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled());
+    expect(subCalls).toBeGreaterThan(1);
+  });
+
+  it('abonnement change entre-temps : on l\'annonce (le paiement ouvert vient sans doute d\'etre confirme)', async () => {
+    let subCalls = 0;
+    const b = backend({ checkout: () => retry409() });
+    setTransport(async (m, u, i) => {
+      if (u.includes('/subscriptions/current') && ++subCalls > 1) return json(200, { plan: 'pro', period: 'monthly', status: 'active', expires_at: '2028-01-01T00:00:00Z' });
+      return b.transport(m, u, i);
+    });
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText(/Votre formule a changé depuis l’envoi du paiement \(formule Pro active\)/)).toBeInTheDocument();
+  });
+
+  it('une erreur ordinaire du serveur n\'affiche jamais son texte brut dans le checkout', async () => {
+    const b = backend({ checkout: () => json(422, { error: { code: 'BUSINESS_RULE', message: 'Texte brut du serveur', details: { rule: 'AUTRE' } } }) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await pay();
+    expect(await screen.findByText('La demande n’a pas pu être traitée. Réessayez dans un moment.')).toBeInTheDocument();
+    expect(screen.queryByText(/Texte brut du serveur/)).toBeNull();
+  });
+});
+
+describe('A-A : abandon dans un autre onglet = meme verification', () => {
+  const storageEvent = (newValue: string | null) => window.dispatchEvent(new StorageEvent('storage', { key: storeKey(), newValue }));
+  const old = () => Date.now() - 5 * 60_000;
+
+  it('abonnement present alors qu\'il etait connu et vide a l\'envoi : « formule changee » ; Payer redevient actif ensuite', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: old(), subSnap: null, subKnown: true });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await screen.findByRole('button', { name: 'Voir le paiement' });
+    localStorage.removeItem(storeKey());
+    storageEvent(null);
+    expect(await screen.findByText(/Votre formule a changé depuis l’envoi du paiement \(formule Structure active\)/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Voir le paiement' })).toBeNull());
+    await openRenew();
+    expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled();
+  });
+
+  it('abonnement inconnu a l\'envoi : simple message de verification', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: old(), subSnap: null, subKnown: false });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await screen.findByRole('button', { name: 'Voir le paiement' });
+    localStorage.removeItem(storeKey());
+    storageEvent(null);
+    expect(await screen.findByText('Vérifiez votre formule actuelle avant de payer de nouveau.')).toBeInTheDocument();
+  });
+});
+
+describe('A-B : chaque relance rafraichit sentAt', () => {
+  it('l\'onglet qui renvoie ecrit un sentAt recent : les autres onglets voient un envoi actif', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: Date.now() - 10 * 60_000, plan: 'structure', planName: 'Structure' });
+    seedBody();
+    const b = backend({ checkout: () => new Promise<Response>(() => undefined) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    const before = JSON.parse(localStorage.getItem(storeKey())!).sentAt as number;
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(storeKey())!).sentAt).toBeGreaterThan(before + 9 * 60_000));
+  });
+
+  it('deux onglets simules : l\'onglet sans corps voit l\'envoi recent et n\'offre pas Abandonner', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: Date.now() - 10 * 60_000 });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(screen.getByRole('button', { name: 'Abandonner' })).toBeInTheDocument();
+    // l'autre onglet relance : sentAt rafraichi dans le stockage
+    window.dispatchEvent(new StorageEvent('storage', { key: storeKey(), newValue: JSON.stringify(seed({ paymentId: null, unsent: true, sentAt: Date.now() })) }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Abandonner' })).toBeNull());
+    expect(screen.getByText(/Peut-être en cours d’envoi dans un autre onglet/)).toBeInTheDocument();
+  });
+});
+
+describe('A-C : fenetre ouverte par « Voir le paiement » sans tentative', () => {
+  it('la tentative disparait (autre onglet) : la fenetre se ferme, jamais un formulaire « Passer a » sans formule', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: Date.now() - 5 * 60_000 });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await screen.findByRole('dialog');
+    localStorage.removeItem(storeKey());
+    window.dispatchEvent(new StorageEvent('storage', { key: storeKey(), newValue: null }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByText(/Passer à/, { selector: 'h2' })).toBeNull();
   });
 });

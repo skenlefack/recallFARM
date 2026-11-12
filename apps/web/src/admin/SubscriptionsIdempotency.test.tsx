@@ -128,7 +128,7 @@ describe("EF-ABO-01 : cle d'idempotence du checkout (POST idempotent)", () => {
     setTransport(r.transport);
     await openCheckout();
     await userEvent.click(screen.getByRole('button', { name: 'Payer' }));
-    await screen.findByText('format invalide');
+    await screen.findByText('Ce numéro n’est pas valide. Vérifiez-le puis réessayez.');
     await userEvent.click(screen.getByRole('button', { name: 'Payer' }));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(r.bodies[1].id).not.toBe(r.bodies[0].id);

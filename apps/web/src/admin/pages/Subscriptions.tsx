@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
 import { api, listOf } from '../../api/endpoints';
 import type { PaymentMethodOption, Plan, PlanCode } from '../../api/types';
-import { Card, Dialog, ErrorState, FieldErrors, Pill, Seg, Skeleton } from '../../components/ui';
+import { Card, Dialog, ErrorState, Pill, Seg, Skeleton } from '../../components/ui';
 import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import { checkoutOutcome, isTerminal, isUnderReview, methodInitials } from '../../lib/payment';
@@ -70,7 +70,8 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const refused = outcome === 'refused';
   const conflict = outcome === 'conflict';
   const phoneErr = submitError instanceof ApiError ? submitError.fields?.phone : undefined;
-  const otherError = !!submitError && !refused && !conflict;
+  const retryRule = outcome === 'retry';
+  const otherError = !!submitError && !refused && !conflict && !retryRule;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -95,7 +96,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const frozen = attempt;
   const frozenAmount = frozen?.amount ? money(frozen.amount.amount_minor, frozen.amount.currency) : '';
   const frozenMethod = methods.find((x) => x.code === frozen?.method)?.label ?? frozen?.method ?? '';
-  /** Reessayer exige le corps complet (memoire ou sessionStorage) ; apres 3 essais sans reponse, ou corps perdu : Abandonner (sur grace a PAY-OPEN). */
+  /** Reessayer exige le corps complet (memoire ou sessionStorage) ; apres 3 essais sans reponse, ou corps perdu : Abandonner. Un paiement deja confirme n'est PAS couvert par PAY-OPEN : l'abandon recharge l'abonnement et demande de le verifier. */
   const canRetrySend = !!frozen?.body;
   /** Un autre onglet est peut-etre en train d'envoyer (corps absent, envoi recent) : on attend avant de proposer d'abandonner. */
   const elsewhere = !!frozen && frozen.unsent && !frozen.body && Date.now() - frozen.sentAt < pollTiming.maxMs;
@@ -137,8 +138,8 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
         <button type="button" className="btn btn-ghost" onClick={onClose}>
           {t('pay.cancel')}
         </button>
-        <button type="submit" form="checkout-form" className="btn btn-primary" disabled={tr.submitting || !method} aria-busy={tr.submitting}>
-          {tr.submitting ? t('pay.sending') : t('pay.pay')}
+        <button type="submit" form="checkout-form" className="btn btn-primary" disabled={tr.submitting || tr.checking || !method} aria-busy={tr.submitting || tr.checking}>
+          {tr.submitting ? t('pay.sending') : tr.checking ? t('pay.checking') : t('pay.pay')}
         </button>
       </>
     );
@@ -221,7 +222,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
             <label htmlFor="pay-phone">{t('pay.number', { method: methodLabel })}</label>
             <input id="pay-phone" className="input" type="tel" inputMode="tel" value={tel} onChange={(e) => setTel(e.target.value)} aria-invalid={!!phoneErr} aria-describedby="pay-phone-help" />
             <span id="pay-phone-help" className={phoneErr ? 'field-err' : 'muted small'}>
-              {phoneErr ?? t('pay.phone.help')}
+              {phoneErr ? t('pay.phone.invalid') : t('pay.phone.help')}
             </span>
           </div>
           {conflict && (
@@ -234,7 +235,16 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
               <b>{t('pay.init.title')}.</b> {t('pay.init.body')}
             </div>
           )}
-          {otherError && !phoneErr && <FieldErrors error={submitError} />}
+          {retryRule && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
+              {t('pay.retry.body')}
+            </div>
+          )}
+          {otherError && !phoneErr && (
+            <div className="notice notice-crit" role="alert">
+              {t('pay.error.generic')}
+            </div>
+          )}
         </form>
       ) : frozen.unsent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
@@ -244,7 +254,6 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
           <p className="muted">
             {frozenAmount ? t('pay.unsent.plan', { plan: frozen.planName, amount: frozenAmount }) : t('pay.unsent.plan.noamount', { plan: frozen.planName })}
           </p>
-          {tr.submitError != null && <FieldErrors error={tr.submitError} />}
         </div>
       ) : (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
@@ -325,6 +334,10 @@ export default function Subscriptions() {
   const [buying, setBuying] = useState<Plan | null>(null);
   const [trackOpen, setTrackOpen] = useState(false);
   const tracker = usePaymentTracker();
+  // la fenetre ouverte par « Voir le paiement » n'a plus rien a montrer quand la tentative disparait (abandon, autre onglet) : jamais un formulaire sans formule
+  useEffect(() => {
+    if (trackOpen && !tracker.attempt) setTrackOpen(false);
+  }, [trackOpen, tracker.attempt]);
   const sub = useQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription });
   const plansQ = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM') });
   const plans = { ...plansQ, data: plansQ.data ? listOf(plansQ.data) : undefined };
@@ -488,7 +501,7 @@ export default function Subscriptions() {
           {methods.length > 0 ? t('pay.footnote', { methods: methods.map((x) => x.label).join(', ') }) : t('pay.footnote.none')}
         </p>
       </section>
-      <Checkout open={!!buying || trackOpen} plan={buying} period={period} methods={methods} currency={plansCurrency} onClose={() => (setBuying(null), setTrackOpen(false))} />
+      <Checkout open={!!buying || (trackOpen && !!tracker.attempt)} plan={buying} period={period} methods={methods} currency={plansCurrency} onClose={() => (setBuying(null), setTrackOpen(false))} />
     </>
   );
 }

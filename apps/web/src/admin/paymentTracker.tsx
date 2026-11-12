@@ -57,6 +57,8 @@ export interface Attempt {
   paymentId: string | null;
   /** Abonnement connu au moment de l'envoi (plan, echeance) : sert a dire, a l'abandon, s'il a change depuis. */
   subSnap: { plan: string; expires_at: string | null } | null;
+  /** L'abonnement etait charge a l'envoi (meme « aucun abonnement ») : si subSnap est nul, un abonnement apparu depuis vaut changement. */
+  subKnown: boolean;
   /** Instant de l'envoi (ms) : le temps ecoule se calcule depuis lui, meme apres un rechargement. */
   sentAt: number;
   /** « Reessayer » deja tentes sans reponse (memoire seulement). */
@@ -70,7 +72,7 @@ export interface Attempt {
 }
 
 /** Ce que contient localStorage : aucune donnee personnelle (telephone masque, pas de numero de compte). */
-type Stored = Pick<Attempt, 'subSnap' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
+type Stored = Pick<Attempt, 'subSnap' | 'subKnown' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
 
 const PREFIX = 'rf.payment.';
 const storageKey = (userId: string, payerId: string) => `${PREFIX}v1.${userId}.${payerId}`;
@@ -105,6 +107,7 @@ function parseStored(raw: string, userId: string): Stored | null {
       existing: !!a.existing,
       phoneMasked: a.phoneMasked ?? '••••',
       subSnap: a.subSnap ?? null,
+      subKnown: !!a.subKnown,
     };
   } catch (e) {
     warn('lecture', e);
@@ -162,6 +165,7 @@ function writeAttempt(userId: string, payerId: string, a: Attempt | null): void 
       existing: a.existing,
       phoneMasked: a.phoneMasked,
       subSnap: a.subSnap,
+      subKnown: a.subKnown,
     };
     localStorage.setItem(storageKey(userId, payerId), JSON.stringify(stored));
     if (a.body) sessionStorage.setItem(bodyKey(userId, payerId), JSON.stringify({ id: a.id, body: a.body }));
@@ -170,7 +174,7 @@ function writeAttempt(userId: string, payerId: string, a: Attempt | null): void 
   }
 }
 
-/** Deconnexion ou expiration : plus aucune trace de paiement dans le navigateur (le serveur retrouve le paiement via PAY-OPEN). */
+/** Deconnexion ou expiration : plus aucune trace de paiement dans le navigateur (un paiement encore ouvert est retrouve par PAY-OPEN ; un paiement deja confirme ne l'est pas : voir checkAfterAbandon). */
 export function purgePaymentStorage(): void {
   for (const store of [localStorage, sessionStorage]) {
     try {
@@ -197,6 +201,8 @@ export interface Tracker {
   notFound: boolean;
   pollError: unknown;
   submitting: boolean;
+  /** Verification de l'abonnement en cours (apres abandon ou PAY-RETRY) : « Payer » reste bloque. */
+  checking: boolean;
   submitError: unknown;
   /** Nouvelle demande, ou « Reessayer » (meme id, meme corps) quand l'envoi precedent est reste sans reponse. */
   submit: (body: PayBody, meta: { planName: string; amount: Money | null }) => void;
@@ -244,6 +250,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
   const announced = useRef<string | null>(null);
   const terminalRef = useRef(false);
   const sendingRef = useRef(false);
+  const checkingRef = useRef(false);
   const [viewing, setViewing] = useState(false);
 
   const update = useCallback((a: Attempt | null) => {
@@ -273,6 +280,33 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  /**
+   * Apres un abandon (ici ou dans un autre onglet) ou un PAY-RETRY : le paiement a pu aboutir sans qu'on le sache, et PAY-OPEN ne
+   * couvre pas un paiement deja confirme. On recharge l'abonnement et on dit quoi verifier, sans rien promettre. « Payer » reste
+   * bloque (`checking`) jusqu'au retour de l'abonnement.
+   */
+  const [checking, setChecking] = useState(false);
+  checkingRef.current = checking;
+  const checkAfterAbandon = useCallback(
+    (a: Attempt) => {
+      setChecking(true);
+      qc.fetchQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription, staleTime: 0 })
+        .then(
+          (sub) => {
+            const snap = a.subSnap;
+            const changed = !!sub && (snap ? sub.plan !== snap.plan || (sub.expires_at ?? null) !== snap.expires_at : a.subKnown);
+            toast(changed ? t('pay.abandon.changed', { plan: PLAN_LABEL[sub!.plan] ?? sub!.plan }) : t('pay.abandon.check'));
+          },
+          (e) => {
+            console.warn('[paiement] abonnement non rechargeable apres abandon', e);
+            toast(t('pay.abandon.check'));
+          },
+        )
+        .finally(() => setChecking(false));
+    },
+    [qc, toast],
+  );
+
   const m = useMutation<CheckoutResponse, unknown, Attempt>({
     mutationFn: (a) => api.checkout({ id: a.id, ...a.body! }),
     onSuccess: (r, a) => settle(a, { ...a, paymentId: r.payment_id, unsent: false, sentAt: Date.now() }),
@@ -293,6 +327,10 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
           amount: differs ? null : a.amount,
           sentAt: Date.now(),
         });
+      } else if (o.kind === 'retry') {
+        // un autre paiement de ce payeur vient de se terminer : jamais un nouveau Payer sur la foi d'un simple refus, on verifie l'abonnement d'abord
+        settle(a, null);
+        checkAfterAbandon(a);
       } else if (o.kind === 'refused' || o.kind === 'conflict' || isDefinitiveRejection(err)) settle(a, null); // rien n'a ete cree : nouvelle cle au prochain essai
       else settle(a, { ...a, unsent: true, tries: a.unsent ? a.tries + 1 : 0 }); // issue inconnue : bloque tout nouveau checkout ; les echecs de « Reessayer » sont comptes ici, pas les clics
     },
@@ -343,6 +381,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         if (cur && !sendingRef.current) {
           attemptRef.current = null;
           setAttemptState(null);
+          if (cur.unsent) checkAfterAbandon(cur); // abandon dans un autre onglet : meme verification que chez lui
         }
         return;
       }
@@ -356,17 +395,19 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [userId, payerId, qc]);
+  }, [userId, payerId, qc, checkAfterAbandon]);
 
   const submit = useCallback<Tracker['submit']>(
     (body, meta) => {
       const owner = userIdRef.current;
-      if (sendingRef.current || !owner) return; // pas de double envoi (garde sur ref : sure entre deux rendus)
+      if (sendingRef.current || checkingRef.current || !owner) return; // pas de double envoi (garde sur ref : sure entre deux rendus)
       const cur = attemptRef.current;
       if (cur && cur.unsent) {
         if (!cur.body) return; // corps perdu (autre onglet) : seul « Abandonner » reste
         sendingRef.current = true;
-        mutate(cur); // meme id, meme corps : la formule choisie entre-temps est ignoree
+        const next = { ...cur, sentAt: Date.now() }; // les autres onglets voient un envoi actif
+        update(next);
+        mutate(next); // meme id, meme corps : la formule choisie entre-temps est ignoree
         return;
       }
       if (cur && cur.paymentId && !terminalRef.current) return; // un paiement est deja suivi
@@ -383,6 +424,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         body,
         paymentId: null,
         subSnap: snapshotOf(qc.getQueryData<Subscription | null>(['subscription'])),
+        subKnown: qc.getQueryData(['subscription']) !== undefined,
         sentAt: Date.now(),
         tries: 0,
         unsent: false,
@@ -456,19 +498,8 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     const a = attemptRef.current;
     dismiss();
     if (!a) return;
-    // PAY-OPEN ne couvre pas un paiement deja confirme : on recharge l'abonnement et on dit quoi verifier, sans rien promettre
-    qc.fetchQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription, staleTime: 0 }).then(
-      (sub) => {
-        const snap = a.subSnap;
-        const changed = !!sub && !!snap && (sub.plan !== snap.plan || (sub.expires_at ?? null) !== snap.expires_at);
-        toast(changed ? t('pay.abandon.changed', { plan: PLAN_LABEL[sub!.plan] ?? sub!.plan }) : t('pay.abandon.check'));
-      },
-      (e) => {
-        console.warn('[paiement] abonnement non rechargeable apres abandon', e);
-        toast(t('pay.abandon.check'));
-      },
-    );
-  }, [dismiss, qc, toast]);
+    checkAfterAbandon(a);
+  }, [dismiss, checkAfterAbandon]);
 
   // issue definitive : on ne garde plus rien en stockage ; annonce une seule fois
   useEffect(() => {
@@ -503,6 +534,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       notFound,
       pollError: notFound ? null : q.error,
       submitting: m.isPending,
+      checking,
       submitError: m.error,
       submit,
       dismiss,
@@ -510,7 +542,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       clearError,
       setViewing,
     }),
-    [attempt, status, timedOut, elapsed, notFound, q.error, m.isPending, m.error, submit, dismiss, abandon, clearError],
+    [attempt, status, timedOut, elapsed, notFound, q.error, m.isPending, checking, m.error, submit, dismiss, abandon, clearError],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
