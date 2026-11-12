@@ -1,5 +1,4 @@
 import { Body, Controller, HttpCode, Param, ParseUUIDPipe, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { parse } from 'csv-parse/sync';
 import { createHash, randomUUID } from 'crypto';
@@ -11,6 +10,7 @@ import { DataSource } from 'typeorm';
 import * as XLSX from 'xlsx';
 import { AccessService } from '../common/access.service';
 import { AuthUser, CurrentUser } from '../common/auth';
+import { SafeFileInterceptor } from '../common/security/multipart';
 import { addDays, todayIn } from '../common/dates';
 import { Errors } from '../common/errors';
 import { E164, normalisePhone, toCsv } from '../common/text';
@@ -45,7 +45,7 @@ export class ImportsExportsController {
   /** POST /imports — CSV of farmers (phone,name,farm_name,region,speculations); validated, then committed separately. */
   @Post('imports')
   @ApiConsumes('multipart/form-data', 'application/json')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  @UseInterceptors(SafeFileInterceptor('file', 5 * 1024 * 1024))
   async create(@CurrentUser() user: AuthUser, @Body() dto: ImportDto, @UploadedFile() file?: { buffer: Buffer }) {
     await this.access.assertOrgManager(user, dto.organisation_id);
     const text = file?.buffer?.toString('utf8') ?? dto.csv;
