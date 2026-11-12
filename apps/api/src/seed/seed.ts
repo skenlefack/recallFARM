@@ -532,6 +532,20 @@ async function seedCoop(ds: DataSource, today: string, now: Date, _paulId: strin
   }
   // Unconfirmed reminders: 48 still open and overdue (17 at J+3 or more), the rest missed.
   const unconfirmed = rows.filter((r) => r.status !== 'confirme').sort((a, b) => (a.due_date! < b.due_date! ? 1 : -1));
+  // The 31 recent ones (last 2 days) must not depend on the weekday: top the window up with
+  // unconfirmed rows of the same week, so weekly rates and the coverage map are unchanged.
+  const recentDays = [addDays(today, -1), addDays(today, -2)];
+  const inRecent = (d: string) => d >= recentDays[1] && d < today;
+  let missing = 31 - unconfirmed.filter((r) => inRecent(r.due_date!)).length;
+  for (const r of unconfirmed) {
+    if (missing <= 0) break;
+    if (r._nc || r.due_date! >= recentDays[1]) continue;
+    const target = recentDays.find((d) => mondayOf(d) === mondayOf(r.due_date!));
+    if (!target) continue;
+    r.due_date = target;
+    missing--;
+  }
+  unconfirmed.sort((a, b) => (a.due_date! < b.due_date! ? 1 : -1));
   let recent = 0;
   let late = 0;
   for (const r of unconfirmed) {
