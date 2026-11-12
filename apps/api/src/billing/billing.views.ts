@@ -22,8 +22,13 @@ export class MoneyView {
 export class PaymentEventView {
   @ApiProperty({ format: 'date-time', description: 'Reception de l’evenement (UTC)' }) at: string;
   @ApiProperty({ example: 'confirme', description: 'Statut annonce par le fournisseur (apres correspondance du connecteur)' }) status: string;
-  @ApiProperty({ enum: ['webhook', 'statut'], description: 'webhook : notification du fournisseur ; statut : requete de statut (interrogation)' })
-  source: 'webhook' | 'statut';
+  @ApiProperty({
+    enum: ['webhook', 'statut', 'operateur'],
+    description: 'Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur)',
+  })
+  source: 'webhook' | 'statut' | 'operateur';
+  @ApiPropertyOptional({ type: Boolean, description: 'Administration seulement, toujours true quand present : evenement recu mais non applique (jamais montre au payeur)' }) ignored?: true;
+  @ApiPropertyOptional({ enum: ['montant', 'devise', 'connecteur'], description: 'Raison du refus (avec ignored)' }) reason?: string;
 }
 
 export class PaymentView {
@@ -39,7 +44,8 @@ export class PaymentView {
   @ApiProperty({ format: 'date-time' }) created_at: string;
   @ApiProperty({
     type: [PaymentEventView],
-    description: 'Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles',
+    description:
+      'Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason',
   })
   events: PaymentEventView[];
 }
@@ -110,9 +116,10 @@ export class ErrorView {
 }
 
 export class PayOpenDetailsView {
-  @ApiProperty({ enum: ['PAY-OPEN', 'PAY-IDEMPOTENCY'] }) rule: string;
-  @ApiPropertyOptional({ format: 'uuid', description: 'PAY-OPEN : paiement deja ouvert pour ce payeur et cette formule (a suivre, pas a relancer)' }) payment_id?: string;
+  @ApiProperty({ enum: ['PAY-OPEN', 'PAY-IDEMPOTENCY', 'PAY-RETRY'], description: 'PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer' }) rule: string;
+  @ApiPropertyOptional({ format: 'uuid', description: 'PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer)' }) payment_id?: string;
   @ApiPropertyOptional({ enum: ['initie', 'en_attente', 'a_verifier'], description: 'PAY-OPEN : statut du paiement ouvert' }) status?: string;
+  @ApiPropertyOptional({ example: 'pro', description: 'PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules)' }) plan?: string;
 }
 
 export class CheckoutConflictDetailView {

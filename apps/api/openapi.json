@@ -71,7 +71,7 @@
             ]
           },
           "events": {
-            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
             "items": {
               "$ref": "#/components/schemas/PaymentEventView"
             },
@@ -1685,14 +1685,21 @@
       "PayOpenDetailsView": {
         "properties": {
           "payment_id": {
-            "description": "PAY-OPEN : paiement deja ouvert pour ce payeur et cette formule (a suivre, pas a relancer)",
+            "description": "PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer)",
             "format": "uuid",
             "type": "string"
           },
+          "plan": {
+            "description": "PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules)",
+            "example": "pro",
+            "type": "string"
+          },
           "rule": {
+            "description": "PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer",
             "enum": [
               "PAY-OPEN",
-              "PAY-IDEMPOTENCY"
+              "PAY-IDEMPOTENCY",
+              "PAY-RETRY"
             ],
             "type": "string"
           },
@@ -1725,7 +1732,7 @@
             "type": "string"
           },
           "events": {
-            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
             "items": {
               "$ref": "#/components/schemas/PaymentEventView"
             },
@@ -1831,11 +1838,25 @@
             "format": "date-time",
             "type": "string"
           },
+          "ignored": {
+            "description": "Administration seulement, toujours true quand present : evenement recu mais non applique (jamais montre au payeur)",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Raison du refus (avec ignored)",
+            "enum": [
+              "montant",
+              "devise",
+              "connecteur"
+            ],
+            "type": "string"
+          },
           "source": {
-            "description": "webhook : notification du fournisseur ; statut : requete de statut (interrogation)",
+            "description": "Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur)",
             "enum": [
               "webhook",
-              "statut"
+              "statut",
+              "operateur"
             ],
             "type": "string"
           },
@@ -1900,7 +1921,7 @@
             "type": "string"
           },
           "events": {
-            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
             "items": {
               "$ref": "#/components/schemas/PaymentEventView"
             },
@@ -1994,7 +2015,7 @@
             "type": "string"
           },
           "events": {
-            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
             "items": {
               "$ref": "#/components/schemas/PaymentEventView"
             },
@@ -2562,6 +2583,29 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "ResolveDto": {
+        "properties": {
+          "outcome": {
+            "description": "confirme : active l’abonnement ; echoue : libere le payeur (PAY-OPEN)",
+            "enum": [
+              "confirme",
+              "echoue"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "example": "Releve Orange Money du 12/11 : debit constate",
+            "maxLength": 300,
+            "minLength": 5,
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
+        ],
         "type": "object"
       },
       "ReviewDto": {
@@ -3398,6 +3442,72 @@
           }
         ],
         "summary": "Rembourse un paiement confirme (journalise ; une relance ne rembourse jamais deux fois)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}/resolve": {
+      "post": {
+        "operationId": "AdminPayments_resolve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "Reserve a platform_admin (ops et support : 403)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "PAY-RESOLVE-STATUS : le paiement n’est pas (ou plus) « a_verifier » ; details.status = statut actuel"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Tranche un paiement « a_verifier » sans issue du fournisseur (administrateur plateforme ; journalise dans audit_log)",
         "tags": [
           "billing"
         ]
@@ -7505,7 +7615,7 @@
                 }
               }
             },
-            "description": "PAY-OPEN (EF-ABO-01) : un paiement du meme payeur pour la meme formule est encore ouvert (initie, en_attente ou a_verifier) ; details.payment_id et details.status le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande."
+            "description": "PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer."
           },
           "422": {
             "content": {
@@ -7515,7 +7625,7 @@
                 }
               }
             },
-            "description": "Champs invalides, PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)"
+            "description": "Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)"
           }
         },
         "security": [

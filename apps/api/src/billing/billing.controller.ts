@@ -63,9 +63,9 @@ export class BillingController {
   @ApiConflictResponse({
     type: CheckoutConflictView,
     description:
-      'PAY-OPEN (EF-ABO-01) : un paiement du meme payeur pour la meme formule est encore ouvert (initie, en_attente ou a_verifier) ; details.payment_id et details.status le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande.',
+      'PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer.',
   })
-  @ApiUnprocessableEntityResponse({ type: ErrorView, description: 'Champs invalides, PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)' })
+  @ApiUnprocessableEntityResponse({ type: ErrorView, description: 'Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)' })
   @Post('subscriptions/checkout')
   checkout(@CurrentUser() user: AuthUser, @Body() dto: CheckoutDto, @Headers('idempotency-key') key?: string) {
     if (key !== undefined && !/^[\x21-\x7e]{1,100}$/.test(key)) throw Errors.validation({ 'Idempotency-Key': '1 a 100 caracteres visibles' });
