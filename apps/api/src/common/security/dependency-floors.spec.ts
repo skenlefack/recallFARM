@@ -3,7 +3,7 @@
  * Si une mise a jour du verrou fait redescendre l'une d'elles sous le plancher, ce test echoue avant la CI.
  * Voir docs/security/cve-image-api.md (origine, correctif, atteignabilite de chaque CVE).
  */
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 
 type Floor = { pkg: string; via: string[]; min: string; cves: string[] };
@@ -38,9 +38,12 @@ function installedVersion(pkg: string, via: string[]): string {
   let file: string;
   try {
     file = require.resolve(`${pkg}/package.json`, { paths: [base] });
-  } catch {
+  } catch (e) {
     // Package whose `exports` hides package.json (xlsx): read it from node_modules directly.
+    // Node says ERR_PACKAGE_PATH_NOT_EXPORTED, Jest's resolver "Cannot resolve module": only
+    // fall back when the package really is there, otherwise report the original error.
     file = join(base, 'node_modules', pkg, 'package.json');
+    if (!existsSync(file)) throw e;
   }
   return (JSON.parse(readFileSync(file, 'utf8')) as { version: string }).version;
 }

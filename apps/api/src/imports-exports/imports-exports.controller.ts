@@ -17,7 +17,7 @@ import { E164, normalisePhone, toCsv } from '../common/text';
 import { config } from '../config';
 import { ExportJob, Farm, ImportJob, Membership, User } from '../database/entities';
 import { filierePackFor } from '../params/engine/resolution';
-import { XLSX_MAX_ROWS, assertXlsxArchiveSafe } from './xlsx-guard';
+import { XLSX_MAX_ROWS, sanitizeXlsx } from './xlsx-guard';
 
 export class ImportDto {
   @ApiProperty({ enum: ['farmers'] }) @IsIn(['farmers']) kind: 'farmers';
@@ -55,9 +55,10 @@ export class ImportsExportsController {
     let records: Array<Record<string, string>>;
     try {
       if (isXlsx) {
-        assertXlsxArchiveSafe(file!.buffer);
+        // Never parse the upload itself: a verified, uncompressed copy (xlsx-guard.ts).
+        const safe = sanitizeXlsx(file!.buffer);
         // Header + max rows + 1 extra row to detect a file that is too long.
-        const wb = XLSX.read(file!.buffer, { type: 'buffer', sheetRows: XLSX_MAX_ROWS + 2 });
+        const wb = XLSX.read(safe, { type: 'buffer', sheetRows: XLSX_MAX_ROWS + 2, cellHTML: false });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const raw: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
         if (raw.length < 2) throw new Error('fichier vide');

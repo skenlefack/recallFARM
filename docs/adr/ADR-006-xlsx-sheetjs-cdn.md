@@ -16,9 +16,16 @@ figer l'API ou la faire tomber en memoire (serveur partage, `mem_limit` 448 Mo).
   identique a celle du CDN, figee dans `apps/api/package-lock.json` (`npm ci` refuse toute archive
   differente). Le build ne depend donc pas de la disponibilite du CDN (injoignable depuis le build
   Docker local lors de l'essai).
-- Avant `XLSX.read` : controle du repertoire central du zip (`src/imports-exports/xlsx-guard.ts`) —
-  taille decompressee declaree <= 40 Mo, <= 2 000 entrees, pas de zip64 — et lecture bornee a
-  20 000 lignes (`sheetRows`).
+- On ne donne jamais a SheetJS le fichier recu (`src/imports-exports/xlsx-guard.ts`, `sanitizeXlsx`) :
+  SheetJS decompresse toutes les entrees d'emblee avec son inflate JS en se fiant aux tailles des
+  en-tetes locaux, qu'un fichier piege peut falsifier (revue : 2 Mo -> 2 Go de RAM). Le garde :
+  zip pur commencant par un en-tete local (pas de repli OLE/HTML/SYLK) ; EOCD unique, trouvee comme
+  SheetJS la cherche, disque unique, compteurs coherents ; en-tetes local et central concordants,
+  pas de zip64 ; chaque entree reellement decompressee par zlib natif avec plafond de sortie et
+  taille reelle = taille declaree ; total <= 16 Mo (environ 3 fois un import de 20 000 lignes).
+  Le contenu verifie est reecrit en zip NON compresse, que SheetJS lit sans rien decompresser.
+  Les archives a descripteur de donnees (Google Sheets, LibreOffice, outils Java) restent acceptees.
+- Lecture bornee a 20 000 lignes (`sheetRows`), `cellHTML: false`.
 - Plancher de version teste (`src/common/security/dependency-floors.spec.ts`, xlsx >= 0.20.2).
 
 ## Consequences
@@ -28,5 +35,7 @@ figer l'API ou la faire tomber en memoire (serveur partage, `mem_limit` 448 Mo).
   de `vendor/` puis `npm install ./vendor/<archive>`.
 - Alternatives ecartees : import CSV seul (une etape de plus pour les gestionnaires), garder 0.18.5
   en risque accepte (CVE atteignables), autre bibliotheque (reecriture et nouvelle surface).
-- Risque residuel : une taille declaree mensongere dans le zip n'est pas detectee par le controle ;
-  `sheetRows`, le throttler et le role gestionnaire requis la bornent.
+- Mesures (2026-11-13) : bombe de 2 Mo (2 Go declares a 0 ou a 100 octets) refusee en < 5 ms sans
+  hausse memoire ; classeur reel de 20 000 lignes : 11 ms de controle, 0,4 s de lecture.
+- Risque residuel : le cout d'un classeur honnete de 16 Mo decompresses (environ 1 s de lecture
+  synchrone) ; borne par le role gestionnaire et le throttler. Analyse dans un worker a envisager.

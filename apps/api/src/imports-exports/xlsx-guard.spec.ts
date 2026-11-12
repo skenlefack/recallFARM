@@ -1,44 +1,184 @@
 import * as XLSX from 'xlsx';
-import { XLSX_MAX_UNCOMPRESSED, assertXlsxArchiveSafe } from './xlsx-guard';
+import { crc32, deflateRawSync } from 'zlib';
+import { XLSX_MAX_UNCOMPRESSED, sanitizeXlsx } from './xlsx-guard';
 
-/** Real workbook built by SheetJS itself. */
-function workbook(rows: string[][]): Buffer {
+/** Real workbook built by SheetJS itself (stored, or deflated with compression: true). */
+function workbook(rows: string[][], compression = false): Buffer {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Eleveurs');
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression }) as Buffer;
 }
 
-/** Offset of the first central directory header. */
-function firstCentralHeader(buf: Buffer): number {
-  for (let i = buf.length - 22; i >= 0; i--) if (buf.readUInt32LE(i) === 0x06054b50) return buf.readUInt32LE(i + 16);
-  throw new Error('no EOCD');
+type Spec = {
+  name: string;
+  content: Buffer;
+  deflate?: boolean;
+  flags?: number;
+  /** Overrides of what the headers declare (the content stays what it is). */
+  localCsz?: number;
+  localUsz?: number;
+  centralUsz?: number;
+  localExtra?: Buffer;
+};
+
+/** Hand-made zip, to forge the archives of the security review (Q-SEC-01). */
+function zip(specs: Spec[], opts: { comment?: Buffer; entriesOnDisk?: number; reverseCentral?: boolean; prefix?: Buffer } = {}): Buffer {
+  const parts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = opts.prefix?.length ?? 0;
+  for (const s of specs) {
+    const data = s.deflate ? deflateRawSync(s.content) : s.content;
+    const method = s.deflate ? 8 : 0;
+    const name = Buffer.from(s.name);
+    const extra = s.localExtra ?? Buffer.alloc(0);
+    const crc = crc32(s.content);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0);
+    lh.writeUInt16LE(20, 4);
+    lh.writeUInt16LE(s.flags ?? 0, 6);
+    lh.writeUInt16LE(method, 8);
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(s.localCsz ?? data.length, 18);
+    lh.writeUInt32LE(s.localUsz ?? s.content.length, 22);
+    lh.writeUInt16LE(name.length, 26);
+    lh.writeUInt16LE(extra.length, 28);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0);
+    ch.writeUInt16LE(20, 4);
+    ch.writeUInt16LE(20, 6);
+    ch.writeUInt16LE(s.flags ?? 0, 8);
+    ch.writeUInt16LE(method, 10);
+    ch.writeUInt32LE(crc, 16);
+    ch.writeUInt32LE(data.length, 20);
+    ch.writeUInt32LE(s.centralUsz ?? s.content.length, 24);
+    ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt32LE(offset, 42);
+    parts.push(lh, name, extra, data);
+    central.push(ch, name);
+    offset += 30 + name.length + extra.length + data.length;
+  }
+  const pairs: Buffer[][] = [];
+  for (let i = 0; i < central.length; i += 2) pairs.push([central[i], central[i + 1]]);
+  if (opts.reverseCentral) pairs.reverse();
+  const cd = Buffer.concat(pairs.flat());
+  const comment = opts.comment ?? Buffer.alloc(0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(opts.entriesOnDisk ?? specs.length, 8);
+  eocd.writeUInt16LE(specs.length, 10);
+  eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(comment.length, 20);
+  return Buffer.concat([opts.prefix ?? Buffer.alloc(0), ...parts, cd, eocd, comment]);
 }
 
-describe('assertXlsxArchiveSafe (Q-SEC-01, zip bomb)', () => {
-  const ok = workbook([['phone', 'name'], ['+237690000001', 'Awa']]);
+/** Entries of a SheetJS workbook, re-packed by the forger above. */
+function entriesOf(buf: Buffer): Spec[] {
+  const z = XLSX.CFB.read(buf, { type: 'buffer' });
+  return z.FullPaths.map((path, i) => ({ path, e: z.FileIndex[i] }))
+    .filter(({ e }) => e.type === 2)
+    .map(({ path, e }) => ({ name: path.replace(/^Root Entry\//, ''), content: Buffer.from(e.content as Uint8Array) }));
+}
 
-  it('accepts an ordinary workbook', () => {
-    expect(() => assertXlsxArchiveSafe(ok)).not.toThrow();
-    expect(XLSX_MAX_UNCOMPRESSED).toBe(40 * 1024 * 1024);
+const rowsOf = (buf: Buffer) => {
+  const wb = XLSX.read(sanitizeXlsx(buf), { type: 'buffer', cellHTML: false });
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+};
+
+const ROWS = [['phone', 'name'], ['+237690000001', 'Awa']];
+const ZEROS = Buffer.alloc(64 * 1024 * 1024); // 64 MB, deflates to ~64 KB
+
+describe('sanitizeXlsx (Q-SEC-01, ADR-006)', () => {
+  it('accepts ordinary workbooks, stored or deflated, and keeps their content', () => {
+    expect(rowsOf(workbook(ROWS))).toEqual(ROWS);
+    expect(rowsOf(workbook(ROWS, true))).toEqual(ROWS);
+    expect(XLSX_MAX_UNCOMPRESSED).toBe(16 * 1024 * 1024);
   });
 
-  it('refuses an archive whose declared uncompressed size exceeds the limit', () => {
-    const bomb = Buffer.from(ok);
-    bomb.writeUInt32LE(50 * 1024 * 1024, firstCentralHeader(bomb) + 24);
-    expect(() => assertXlsxArchiveSafe(bomb)).toThrow('trop volumineux une fois décompressé (40 Mo maximum)');
-    expect(() => assertXlsxArchiveSafe(ok, 100)).toThrow('trop volumineux');
+  it('hands SheetJS an uncompressed copy (nothing left to inflate)', () => {
+    const safe = sanitizeXlsx(workbook(ROWS, true));
+    const z = XLSX.CFB.read(safe, { type: 'buffer' });
+    expect(z.FileIndex.filter((e) => e.type === 2).length).toBeGreaterThan(3);
+    // Every central header of the copy says "stored" (method 0).
+    for (let i = safe.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])); i >= 0; i = safe.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), i + 4)) {
+      expect(safe.readUInt16LE(i + 10)).toBe(0);
+    }
+  });
+
+  it('accepts data-descriptor archives (sizes only in the central directory)', () => {
+    const specs = entriesOf(workbook(ROWS)).map((s) => ({ ...s, deflate: true, flags: 0x0008, localCsz: 0, localUsz: 0 }));
+    expect(rowsOf(zip(specs))).toEqual(ROWS);
+  });
+
+  it('accepts a central directory in another order than the entries (as Excel writes it)', () => {
+    const specs = entriesOf(workbook(ROWS)).map((s) => ({ ...s, deflate: true }));
+    expect(rowsOf(zip(specs, { reverseCentral: true }))).toEqual(ROWS);
+  });
+
+  it('refuses data hidden before the first entry', () => {
+    const specs = entriesOf(workbook(ROWS));
+    const z = zip(specs, { prefix: Buffer.from('PK' + 'x'.repeat(60)) });
+    expect(() => sanitizeXlsx(z)).toThrow('classeur Excel invalide');
+  });
+
+  it('review B1: a zero declared size cannot expand (2 GB bomb in 2 MB)', () => {
+    const bomb = zip([{ name: 'xl/sharedStrings.xml', content: ZEROS, deflate: true, localUsz: 0, centralUsz: 0 }]);
+    const t = Date.now();
+    expect(() => sanitizeXlsx(bomb)).toThrow('taille déclarée fausse');
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+
+  it('review B1: a small declared size that lies is caught by the capped inflate', () => {
+    const bomb = zip([{ name: 'xl/sharedStrings.xml', content: ZEROS, deflate: true, localUsz: 100, centralUsz: 100 }]);
+    expect(() => sanitizeXlsx(bomb)).toThrow('taille déclarée fausse');
+  });
+
+  it('refuses an honest archive above the limit', () => {
+    const big = zip([{ name: 'xl/sharedStrings.xml', content: ZEROS, deflate: true }]);
+    expect(() => sanitizeXlsx(big)).toThrow('trop volumineux une fois décompressé (16 Mo maximum)');
+    expect(() => sanitizeXlsx(workbook(ROWS), 100)).toThrow('trop volumineux');
+  });
+
+  it('refuses local and central headers that disagree', () => {
+    const specs = entriesOf(workbook(ROWS));
+    specs[0] = { ...specs[0], localUsz: specs[0].content.length + 1 };
+    expect(() => sanitizeXlsx(zip(specs))).toThrow('classeur Excel invalide');
+  });
+
+  it('review M1: a second end-of-directory record (fake one in the comment) is refused', () => {
+    const fake = Buffer.alloc(22);
+    fake.writeUInt32LE(0x06054b50, 0);
+    expect(() => sanitizeXlsx(zip(entriesOf(workbook(ROWS)), { comment: fake }))).toThrow('classeur Excel invalide');
+  });
+
+  it('review M1: inconsistent entry counts are refused', () => {
+    const specs = entriesOf(workbook(ROWS));
+    expect(() => sanitizeXlsx(zip(specs, { entriesOnDisk: specs.length + 1 }))).toThrow('classeur Excel invalide');
+  });
+
+  it('review M2: only a plain zip is parsed (CSV, OLE/xls, HTML refused)', () => {
+    expect(() => sanitizeXlsx(Buffer.from('phone,name\n+237690000001,Awa\n'))).toThrow('classeur Excel invalide');
+    const ole = Buffer.concat([Buffer.from('d0cf11e0a1b11ae1', 'hex'), workbook(ROWS)]);
+    expect(() => sanitizeXlsx(ole)).toThrow('classeur Excel invalide');
+    expect(() => sanitizeXlsx(Buffer.from('<html><table><tr><td>x</td></tr></table></html>'))).toThrow('classeur Excel invalide');
   });
 
   it('refuses zip64 markers', () => {
-    const z64 = Buffer.from(ok);
-    z64.writeUInt32LE(0xffffffff, firstCentralHeader(z64) + 24);
-    expect(() => assertXlsxArchiveSafe(z64)).toThrow('zip64');
+    const extra = Buffer.alloc(20);
+    extra.writeUInt16LE(0x0001, 0);
+    extra.writeUInt16LE(16, 2);
+    const specs = entriesOf(workbook(ROWS));
+    specs[0] = { ...specs[0], localExtra: extra };
+    expect(() => sanitizeXlsx(zip(specs))).toThrow('zip64');
   });
 
-  it('refuses something that is not a zip, or a corrupted central directory', () => {
-    expect(() => assertXlsxArchiveSafe(Buffer.from('phone,name\n+237690000001,Awa\n'))).toThrow('classeur Excel invalide');
-    const broken = Buffer.from(ok);
-    broken.writeUInt32LE(0, firstCentralHeader(broken));
-    expect(() => assertXlsxArchiveSafe(broken)).toThrow('classeur Excel invalide');
+  it('turns any malformed or truncated archive into the same user-facing error', () => {
+    const ok = workbook(ROWS, true);
+    for (const cut of [10, 100, Math.floor(ok.length / 2), ok.length - 30]) {
+      expect(() => sanitizeXlsx(ok.subarray(0, cut))).toThrow('classeur Excel invalide');
+    }
+    const corrupted = Buffer.from(ok);
+    corrupted.fill(0xff, 60, 400);
+    expect(() => sanitizeXlsx(corrupted)).toThrow(/classeur Excel invalide/);
   });
 });
