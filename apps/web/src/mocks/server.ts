@@ -3,7 +3,7 @@
  * shapes and error format as the API contract. Loaded with a dynamic import only in mock mode.
  */
 import type { Transport } from '../api/client';
-import type { PackContent, PackObject, ProtocolSimulation, Reminder } from '../api/types';
+import type { PackContent, PackObject, ProtocolSimulation, ReconciliationReport, Reminder } from '../api/types';
 import {
   ORG_ID,
   addDays,
@@ -19,6 +19,7 @@ import {
   packMeta,
   payments,
   paymentMethods,
+  reconciliations,
   plans,
   reminders,
   subscription,
@@ -26,6 +27,7 @@ import {
   uid,
   users,
   versions,
+  type MockPayment,
   type MockUser,
 } from './db';
 
@@ -285,34 +287,136 @@ on('POST', '/alerts/:id/resolve', ({ body }, p) => {
 /* ------------------------------------------------------ subscriptions */
 
 on('GET', '/subscriptions/current', () => subscription);
-on('POST', '/subscriptions/checkout', ({ body }) => {
-  const b = body as { plan: string; period: string; method: string; phone: string };
+on('POST', '/subscriptions/checkout', ({ body, user }) => {
+  const b = body as { id?: string; plan: string; period: string; method: string; phone: string; account_id: string };
   const phone = (b.phone ?? '').replace(/\s/g, '');
   if (!/^\+?\d{9,15}$/.test(phone)) throw new HttpError(422, 'VALIDATION_ERROR', 'Numéro mobile money invalide.', { phone: 'format invalide' });
   const pl = plans.find((x) => x.code === b.plan);
   if (!pl?.price) throw new HttpError(422, 'BUSINESS_RULE', 'Cette formule se souscrit sur devis.', undefined, { rule: 'RG-ABO-01' });
   if (!paymentMethods.some((m) => m.code === b.method)) throw new HttpError(422, 'VALIDATION_ERROR', 'Moyen de paiement indisponible.', { method: 'moyen de paiement non disponible' });
-  // simulateur : numeros finissant par 97 -> refus explicite (PAY-INIT), par 96 -> issue inconnue (PAY-PENDING)
-  if (phone.endsWith('97')) throw new HttpError(422, 'BUSINESS_RULE', 'Paiement refusé.', undefined, { rule: 'PAY-INIT' });
+  if (!b.id || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(b.id)) throw new HttpError(422, 'VALIDATION_ERROR', 'Identifiant de paiement invalide.', { id: 'UUID v4 attendu' });
+  const key = [b.account_id, b.plan, b.period, b.method, phone].join('|');
+  // idempotence : meme id = meme paiement, meme issue ; autre demande avec le meme id = 409
+  const known = payments.find((x) => x.idem?.id === b.id);
+  if (known) {
+    if (known.idem?.key !== key) throw new HttpError(409, 'CONFLICT', 'Identifiant de paiement déjà utilisé pour une autre demande', undefined, { rule: 'PAY-IDEMPOTENCY' });
+    if (known.status === 'echoue') throw new HttpError(422, 'BUSINESS_RULE', 'Paiement refusé.', undefined, { rule: 'PAY-INIT', payment_id: known.id, replayed: true });
+    if (known.error_code) throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: known.id, status: known.status, replayed: true });
+    return { payment_id: known.id, status: 'initie', ussd_push: true, amount: known.amount, replayed: true };
+  }
   const amount = b.period === 'yearly' ? pl.price.yearly : pl.price.monthly;
-  const pay = { id: uid(), status: 'initie' as const, amount_minor: amount?.amount_minor ?? 0, currency: 'XAF', method: b.method as never, created: Date.now(), phone };
+  const pay: MockPayment = {
+    id: uid(),
+    status: 'initie',
+    amount: amount ?? undefined,
+    method: b.method,
+    created: Date.now(),
+    created_at: new Date().toISOString(),
+    phone,
+    sim: true,
+    idem: { id: b.id, key },
+    payer_type: 'user',
+    payer_id: user?.id ?? '',
+    connector: null,
+    error_code: null,
+    poll: null,
+    refund: null,
+  };
   payments.push(pay);
-  if (phone.endsWith('96')) throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: pay.id, status: 'en_attente' });
-  return { payment_id: pay.id, status: 'initie', ussd_push: true };
+  // simulateur : numeros finissant par 97 -> refus explicite (PAY-INIT), par 96 -> issue inconnue (PAY-PENDING)
+  if (phone.endsWith('97')) {
+    pay.status = 'echoue';
+    pay.error_code = 'refus_operateur';
+    throw new HttpError(422, 'BUSINESS_RULE', 'Paiement refusé.', undefined, { rule: 'PAY-INIT', payment_id: pay.id });
+  }
+  if (phone.endsWith('96')) {
+    pay.status = 'en_attente';
+    pay.error_code = 'timeout';
+    throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: pay.id, status: 'en_attente' });
+  }
+  return { payment_id: pay.id, status: 'initie', ussd_push: true, amount: pay.amount };
 });
 on('GET', '/payments/:id', (_c, p) => {
   const pay = payments.find((x) => x.id === p.id);
   if (!pay) throw notFound();
-  const age = Date.now() - pay.created;
-  // simulator: confirms after ~6 s; numbers ending in 99 fail, ending in 98 never answer (timeout demo)
-  if (pay.phone.endsWith('98')) pay.status = 'en_attente';
-  else if (age > 6000) pay.status = pay.phone.endsWith('99') ? 'echoue' : 'confirme';
-  else if (age > 1500) pay.status = 'en_attente';
-  if (pay.status === 'confirme') {
-    subscription.plan = plans.find((x) => x.price && x.price.monthly?.amount_minor === pay.amount_minor)?.code ?? subscription.plan;
+  if (pay.sim) {
+    const age = Date.now() - pay.created;
+    // simulator: confirms after ~6 s; numbers ending in 99 fail, ending in 98 never answer (timeout demo), 95 -> a_verifier
+    if (pay.phone.endsWith('98')) pay.status = 'en_attente';
+    else if (pay.phone.endsWith('95') && age > 3000) pay.status = 'a_verifier';
+    else if (age > 6000) pay.status = pay.phone.endsWith('99') ? 'echoue' : 'confirme';
+    else if (age > 1500) pay.status = 'en_attente';
+    if (pay.status === 'confirme') {
+      subscription.plan = plans.find((x) => x.price && x.price.monthly?.amount_minor === pay.amount?.amount_minor)?.code ?? subscription.plan;
+    }
   }
-  const { created: _c2, phone: _p, ...out } = pay;
-  return { ...out, updated_at: new Date().toISOString() };
+  return { id: pay.id, status: pay.status, amount: pay.amount, method: pay.method, updated_at: new Date().toISOString() };
+});
+
+/* ------------------------------------------- administration des paiements */
+
+const platformRole = (u: MockUser | null, ...roles: string[]): MockUser => {
+  const x = need(u);
+  if (!x.platform_roles.includes('platform_admin') && !roles.some((r) => (x.platform_roles as string[]).includes(r))) throw new HttpError(403, 'FORBIDDEN', "Vous n'avez pas accès à cette fonction.");
+  return x;
+};
+const adminView = (p: MockPayment) => {
+  const { created: _c, phone: _p, sim: _s, idem: _i, ...rest } = p;
+  return rest;
+};
+on('GET', '/admin/payments/reconciliations', ({ user, query }) => {
+  platformRole(user, 'ops', 'support');
+  const day = query.get('day');
+  return page(reconciliations.filter((r) => !day || r.day === day));
+});
+on('POST', '/admin/payments/reconciliations', ({ user, body }) => {
+  platformRole(user);
+  const day = (body as { day?: string })?.day ?? '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new HttpError(422, 'VALIDATION_ERROR', 'Jour invalide.', { day: 'AAAA-MM-JJ attendu' });
+  const report: ReconciliationReport = {
+    day,
+    generated_at: new Date().toISOString(),
+    totals: { payments: 0, confirmes: 0, confirmed_amounts: [] },
+    confirmes_sans_abonnement: [],
+    abonnements_sans_paiement: [],
+    divergences: [],
+    non_verifies: [],
+    erreurs: [],
+    complet: true,
+    sources: [],
+  };
+  const i = reconciliations.findIndex((r) => r.day === day);
+  if (i >= 0) reconciliations[i] = report;
+  else reconciliations.unshift(report);
+  return report;
+});
+on('GET', '/admin/payments', ({ user, query }) => {
+  platformRole(user, 'ops', 'support');
+  const st = query.get('status');
+  return page(payments.filter((p) => !st || p.status === st).sort((a, b) => b.created - a.created).map(adminView));
+});
+on('POST', '/admin/payments/:id/check', ({ user }, p) => {
+  platformRole(user, 'ops');
+  const pay = payments.find((x) => x.id === p.id);
+  if (!pay) throw notFound();
+  if (!['initie', 'en_attente', 'a_verifier'].includes(pay.status)) return { id: pay.id, status: pay.status, checked: false };
+  pay.poll = { count: (pay.poll?.count ?? 0) + 1, last_at: new Date().toISOString(), last: 'CONFIRMED' };
+  pay.status = 'confirme';
+  pay.paid_at = new Date().toISOString();
+  return { id: pay.id, status: pay.status, checked: true, outcome: 'confirme' };
+});
+on('POST', '/admin/payments/:id/refund', ({ user, body }, p) => {
+  const u = platformRole(user);
+  const pay = payments.find((x) => x.id === p.id);
+  if (!pay) throw notFound();
+  const reason = String((body as { reason?: string })?.reason ?? '');
+  if (reason.length < 5 || reason.length > 300) throw new HttpError(422, 'VALIDATION_ERROR', 'Motif invalide.', { reason: 'entre 5 et 300 caractères' });
+  if (pay.status === 'rembourse') return { id: pay.id, status: pay.status };
+  if (pay.status === 'remboursement_en_cours') throw new HttpError(409, 'CONFLICT', 'Un remboursement est déjà en cours pour ce paiement.', undefined, { rule: 'PAY-REFUND-IN-PROGRESS', refund_status: pay.refund?.status });
+  if (pay.status !== 'confirme') throw new HttpError(422, 'BUSINESS_RULE', 'Seul un paiement confirmé peut être remboursé.', undefined, { rule: 'PAY-REFUND-STATUS', status: pay.status });
+  pay.status = 'rembourse';
+  pay.refund = { id: uid(), status: 'rembourse', reason, requested_at: new Date().toISOString(), requested_by: u.id, done_at: new Date().toISOString() };
+  return { id: pay.id, status: pay.status };
 });
 
 /* ----------------------------------------------------- import / export */

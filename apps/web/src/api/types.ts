@@ -291,6 +291,8 @@ export interface PlansResponse extends Page<Plan> {
 }
 
 export interface CheckoutRequest {
+  /** UUID v4 cree par le client : une relance du meme paiement renvoie le meme paiement (POST idempotent). */
+  id: UUID;
   account_type: 'user' | 'organisation';
   account_id: UUID;
   plan: PlanCode;
@@ -299,15 +301,70 @@ export interface CheckoutRequest {
   phone: string;
 }
 
-export type PaymentStatus = 'initie' | 'en_attente' | 'confirme' | 'echoue' | 'rembourse';
+export interface CheckoutResponse {
+  payment_id: UUID;
+  status: PaymentStatus;
+  ussd_push: boolean;
+  redirect_url?: string;
+  amount?: Money;
+  provider_ref?: string | null;
+  /** true : relance d'un paiement deja cree (aucun second prelevement). */
+  replayed?: boolean;
+}
+
+/** Statuts de paiement (openapi : AdminPayments_list.status). */
+export type PaymentStatus = 'initie' | 'en_attente' | 'a_verifier' | 'confirme' | 'echoue' | 'remboursement_en_cours' | 'rembourse';
 
 export interface Payment {
   id: UUID;
   status: PaymentStatus;
-  amount_minor?: number;
-  currency?: string;
+  purpose?: string;
+  plan?: string | null;
+  period?: string | null;
+  /** Unite mineure ISO 4217 + devise. */
+  amount?: Money;
   method?: PaymentMethod;
+  provider_ref?: string | null;
+  paid_at?: ISODateTime | null;
+  created_at?: ISODateTime;
   updated_at?: ISODateTime;
+}
+
+/** GET /admin/payments : un paiement vu par l'administration. */
+export interface AdminPayment extends Payment {
+  payer_type: 'user' | 'organisation';
+  payer_id: UUID;
+  connector: string | null;
+  /** Code technique de l'echec d'initiation (timeout, network...). */
+  error_code: string | null;
+  poll: { count?: number; last_at?: ISODateTime; next_at?: ISODateTime; last?: string } | null;
+  refund: {
+    id?: UUID;
+    status?: string;
+    reason?: string;
+    requested_at?: ISODateTime;
+    requested_by?: UUID;
+    done_at?: ISODateTime;
+    ref?: string;
+    error?: string;
+  } | null;
+}
+
+/** POST /admin/payments/:id/check : paiement + resultat de l'interrogation. */
+export type AdminCheckResult = Payment & { checked: boolean; outcome?: string };
+
+export interface ReconciliationReport {
+  day: ISODate;
+  generated_at: ISODateTime;
+  updated_at?: ISODateTime;
+  totals: { payments: number; confirmes: number; confirmed_amounts: Money[] };
+  confirmes_sans_abonnement: { payment_id: UUID; payer_type: string; payer_id: UUID; plan: string | null }[];
+  abonnements_sans_paiement: { subscription_id: UUID; account_type: string; account_id: UUID; plan: string }[];
+  divergences: { connector: string; payment_id: UUID | null; provider_ref: string | null; base: string | null; fournisseur: string | null; ecart: 'statut' | 'montant' | 'inconnu_en_base' | 'absent_chez_fournisseur' }[];
+  non_verifies: { connector: string; raison: string }[];
+  erreurs: { connector: string; payment_id: UUID; raison: string }[];
+  complet: boolean;
+  sources: { connector: string; source: 'liste' | 'statut' }[];
 }
 
 /* ------------------------------------------------------ certificates */

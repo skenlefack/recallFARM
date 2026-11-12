@@ -6,7 +6,7 @@ import type { PaymentMethodOption, PaymentStatus, Plan, PlanCode } from '../../a
 import { Card, Dialog, ErrorState, FieldErrors, Pill, Seg, Skeleton, useToast } from '../../components/ui';
 import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import { checkoutOutcome, methodInitials } from '../../lib/payment';
+import { checkoutKey, checkoutOutcome, isSettled, methodInitials, newPaymentId } from '../../lib/payment';
 import { priceOf } from '../../lib/plans';
 import { useAuth } from '../auth';
 import { usePageMeta } from '../hooks';
@@ -60,7 +60,7 @@ export function usePaymentPolling(paymentId: string | null) {
     enabled: !!paymentId,
     refetchInterval: (query) => {
       const s = query.state.data?.status as PaymentStatus | undefined;
-      if (s === 'confirme' || s === 'echoue' || s === 'rembourse') return false;
+      if (isSettled(s)) return false;
       if (startedAt && Date.now() - startedAt >= POLL_MAX_MS) return false;
       return POLL_MS;
     },
@@ -68,11 +68,11 @@ export function usePaymentPolling(paymentId: string | null) {
     retry: 2,
   });
   const status = q.data?.status;
-  const done = status === 'confirme' || status === 'echoue' || status === 'rembourse';
+  const done = isSettled(status);
   return { status, done, timedOut: timedOut && !done, remaining: Math.max(0, Math.ceil((POLL_MAX_MS - elapsed) / 1000)), error: q.error };
 }
 
-function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; period: Period; methods: PaymentMethodOption[]; onClose: () => void }) {
+function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | null; period: Period; methods: PaymentMethodOption[]; currency?: string; onClose: () => void }) {
   const { me, orgId } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
@@ -86,6 +86,8 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
   const [paymentId, setPaymentId] = useState<string | null>(null);
   const poll = usePaymentPolling(paymentId);
   const announced = useRef(false);
+  /** Cle d'idempotence : creee a l'appui, gardee pour toute relance du meme paiement (reseau coupe, double appui). */
+  const attempt = useRef<{ id: string; key: string } | null>(null);
 
   useEffect(() => {
     if (!plan) {
@@ -104,26 +106,37 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
 
   const m = useMutation({
     mutationFn: () =>
-      api.checkout({
-        account_type: orgId ? 'organisation' : 'user',
-        account_id: orgId ?? me!.id,
-        plan: plan!.code,
-        period,
-        method,
-        phone: normalizePhone(tel),
-      }),
+    {
+        const body = {
+          account_type: orgId ? ('organisation' as const) : ('user' as const),
+          account_id: orgId ?? me!.id,
+          plan: plan!.code,
+          period,
+          method,
+          phone: normalizePhone(tel),
+        };
+        // Une cle ne sert qu'a une demande : si l'eleveur change le numero ou le moyen, nouvelle cle.
+        const key = checkoutKey(body);
+        if (attempt.current?.key !== key) attempt.current = { id: newPaymentId(), key };
+        return api.checkout({ id: attempt.current.id, ...body });
+      },
     onSuccess: (r) => setPaymentId(r.payment_id),
     onError: (err) => {
       const o = checkoutOutcome(err);
       if (o.kind === 'pending') {
+        // Issue inconnue : meme cle conservee, on ne relance pas, on suit le paiement.
         setUnknownOutcome(true);
         setPaymentId(o.paymentId);
+      } else if (o.kind === 'refused' || o.kind === 'conflict') {
+        // Refus explicite : le serveur rejouerait le meme refus avec la meme cle ; un nouvel essai prend une nouvelle cle.
+        attempt.current = null;
       }
     },
   });
   const refused = m.isError && checkoutOutcome(m.error).kind === 'refused';
-  const otherError = m.isError && !refused && checkoutOutcome(m.error).kind === 'other';
-  const price = plan ? priceOf(plan, plan.code, period) : null;
+  const conflict = m.isError && checkoutOutcome(m.error).kind === 'conflict';
+  const otherError = m.isError && !refused && !conflict && checkoutOutcome(m.error).kind === 'other';
+  const price = plan ? priceOf(plan, plan.code, period, currency) : null;
   const phoneErr = m.error instanceof ApiError ? m.error.fields?.phone : undefined;
 
   const submit = (e: FormEvent) => {
@@ -137,6 +150,7 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
     setPaymentId(null);
     m.reset();
     announced.current = false;
+    attempt.current = null; // nouveau paiement : nouvelle cle
   };
 
   const waiting = !!paymentId && !poll.done && !poll.timedOut;
@@ -145,12 +159,14 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
     if (refused || (paymentId && (poll.done || poll.timedOut))) statusRef.current?.focus();
   }, [outcomeKey, refused, paymentId, poll.done, poll.timedOut]);
   const canRetry = poll.status === 'echoue' || (poll.timedOut && !unknownOutcome);
+  /** a_verifier, PAY-PENDING non tranche : on ne relance jamais, on previent. */
+  const verifying = poll.status === 'a_verifier' || (unknownOutcome && poll.timedOut && !poll.done);
   return (
     <Dialog
       open={!!plan}
       onClose={onClose}
       title={paymentId ? 'Paiement mobile money' : `Passer à ${PLAN_LABEL[plan?.code ?? ''] ?? ''}`}
-      description={!paymentId && price?.amount != null ? `${money(price.amount)} ${period === 'yearly' ? 'par an (2 mois offerts)' : 'par mois'}` : undefined}
+      description={!paymentId && price?.amount != null ? `${money(price.amount, price.currency)} ${period === 'yearly' ? 'par an (2 mois offerts)' : 'par mois'}` : undefined}
       footer={
         !paymentId ? (
           <>
@@ -208,6 +224,11 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
               {phoneErr ?? 'Vous recevrez une demande de confirmation sur ce téléphone.'}
             </span>
           </div>
+          {conflict && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-crit" role="alert">
+              {t('pay.conflict')}
+            </div>
+          )}
           {refused && (
             <div ref={statusRef} tabIndex={-1} className="notice notice-crit" role="alert">
               <b>{t('pay.init.title')}.</b> {t('pay.init.body')}
@@ -217,7 +238,7 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
         </form>
       ) : (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
-          {unknownOutcome && poll.status !== 'confirme' && poll.status !== 'echoue' && (
+          {unknownOutcome && !isSettled(poll.status) && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
               <b>{t('pay.pending.title')}.</b> {t('pay.pending.body')}
             </p>
@@ -226,7 +247,7 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
             <>
               <div className="pay-phone" aria-hidden="true">
                 <div className="pay-ussd">
-                  Confirmez le paiement de {price?.amount != null ? money(price.amount) : ''}
+                  Confirmez le paiement de {price?.amount != null ? money(price.amount, price.currency) : ''}
                   <br />
                   1. Oui
                   <br />
@@ -254,14 +275,34 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
               <b>{t('pay.confirmed')}</b> Votre formule {PLAN_LABEL[plan?.code ?? '']} est active. Un reçu vous est envoyé par SMS.
             </p>
           )}
+          {poll.status === 'a_verifier' && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              <b>{t('pay.verify.title')}.</b> {t('pay.verify.body')}
+            </p>
+          )}
+          {poll.status === 'remboursement_en_cours' && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              {t('pay.refunding')}
+            </p>
+          )}
+          {poll.status === 'rembourse' && (
+            <p className="notice notice-ok" style={{ width: '100%' }}>
+              {t('pay.refunded')}
+            </p>
+          )}
           {poll.status === 'echoue' && (
             <p className="notice notice-crit" style={{ width: '100%' }}>
               <b>Paiement refusé.</b> Le solde est peut-être insuffisant ou la demande a été annulée. Aucun montant n'a été prélevé.
             </p>
           )}
-          {poll.timedOut && (
+          {poll.timedOut && !verifying && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
-              <b>Pas de réponse après 2 minutes.</b> Si vous avez validé, l'activation apparaîtra d'ici quelques minutes. Sinon, relancez le paiement.
+              <b>{t('pay.timeout.title')}</b> {t('pay.timeout.body')}
+            </p>
+          )}
+          {poll.timedOut && verifying && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              <b>{t('pay.verify.title')}.</b> {t('pay.verify.body')}
             </p>
           )}
           {poll.error != null && <ErrorState compact error={poll.error} />}
@@ -279,6 +320,7 @@ export default function Subscriptions() {
   const plansQ = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM') });
   const plans = { ...plansQ, data: plansQ.data ? listOf(plansQ.data) : undefined };
   const methods = (!Array.isArray(plansQ.data) && plansQ.data?.payment_methods) || [];
+  const plansCurrency = !Array.isArray(plansQ.data) ? plansQ.data?.currency : undefined;
   const dash = useAuth();
   const current = sub.data?.plan;
   const currentPlan = plans.data?.find((p) => p.code === current);
@@ -372,7 +414,7 @@ export default function Subscriptions() {
         ) : (
           <div className="plan-cards">
             {plans.data?.map((p) => {
-              const pr = priceOf(p, p.code, period);
+              const pr = priceOf(p, p.code, period, plansCurrency);
               const isCurrent = p.code === current;
               const rank = (c?: PlanCode) => plans.data?.find((x) => x.code === c)?.rank ?? 0;
               return (
@@ -384,10 +426,13 @@ export default function Subscriptions() {
                   <div className="plan-price">
                     {pr.amount === null ? (
                       'Sur devis'
+                    ) : pr.amount === undefined ? (
+                      '—'
                     ) : (
                       <>
                         {pr.from && <small>dès </small>}
-                        {num(pr.amount)} <small>FCFA{pr.amount > 0 ? ` / ${period === 'yearly' ? 'an' : 'mois'}` : ''}</small>
+                        {money(pr.amount, pr.currency)}
+                        {pr.amount > 0 && <small> / {period === 'yearly' ? 'an' : 'mois'}</small>}
                       </>
                     )}
                   </div>
@@ -426,7 +471,7 @@ export default function Subscriptions() {
           {methods.length > 0 ? t('pay.footnote', { methods: methods.map((x) => x.label).join(', ') }) : t('pay.footnote.none')}
         </p>
       </section>
-      <Checkout plan={buying} period={period} methods={methods} onClose={() => setBuying(null)} />
+      <Checkout plan={buying} period={period} methods={methods} currency={plansCurrency} onClose={() => setBuying(null)} />
     </>
   );
 }

@@ -4,7 +4,12 @@ import type {
   Alert,
   Batch,
   CertificateCheck,
+  AdminCheckResult,
+  AdminPayment,
   CheckoutRequest,
+  CheckoutResponse,
+  PaymentStatus,
+  ReconciliationReport,
   DailyLog,
   Dashboard,
   Dog,
@@ -90,8 +95,16 @@ export const api = {
 
   /* subscription */
   currentSubscription: () => http.get<Subscription | null>('/subscriptions/current'),
-  checkout: (body: CheckoutRequest) => http.post<{ payment_id: string; status: string; ussd_push: boolean }>('/subscriptions/checkout', body),
+  /** `body.id` (UUID v4 du client) rend l'appel idempotent (alternative du contrat : en-tete Idempotency-Key). */
+  checkout: (body: CheckoutRequest) => http.post<CheckoutResponse>('/subscriptions/checkout', body),
   payment: (id: string) => http.get<Payment>(`/payments/${id}`),
+
+  /* administration des paiements (roles plateforme : lecture ops/support, remboursement platform_admin) */
+  adminPayments: (q: { status?: PaymentStatus; limit?: number }) => http.get<Page<AdminPayment>>('/admin/payments', q),
+  adminCheckPayment: (id: string) => http.post<AdminCheckResult>(`/admin/payments/${id}/check`, {}),
+  adminRefundPayment: (id: string, reason: string) => http.post<Payment>(`/admin/payments/${id}/refund`, { reason }),
+  adminReconciliations: (q: { day?: string; limit?: number } = {}) => http.get<Page<ReconciliationReport>>('/admin/payments/reconciliations', q),
+  adminReconcile: (day: string) => http.post<ReconciliationReport>('/admin/payments/reconciliations', { day }),
 
   /* import / export */
   importCsv: (file: File, organisationId: string, kind = 'farmers') => {
