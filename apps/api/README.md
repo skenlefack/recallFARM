@@ -72,6 +72,17 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
 - **Payment operations** (`billing/payment-ops.service.ts`, `payments.scheduler.ts`): status queries for pending payments
   (capped exponential backoff, then `a_verifier`), refunds (`POST /v1/admin/payments/:id/refund`, `audit_log`), daily
   reconciliation (`/v1/admin/payments/reconciliations`). Checkout is idempotent (`id` from the client or `Idempotency-Key`).
+  `GET /v1/payments/:id` and `GET /v1/admin/payments/:id` return `events` (provider journal: `at`, `status`, `source`
+  webhook|statut; never the raw aggregator body).
+- **PAY-OPEN (EF-ABO-01)**: one open payment (`initie`, `en_attente`, `a_verifier`) per payer and plan. A checkout with another
+  id or key meanwhile answers `409 CONFLICT` `details: {rule: 'PAY-OPEN', payment_id, status}` (the client follows that payment);
+  the replay of the same id/key is still a replay. Enforced by the partial unique index `payments_open_payer_plan_uq`
+  (migration 1761500000005), so concurrent requests give one payment. **Runbook**: the migration stops if a payer already has
+  several open payments for a plan and lists them; settle them first (`POST /v1/admin/payments/:id/check`, or the aggregator's
+  answer), then run the migration again. A payment stuck in `a_verifier` blocks new checkouts of that plan for its payer until
+  an operator settles it (see `GET /v1/admin/payments?status=a_verifier`).
+- **Currency**: always the country pack's (`pays.<CC>.json` → `currency`, or the `plan_price` currency). Without one,
+  `GET /plans` (and `/subscriptions/current` for a subscription stored without currency) answer `422 PAY-CURRENCY`.
 - **WhatsApp**: simulator only. **Push** = journaled (`channel=push`), delivered through `/inbox` and sync.
 - **Payments** `PAYMENT_PROVIDER=simulator`: checkout returns `{payment_id, status:"initie", ussd_push:true}` and auto-confirms after
   `PAYMENT_SIM_AUTOCONFIRM_MS` (5 s) through the webhook code path; `POST /v1/dev/payments/:id/confirm|fail` for manual control.
