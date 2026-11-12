@@ -199,12 +199,19 @@ export class PaymentOpsService {
       order: { created_at: 'DESC' },
       take: Math.min(Math.max(limit, 1), 200),
     });
-    return {
-      data: rows.map((p) => {
-        const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string };
-        return { ...this.billing.serialize(p), payer_type: p.payer_type, payer_id: p.payer_id, connector: raw.connector ?? null, error_code: raw.error_code ?? null, poll: raw.poll ?? null, refund: raw.refund ?? null };
-      }),
-    };
+    return { data: rows.map((p) => this.adminView(p)) };
+  }
+
+  /** One payment for the administration, with its provider event journal (Q-WEB-03). */
+  async get(id: string) {
+    const p = await this.ds.getRepository(Payment).findOne({ where: { id } });
+    if (!p) throw Errors.notFound('Paiement');
+    return this.adminView(p);
+  }
+
+  private adminView(p: Payment) {
+    const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string };
+    return { ...this.billing.serialize(p), payer_type: p.payer_type, payer_id: p.payer_id, connector: raw.connector ?? null, error_code: raw.error_code ?? null, poll: raw.poll ?? null, refund: raw.refund ?? null };
   }
 
   /* ---------------- refunds ---------------- */

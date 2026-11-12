@@ -34,6 +34,153 @@
         ],
         "type": "object"
       },
+      "AdminPaymentListView": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AdminPaymentView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "AdminPaymentView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "connector": {
+            "description": "Connecteur qui a lance le paiement",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "events": {
+            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payer_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "payer_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "poll": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PaymentPollView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "refund": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RefundView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events",
+          "payer_type",
+          "payer_id",
+          "connector",
+          "error_code",
+          "poll",
+          "refund"
+        ],
+        "type": "object"
+      },
       "AnalyticsDto": {
         "properties": {
           "device_id_hash": {
@@ -323,6 +470,39 @@
         ],
         "type": "object"
       },
+      "CheckoutConflictDetailView": {
+        "properties": {
+          "code": {
+            "enum": [
+              "CONFLICT"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "$ref": "#/components/schemas/PayOpenDetailsView"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
+        "type": "object"
+      },
+      "CheckoutConflictView": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/CheckoutConflictDetailView"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
       "CheckoutDto": {
         "properties": {
           "account_id": {
@@ -371,6 +551,48 @@
         ],
         "type": "object"
       },
+      "CheckoutResultView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "payment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_url": {
+            "description": "Page de paiement du fournisseur, le cas echeant",
+            "type": "string"
+          },
+          "replayed": {
+            "description": "true : rejeu du meme id ou de la meme Idempotency-Key, aucun nouvel appel au fournisseur",
+            "type": "boolean"
+          },
+          "status": {
+            "description": "\"initie\" tant que le paiement est ouvert ; sinon son statut (rejeu)",
+            "example": "initie",
+            "type": "string"
+          },
+          "ussd_push": {
+            "description": "Une demande de validation a ete envoyee sur le telephone",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "payment_id",
+          "status",
+          "ussd_push",
+          "amount",
+          "provider_ref"
+        ],
+        "type": "object"
+      },
       "ConfirmReminderDto": {
         "properties": {
           "health_event": {
@@ -382,6 +604,49 @@
             "description": "Act details (defaults: vaccination today for the reminder step)"
           }
         },
+        "type": "object"
+      },
+      "ConfirmedWithoutSubscriptionView": {
+        "properties": {
+          "payer_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "payer_type": {
+            "type": "string"
+          },
+          "payment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "plan": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "payment_id",
+          "payer_type",
+          "payer_id",
+          "plan"
+        ],
+        "type": "object"
+      },
+      "ConnectorReasonView": {
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "raison": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "raison"
+        ],
         "type": "object"
       },
       "ConnectorTestSmsDto": {
@@ -827,6 +1092,55 @@
         },
         "type": "object"
       },
+      "ErrorDetailView": {
+        "properties": {
+          "code": {
+            "enum": [
+              "UNAUTHENTICATED",
+              "FORBIDDEN",
+              "PLAN_REQUIRED",
+              "NOT_FOUND",
+              "CONFLICT",
+              "VALIDATION_ERROR",
+              "BUSINESS_RULE",
+              "QUOTA_EXCEEDED",
+              "RATE_LIMITED",
+              "SERVER_ERROR"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "description": "Regle (rule) et donnees utiles au client",
+            "type": "object"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorView": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetailView"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
       "ExpenseDto": {
         "properties": {
           "amount": {
@@ -1261,6 +1575,25 @@
         ],
         "type": "object"
       },
+      "MoneyView": {
+        "properties": {
+          "amount_minor": {
+            "description": "Entier en unite mineure ISO 4217",
+            "example": 2500,
+            "type": "number"
+          },
+          "currency": {
+            "description": "Code ISO 4217, venu du pack pays",
+            "example": "XAF",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "type": "object"
+      },
       "OtpRequestDto": {
         "properties": {
           "phone": {
@@ -1349,6 +1682,564 @@
         ],
         "type": "object"
       },
+      "PayOpenDetailsView": {
+        "properties": {
+          "payment_id": {
+            "description": "PAY-OPEN : paiement deja ouvert pour ce payeur et cette formule (a suivre, pas a relancer)",
+            "format": "uuid",
+            "type": "string"
+          },
+          "rule": {
+            "enum": [
+              "PAY-OPEN",
+              "PAY-IDEMPOTENCY"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "description": "PAY-OPEN : statut du paiement ouvert",
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "type": "object"
+      },
+      "PaymentCheckView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "checked": {
+            "description": "false : paiement deja termine, le fournisseur n’a pas ete interroge",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "outcome": {
+            "description": "Issue de l’interrogation (confirmed, failed, still_pending, flagged, errors, ou statut lu)",
+            "example": "confirmed",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events",
+          "checked"
+        ],
+        "type": "object"
+      },
+      "PaymentErrorView": {
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "payment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "raison": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "raison",
+          "payment_id"
+        ],
+        "type": "object"
+      },
+      "PaymentEventView": {
+        "properties": {
+          "at": {
+            "description": "Reception de l’evenement (UTC)",
+            "format": "date-time",
+            "type": "string"
+          },
+          "source": {
+            "description": "webhook : notification du fournisseur ; statut : requete de statut (interrogation)",
+            "enum": [
+              "webhook",
+              "statut"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "description": "Statut annonce par le fournisseur (apres correspondance du connecteur)",
+            "example": "confirme",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "status",
+          "source"
+        ],
+        "type": "object"
+      },
+      "PaymentMethodView": {
+        "properties": {
+          "code": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "label": {
+            "example": "Orange Money",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label"
+        ],
+        "type": "object"
+      },
+      "PaymentPollView": {
+        "properties": {
+          "count": {
+            "description": "Interrogations faites",
+            "type": "number"
+          },
+          "last": {
+            "description": "Derniere reponse lue (statut du fournisseur ou code d’erreur)",
+            "type": "string"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "next_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PaymentRefundView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "refund": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RefundView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events",
+          "refund"
+        ],
+        "type": "object"
+      },
+      "PaymentView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "Journal des evenements du fournisseur (20 derniers) : date, statut et source seulement, sans corps brut ni donnees personnelles",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events"
+        ],
+        "type": "object"
+      },
+      "PlanCardView": {
+        "properties": {
+          "code": {
+            "example": "pro",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "monthly": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MoneyView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "description": "null : sur devis",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlanPricesView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quotas": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "rank": {
+            "type": "number"
+          },
+          "yearly": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MoneyView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "rank",
+          "features",
+          "quotas",
+          "monthly",
+          "yearly",
+          "price"
+        ],
+        "type": "object"
+      },
+      "PlanPricesView": {
+        "properties": {
+          "from": {
+            "description": "Prix « a partir de » (ex. formule par tranche)",
+            "type": "boolean"
+          },
+          "monthly": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "yearly": {
+            "$ref": "#/components/schemas/MoneyView"
+          }
+        },
+        "required": [
+          "monthly",
+          "yearly",
+          "from"
+        ],
+        "type": "object"
+      },
+      "PlanView": {
+        "properties": {
+          "code": {
+            "example": "pro",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prices": {
+            "$ref": "#/components/schemas/PlanPricesView"
+          },
+          "purchasable": {
+            "description": "false : pas de tarif dans le pack pays (gratuit ou sur devis)",
+            "type": "boolean"
+          },
+          "quotas": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "rank": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "rank",
+          "features",
+          "quotas",
+          "prices",
+          "purchasable",
+          "note"
+        ],
+        "type": "object"
+      },
+      "PlansView": {
+        "properties": {
+          "country": {
+            "example": "CM",
+            "type": "string"
+          },
+          "currency": {
+            "description": "Devise du pack pays (ISO 4217)",
+            "example": "XAF",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PlanCardView"
+            },
+            "type": "array"
+          },
+          "payment_methods": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentMethodView"
+            },
+            "type": "array"
+          },
+          "plans": {
+            "items": {
+              "$ref": "#/components/schemas/PlanView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "country",
+          "currency",
+          "data",
+          "plans",
+          "payment_methods"
+        ],
+        "type": "object"
+      },
       "PublishDto": {
         "properties": {
           "rollout_pct": {
@@ -1391,6 +2282,181 @@
         ],
         "type": "object"
       },
+      "ReconciliationDivergenceView": {
+        "properties": {
+          "base": {
+            "description": "Notre statut (null : inconnu en base)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connector": {
+            "type": "string"
+          },
+          "ecart": {
+            "enum": [
+              "statut",
+              "montant",
+              "inconnu_en_base",
+              "absent_chez_fournisseur"
+            ],
+            "type": "string"
+          },
+          "fournisseur": {
+            "description": "Statut du fournisseur (null : absent de sa liste)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connector",
+          "payment_id",
+          "provider_ref",
+          "base",
+          "fournisseur",
+          "ecart"
+        ],
+        "type": "object"
+      },
+      "ReconciliationListView": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/StoredReconciliationView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ReconciliationReportView": {
+        "properties": {
+          "abonnements_sans_paiement": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionWithoutPaymentView"
+            },
+            "type": "array"
+          },
+          "complet": {
+            "description": "false : une erreur temporaire a laisse des points non verifies (rapport refait)",
+            "type": "boolean"
+          },
+          "confirmes_sans_abonnement": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedWithoutSubscriptionView"
+            },
+            "type": "array"
+          },
+          "day": {
+            "description": "Jour metier (fuseau du pays)",
+            "example": "2026-11-09",
+            "type": "string"
+          },
+          "divergences": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationDivergenceView"
+            },
+            "type": "array"
+          },
+          "erreurs": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentErrorView"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "non_verifies": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorReasonView"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationSourceView"
+            },
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ReconciliationTotalsView"
+          }
+        },
+        "required": [
+          "day",
+          "generated_at",
+          "totals",
+          "confirmes_sans_abonnement",
+          "abonnements_sans_paiement",
+          "divergences",
+          "non_verifies",
+          "erreurs",
+          "complet",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "ReconciliationSourceView": {
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "liste",
+              "statut"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ReconciliationTotalsView": {
+        "properties": {
+          "confirmed_amounts": {
+            "items": {
+              "$ref": "#/components/schemas/MoneyView"
+            },
+            "type": "array"
+          },
+          "confirmes": {
+            "type": "number"
+          },
+          "payments": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "payments",
+          "confirmes",
+          "confirmed_amounts"
+        ],
+        "type": "object"
+      },
       "RefreshDto": {
         "properties": {
           "refresh_token": {
@@ -1413,6 +2479,67 @@
         },
         "required": [
           "reason"
+        ],
+        "type": "object"
+      },
+      "RefundView": {
+        "properties": {
+          "done_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": "number"
+          },
+          "id": {
+            "description": "Cle d’idempotence du remboursement (stable)",
+            "format": "uuid",
+            "type": "string"
+          },
+          "poll": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaymentPollView"
+              }
+            ],
+            "description": "Suivi par la requete de statut du remboursement"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "ref": {
+            "description": "Reference du remboursement chez le fournisseur",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "requested_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "en_cours",
+              "en_attente",
+              "inconnu",
+              "a_verifier",
+              "rembourse",
+              "refuse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "reason",
+          "requested_at",
+          "requested_by"
         ],
         "type": "object"
       },
@@ -1629,6 +2756,105 @@
           "movement_date",
           "direction",
           "quantity"
+        ],
+        "type": "object"
+      },
+      "StoredReconciliationView": {
+        "properties": {
+          "abonnements_sans_paiement": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionWithoutPaymentView"
+            },
+            "type": "array"
+          },
+          "complet": {
+            "description": "false : une erreur temporaire a laisse des points non verifies (rapport refait)",
+            "type": "boolean"
+          },
+          "confirmes_sans_abonnement": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedWithoutSubscriptionView"
+            },
+            "type": "array"
+          },
+          "day": {
+            "description": "Jour metier (fuseau du pays)",
+            "example": "2026-11-09",
+            "type": "string"
+          },
+          "divergences": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationDivergenceView"
+            },
+            "type": "array"
+          },
+          "erreurs": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentErrorView"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "non_verifies": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorReasonView"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationSourceView"
+            },
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ReconciliationTotalsView"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "generated_at",
+          "totals",
+          "confirmes_sans_abonnement",
+          "abonnements_sans_paiement",
+          "divergences",
+          "non_verifies",
+          "erreurs",
+          "complet",
+          "sources",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SubscriptionWithoutPaymentView": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "account_type": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string"
+          },
+          "subscription_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id",
+          "account_type",
+          "account_id",
+          "plan"
         ],
         "type": "object"
       },
@@ -1956,6 +3182,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentListView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -1996,6 +3229,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationListView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2024,6 +3264,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationReportView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2033,6 +3280,42 @@
           }
         ],
         "summary": "Relance le rapprochement d’un jour (remplace le rapport existant)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}": {
+      "get": {
+        "operationId": "AdminPayments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Detail d’un paiement avec son journal d’evenements (date, statut, source)",
         "tags": [
           "billing"
         ]
@@ -2053,6 +3336,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentCheckView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2092,6 +3382,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRefundView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5417,6 +6714,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5446,7 +6750,24 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlansView"
+                }
+              }
+            },
             "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "PAY-CURRENCY : aucune devise parametree pour ce pays (pack pays)"
           }
         },
         "tags": [
@@ -6167,7 +7488,34 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutResultView"
+                }
+              }
+            },
+            "description": "Paiement lance, ou rejeu (replayed: true) du meme id / de la meme Idempotency-Key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutConflictView"
+                }
+              }
+            },
+            "description": "PAY-OPEN (EF-ABO-01) : un paiement du meme payeur pour la meme formule est encore ouvert (initie, en_attente ou a_verifier) ; details.payment_id et details.status le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "Champs invalides, PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)"
           }
         },
         "security": [

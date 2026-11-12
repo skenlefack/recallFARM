@@ -1,12 +1,13 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExtraModels, ApiOkResponse, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { AuthUser, CurrentUser, hasPlatformRole } from '../common/auth';
 import { Errors } from '../common/errors';
+import { AdminPaymentListView, AdminPaymentView, BILLING_EXTRA_MODELS, PAYMENT_STATUSES, PaymentCheckView, PaymentRefundView, ReconciliationListView, ReconciliationReportView } from './billing.views';
 import { PaymentOpsService } from './payment-ops.service';
 
-const STATUSES = ['initie', 'en_attente', 'a_verifier', 'confirme', 'echoue', 'remboursement_en_cours', 'rembourse'];
+const STATUSES = PAYMENT_STATUSES;
 
 export class AdminPaymentsQuery {
   @ApiPropertyOptional({ enum: STATUSES, description: '"a_verifier" : paiements dont le fournisseur n’a pas donne l’issue' })
@@ -33,6 +34,7 @@ export class ReconciliationsQuery {
  * Payment administration (M6, P1.2): payments to check, refunds, daily reconciliation.
  * Reading: platform roles ops and support; refunds and manual runs: platform administrators.
  */
+@ApiExtraModels(...BILLING_EXTRA_MODELS)
 @ApiTags('billing')
 @ApiBearerAuth()
 @Controller('admin/payments')
@@ -41,6 +43,7 @@ export class AdminPaymentsController {
 
   @Get()
   @ApiOperation({ summary: 'Paiements (filtre par statut, ex. a_verifier)' })
+  @ApiOkResponse({ type: AdminPaymentListView })
   list(@CurrentUser() user: AuthUser, @Query() q: AdminPaymentsQuery) {
     if (!hasPlatformRole(user, 'ops', 'support')) throw Errors.forbidden();
     return this.ops.list(q.status, q.limit);
@@ -48,6 +51,7 @@ export class AdminPaymentsController {
 
   @Get('reconciliations')
   @ApiOperation({ summary: 'Rapports de rapprochement quotidien fournisseur ↔ base' })
+  @ApiOkResponse({ type: ReconciliationListView })
   reports(@CurrentUser() user: AuthUser, @Query() q: ReconciliationsQuery) {
     if (!hasPlatformRole(user, 'ops', 'support')) throw Errors.forbidden();
     return this.ops.reports(q.day, q.limit);
@@ -56,14 +60,24 @@ export class AdminPaymentsController {
   @Post('reconciliations')
   @HttpCode(200)
   @ApiOperation({ summary: 'Relance le rapprochement d’un jour (remplace le rapport existant)' })
+  @ApiOkResponse({ type: ReconciliationReportView })
   reconcile(@CurrentUser() user: AuthUser, @Body() dto: ReconcileDto) {
     if (!hasPlatformRole(user)) throw Errors.forbidden();
     return this.ops.reconcile(dto.day);
   }
 
+  @Get(':id')
+  @ApiOperation({ summary: 'Detail d’un paiement avec son journal d’evenements (date, statut, source)' })
+  @ApiOkResponse({ type: AdminPaymentView })
+  get(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+    if (!hasPlatformRole(user, 'ops', 'support')) throw Errors.forbidden();
+    return this.ops.get(id);
+  }
+
   @Post(':id/check')
   @HttpCode(200)
   @ApiOperation({ summary: 'Interroge tout de suite le fournisseur sur un paiement en attente ou a verifier' })
+  @ApiOkResponse({ type: PaymentCheckView })
   check(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     if (!hasPlatformRole(user, 'ops')) throw Errors.forbidden();
     return this.ops.checkNow(id);
@@ -72,6 +86,7 @@ export class AdminPaymentsController {
   @Post(':id/refund')
   @HttpCode(200)
   @ApiOperation({ summary: 'Rembourse un paiement confirme (journalise ; une relance ne rembourse jamais deux fois)' })
+  @ApiOkResponse({ type: PaymentRefundView })
   refund(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RefundDto) {
     if (!hasPlatformRole(user)) throw Errors.forbidden();
     return this.ops.refund(user, id, dto.reason);
