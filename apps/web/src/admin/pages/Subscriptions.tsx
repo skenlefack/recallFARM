@@ -97,7 +97,16 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const frozenMethod = methods.find((x) => x.code === frozen?.method)?.label ?? frozen?.method ?? '';
   /** Reessayer exige le corps complet (memoire ou sessionStorage) ; apres 3 essais sans reponse, ou corps perdu : Abandonner (sur grace a PAY-OPEN). */
   const canRetrySend = !!frozen?.body;
-  const canAbandon = !!frozen && (frozen.tries >= 3 || !frozen.body);
+  /** Un autre onglet est peut-etre en train d'envoyer (corps absent, envoi recent) : on attend avant de proposer d'abandonner. */
+  const elsewhere = !!frozen && frozen.unsent && !frozen.body && Date.now() - frozen.sentAt < pollTiming.maxMs;
+  const canAbandon = !!frozen && !tr.submitting && !elsewhere && (frozen.tries >= 3 || !frozen.body);
+  const [, forceTick] = useState(0);
+  const elsewhereUntil = elsewhere && frozen ? frozen.sentAt + pollTiming.maxMs : 0;
+  useEffect(() => {
+    if (!elsewhereUntil) return;
+    const timer = setTimeout(() => forceTick((n) => n + 1), Math.max(0, elsewhereUntil - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [elsewhereUntil]);
   const tracking = !!frozen && !!frozen.paymentId;
   const terminal = isTerminal(status);
   const review = isUnderReview(status);
@@ -105,11 +114,15 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const mmss = `${Math.floor(tr.remaining / 60)}:${String(tr.remaining % 60).padStart(2, '0')}`;
   const everyS = String(Math.round(pollTiming.intervalMs / 1000));
 
-  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}`;
+  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}|${frozen?.tries ?? 0}|${tr.submitError ? 'e' : ''}|${elsewhere}`;
   useEffect(() => {
     if (refused || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
   }, [outcomeKey, refused, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
 
+  const abandonAndClose = () => {
+    tr.abandon();
+    onClose();
+  };
   const closeAfterGone = () => {
     tr.dismiss();
     onClose();
@@ -136,7 +149,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
           {t('pay.cancel')}
         </button>
         {canAbandon && (
-          <button type="button" className="btn btn-ghost" onClick={closeAfterGone}>
+          <button type="button" className="btn btn-ghost" onClick={abandonAndClose}>
             {t('pay.abandon')}
           </button>
         )}
@@ -226,10 +239,10 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
       ) : frozen.unsent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
           <p className="notice notice-warn" style={{ width: '100%' }}>
-            <b>{t('pay.unsent.title')}.</b> {t(canRetrySend ? 'pay.unsent.body' : 'pay.unsent.nobody')}
+            <b>{t('pay.unsent.title')}.</b> {t(canRetrySend ? 'pay.unsent.body' : elsewhere ? 'pay.unsent.elsewhere' : 'pay.unsent.nobody')}
           </p>
           <p className="muted">
-            {t('pay.unsent.plan', { plan: frozen.planName, amount: frozenAmount })}
+            {frozenAmount ? t('pay.unsent.plan', { plan: frozen.planName, amount: frozenAmount }) : t('pay.unsent.plan.noamount', { plan: frozen.planName })}
           </p>
           {tr.submitError != null && <FieldErrors error={tr.submitError} />}
         </div>

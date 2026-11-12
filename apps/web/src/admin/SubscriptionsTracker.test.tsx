@@ -12,6 +12,8 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const created = (id = 'pay-1') => json(201, { payment_id: id, status: 'initie', ussd_push: true });
 const defaults = { ...pollTiming };
 let userId = '';
+/** Compte payeur de l'utilisateur de test : son organisation (comme le checkout de la console). */
+let payerId = '';
 
 async function tokensOf(phone: string) {
   const r = await mockTransport('POST', '/v1/auth/otp/verify', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, code: '123456' }) });
@@ -21,15 +23,17 @@ async function login() {
   const j = await tokensOf('+237690000002');
   session.setTokens(j.access_token, j.refresh_token);
   userId = j.user.id;
+  const me = (await (await mockTransport('GET', '/v1/me', { headers: { Authorization: `Bearer ${j.access_token}` } })).json()) as { memberships: { organisation_id: string }[] };
+  payerId = me.memberships[0]?.organisation_id ?? userId;
 }
-const storeKey = () => `rf.payment.v1.${userId}`;
-const bodyKey = () => `rf.payment.body.v1.${userId}`;
+const storeKey = (payer = payerId) => `rf.payment.v1.${userId}.${payer}`;
+const bodyKey = (payer = payerId) => `rf.payment.body.v1.${userId}.${payer}`;
 const prefixed = () => Object.keys(localStorage).concat(Object.keys(sessionStorage)).filter((k) => k.startsWith('rf.payment.'));
 
 const ID = '5d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e5f';
 const BODY = { account_type: 'organisation', account_id: 'org-1', plan: 'structure', period: 'monthly', method: 'orange_money', phone: '+237690000002' };
 function seed(over: Record<string, unknown> = {}) {
-  const a = { id: ID, ownerId: userId, paymentId: 'pay-7', plan: 'pro', planName: 'Pro', period: 'monthly', method: 'orange_money', amount: null, sentAt: Date.now(), unsent: false, unknown: false, existing: false, phoneMasked: '••••••02', ...over };
+  const a = { id: ID, ownerId: userId, subSnap: null, paymentId: 'pay-7', plan: 'pro', planName: 'Pro', period: 'monthly', method: 'orange_money', amount: null, sentAt: Date.now(), unsent: false, unknown: false, existing: false, phoneMasked: '••••••02', ...over };
   localStorage.setItem(storeKey(), JSON.stringify(a));
   return a;
 }
@@ -137,7 +141,7 @@ describe('A1 : rechargement et navigation', () => {
     const raw = localStorage.getItem(storeKey())!;
     const saved = JSON.parse(raw) as Record<string, unknown>;
     expect(saved).toMatchObject({ paymentId: 'pay-1', ownerId: userId, plan: 'structure', planName: 'Structure', period: 'monthly', unsent: false, existing: false });
-    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'sentAt', 'unknown', 'unsent']);
+    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'sentAt', 'subSnap', 'unknown', 'unsent']);
     expect(raw).not.toContain('690000002');
     expect(raw).not.toContain('account_id');
     expect(saved.phoneMasked).toBe('••••••02');
@@ -177,8 +181,8 @@ describe('A1 : rechargement et navigation', () => {
     expect(b.bodies).toEqual([{ id: ID, ...BODY }]);
   });
 
-  it('corps perdu (autre onglet) : pas de Reessayer, seulement Abandonner ; apres abandon le formulaire revient', async () => {
-    seed({ paymentId: null, plan: 'structure', planName: 'Structure' });
+  it('corps perdu (autre onglet, envoi ancien) : pas de Reessayer, seulement Abandonner ; apres abandon le formulaire revient', async () => {
+    seed({ paymentId: null, plan: 'structure', planName: 'Structure', sentAt: Date.now() - 5 * 60_000 });
     const b = backend({});
     setTransport(b.transport);
     renderApp(<Subscriptions />);
@@ -281,7 +285,7 @@ describe('#1 : un envoi en vol ne traverse ni une deconnexion ni un changement d
     await new Promise((r) => setTimeout(r, 300));
     d.release(created('pay-late'));
     await new Promise((r) => setTimeout(r, 300));
-    expect(localStorage.getItem(`rf.payment.v1.${other.user.id}`)).toBeNull();
+    expect(localStorage.getItem(`rf.payment.v1.${other.user.id}.${other.user.id}`)).toBeNull();
     expect(prefixed()).toEqual([]);
     expect(b.polls()).toBe(0);
   });
@@ -292,7 +296,7 @@ describe('#2 : donnees personnelles', () => {
     it(`${reason} : toutes les cles rf.payment.* sont purgees (localStorage et sessionStorage)`, async () => {
       seed();
       seedBody();
-      localStorage.setItem('rf.payment.v1.autre-compte', '{}');
+      localStorage.setItem('rf.payment.v1.autre-compte.autre-payeur', '{}');
       setTransport(backend({}).transport);
       renderApp(<p>page</p>);
       await waitFor(() => expect(prefixed().length).toBeGreaterThan(0));
@@ -330,8 +334,29 @@ describe('#3 : focus et annonce', () => {
 describe('#6 : plusieurs onglets', () => {
   const storageEvent = (newValue: string | null) => window.dispatchEvent(new StorageEvent('storage', { key: storeKey(), newValue }));
 
-  it('une tentative effacee dans un autre onglet disparait ici et n\'est jamais reecrite', async () => {
-    seed();
+  it('B-1 : evenement vide pendant l\'attente : on ne repasse JAMAIS au formulaire, on interroge et on conclut (confirme)', async () => {
+    let st = 'en_attente';
+    const b = backend({ status: () => st });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await pay();
+    await screen.findByText(/Validez sur votre téléphone/);
+    const before = b.polls();
+    // l'autre onglet a vu « confirme » et efface
+    st = 'confirme';
+    localStorage.removeItem(storeKey());
+    storageEvent(null);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    expect(await screen.findByText('Paiement confirmé.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    expect(b.polls()).toBeGreaterThan(before);
+    expect(b.bodies).toHaveLength(1);
+    expect(sessionStorage.getItem(bodyKey())).toBeNull(); // le corps de cet onglet est retire aussi
+  });
+
+  it('evenement vide sur une tentative sans paiement ni envoi en cours : effacee ici, jamais reecrite', async () => {
+    seed({ paymentId: null, unsent: true });
     setTransport(backend({}).transport);
     renderApp(<Subscriptions />);
     await screen.findByRole('button', { name: 'Voir le paiement' });
@@ -489,5 +514,148 @@ describe('S-2 et S-5 : abandon et double soumission', () => {
     fireEvent.submit(form);
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies).toHaveLength(1);
+  });
+});
+
+describe('A-1 : Abandonner et reponses tardives', () => {
+  const fail = () => json(500, { error: { code: 'SERVER_ERROR', message: 'panne' } });
+
+  it('Abandonner est absent pendant un envoi en vol et revient apres son echec (les echecs sont comptes, pas les clics)', async () => {
+    let release: (r: Response) => void = () => undefined;
+    const b = backend({ checkout: (n) => (n <= 4 ? fail() : new Promise<Response>((r) => (release = r))) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await pay();
+    await screen.findByText(/La demande n’a pas reçu de réponse/);
+    for (let i = 0; i < 3; i++) {
+      await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+      await waitFor(() => expect(b.bodies).toHaveLength(i + 2));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Réessayer' })).toBeEnabled());
+    }
+    expect(await screen.findByRole('button', { name: 'Abandonner' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' })); // 4e envoi : en vol
+    await waitFor(() => expect(b.bodies).toHaveLength(5));
+    expect(screen.queryByRole('button', { name: 'Abandonner' })).toBeNull();
+    release(fail());
+    expect(await screen.findByRole('button', { name: 'Abandonner' })).toBeInTheDocument();
+  });
+
+  it('une reponse tardive d\'une tentative remplacee ne ressuscite rien et ne perturbe pas l\'envoi en cours', async () => {
+    const late: Array<(r: Response) => void> = [];
+    const b = backend({ checkout: () => new Promise<Response>((r) => late.push(r)) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await pay();
+    await waitFor(() => expect(b.bodies).toHaveLength(1));
+    // deconnexion puis reconnexion du meme compte : la premiere tentative est abandonnee, un nouvel envoi demarre
+    session.clear('logout');
+    const again = await tokensOf('+237690000002');
+    session.setTokens(again.access_token, again.refresh_token, 'login');
+    await new Promise((r) => setTimeout(r, 300));
+    const pay2 = await screen.findByRole('button', { name: 'Payer' });
+    await userEvent.click(pay2);
+    await waitFor(() => expect(b.bodies).toHaveLength(2));
+    late[0](created('pay-old')); // reponse tardive de la premiere tentative
+    await new Promise((r) => setTimeout(r, 200));
+    expect(b.polls()).toBe(0);
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull(); // l'envoi n°2 est toujours en vol : pas de nouvel envoi possible
+    late[1](created('pay-2'));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(JSON.parse(localStorage.getItem(storeKey())!)).toMatchObject({ paymentId: 'pay-2' });
+  });
+});
+
+describe('A-2 : corps absent, un autre onglet envoie peut-etre', () => {
+  it('envoi recent : « Envoi en cours dans un autre onglet », ni Abandonner ni Reessayer', async () => {
+    seed({ paymentId: null, unsent: true });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(screen.getByText(/Envoi en cours dans un autre onglet/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abandonner' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Réessayer' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+  });
+
+  it('apres le delai, Abandonner apparait tout seul', async () => {
+    pollTiming.maxMs = 400;
+    seed({ paymentId: null, unsent: true });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(screen.queryByRole('button', { name: 'Abandonner' })).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Abandonner' }, { timeout: 3000 })).toBeInTheDocument();
+  });
+});
+
+describe('A-3 : abandon sans promesse, avec verification de l\'abonnement', () => {
+  const old = () => Date.now() - 5 * 60_000;
+
+  it('abonnement inchange : « Verifiez votre formule actuelle avant de payer de nouveau »', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: old(), subSnap: { plan: 'structure', expires_at: '2027-03-31T23:59:59Z' } });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Abandonner' }));
+    expect(await screen.findByText('Vérifiez votre formule actuelle avant de payer de nouveau.')).toBeInTheDocument();
+    expect(localStorage.getItem(storeKey())).toBeNull();
+  });
+
+  it('abonnement change depuis l\'envoi : on l\'annonce', async () => {
+    seed({ paymentId: null, unsent: true, sentAt: old(), subSnap: { plan: 'pro', expires_at: null } });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Abandonner' }));
+    expect(await screen.findByText(/Votre formule a changé depuis l’envoi du paiement \(formule Structure active\)/)).toBeInTheDocument();
+  });
+
+  it('abonnement non rechargeable : avertissement console et message de verification', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    seed({ paymentId: null, unsent: true, sentAt: old() });
+    setTransport(async (m, u, i) => (u.includes('/subscriptions/current') ? json(500, { error: { code: 'SERVER_ERROR', message: 'x' } }) : mockTransport(m, u, i)));
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Abandonner' }));
+    expect(await screen.findByText('Vérifiez votre formule actuelle avant de payer de nouveau.')).toBeInTheDocument();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[paiement]'), expect.anything());
+  });
+
+  it('le checkout enregistre l\'abonnement connu a l\'envoi', async () => {
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await screen.findByText('Formule actuelle');
+    await pay();
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(JSON.parse(localStorage.getItem(storeKey())!).subSnap).toEqual({ plan: 'structure', expires_at: '2027-03-31T23:59:59Z' });
+  });
+});
+
+describe('S-5 et S-6', () => {
+  it('S-5 : sans montant, la ligne de formule n\'a pas de separateur orphelin', async () => {
+    seed({ paymentId: null, unsent: true, plan: 'structure', planName: 'Structure', amount: null });
+    seedBody();
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(screen.getByText('Formule Structure')).toBeInTheDocument();
+  });
+
+  it('S-6 : la tentative d\'un autre compte payeur ne bloque pas le checkout du compte courant', async () => {
+    seed(); // sous le payeur courant (organisation)
+    localStorage.setItem(storeKey(userId), JSON.stringify({ ...JSON.parse(localStorage.getItem(storeKey())!), id: '6d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e5f', planName: 'Perso' })); // sous un autre payeur
+    localStorage.removeItem(storeKey());
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await openRenew();
+    expect(screen.queryByText(/Un paiement Perso/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled();
+  });
+
+  it('S-6 : la tentative du payeur courant, elle, bloque', async () => {
+    seed();
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    expect(await screen.findByRole('button', { name: 'Voir le paiement' })).toBeInTheDocument();
   });
 });

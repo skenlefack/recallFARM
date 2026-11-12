@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import { session } from '../api/session';
-import type { CheckoutResponse, Money, PaymentStatus, PlanCode } from '../api/types';
+import type { CheckoutResponse, Money, PaymentStatus, PlanCode, Subscription } from '../api/types';
 import { useToast } from '../components/ui';
 import { PLAN_LABEL } from '../lib/format';
 import { t } from '../lib/i18n';
@@ -42,6 +42,8 @@ export interface Attempt {
   id: string;
   /** Compte qui a lance le paiement : une reponse qui arrive apres un changement de compte est ignoree. */
   ownerId: string;
+  /** Compte payeur (organisation ou utilisateur), comme la garde serveur PAY-OPEN : une tentative par payeur. Vient de la cle de stockage. */
+  payerId: string;
   plan: string;
   planName: string;
   period: 'monthly' | 'yearly';
@@ -53,6 +55,8 @@ export interface Attempt {
   body: PayBody | null;
   /** Paiement connu du serveur (reponse du checkout, PAY-PENDING ou PAY-OPEN). */
   paymentId: string | null;
+  /** Abonnement connu au moment de l'envoi (plan, echeance) : sert a dire, a l'abandon, s'il a change depuis. */
+  subSnap: { plan: string; expires_at: string | null } | null;
   /** Instant de l'envoi (ms) : le temps ecoule se calcule depuis lui, meme apres un rechargement. */
   sentAt: number;
   /** « Reessayer » deja tentes sans reponse (memoire seulement). */
@@ -66,11 +70,11 @@ export interface Attempt {
 }
 
 /** Ce que contient localStorage : aucune donnee personnelle (telephone masque, pas de numero de compte). */
-type Stored = Pick<Attempt, 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
+type Stored = Pick<Attempt, 'subSnap' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
 
 const PREFIX = 'rf.payment.';
-const storageKey = (userId: string) => `${PREFIX}v1.${userId}`;
-const bodyKey = (userId: string) => `${PREFIX}body.v1.${userId}`;
+const storageKey = (userId: string, payerId: string) => `${PREFIX}v1.${userId}.${payerId}`;
+const bodyKey = (userId: string, payerId: string) => `${PREFIX}body.v1.${userId}.${payerId}`;
 
 /** « +237690000011 » -> « ••••••11 ». */
 export function maskPhone(p: string): string {
@@ -100,6 +104,7 @@ function parseStored(raw: string, userId: string): Stored | null {
       unknown: !!a.unknown,
       existing: !!a.existing,
       phoneMasked: a.phoneMasked ?? '••••',
+      subSnap: a.subSnap ?? null,
     };
   } catch (e) {
     warn('lecture', e);
@@ -107,9 +112,9 @@ function parseStored(raw: string, userId: string): Stored | null {
   }
 }
 
-function readBody(userId: string, id: string): PayBody | null {
+function readBody(userId: string, payerId: string, id: string): PayBody | null {
   try {
-    const raw = sessionStorage.getItem(bodyKey(userId));
+    const raw = sessionStorage.getItem(bodyKey(userId, payerId));
     if (!raw) return null;
     const v = JSON.parse(raw) as { id?: string; body?: PayBody };
     return v.id === id && v.body ? v.body : null;
@@ -119,27 +124,27 @@ function readBody(userId: string, id: string): PayBody | null {
   }
 }
 
-function fromStored(s: Stored, body: PayBody | null): Attempt {
-  return { ...s, body, tries: 0 };
+function fromStored(s: Stored, payerId: string, body: PayBody | null): Attempt {
+  return { ...s, payerId, body, tries: 0 };
 }
 
-function readAttempt(userId: string): Attempt | null {
+function readAttempt(userId: string, payerId: string): Attempt | null {
   try {
-    const raw = localStorage.getItem(storageKey(userId));
+    const raw = localStorage.getItem(storageKey(userId, payerId));
     if (!raw) return null;
     const s = parseStored(raw, userId);
-    return s ? fromStored(s, readBody(userId, s.id)) : null;
+    return s ? fromStored(s, payerId, readBody(userId, payerId, s.id)) : null;
   } catch (e) {
     warn('lecture', e);
     return null;
   }
 }
 
-function writeAttempt(userId: string, a: Attempt | null): void {
+function writeAttempt(userId: string, payerId: string, a: Attempt | null): void {
   try {
     if (!a) {
-      localStorage.removeItem(storageKey(userId));
-      sessionStorage.removeItem(bodyKey(userId));
+      localStorage.removeItem(storageKey(userId, payerId));
+      sessionStorage.removeItem(bodyKey(userId, payerId));
       return;
     }
     const stored: Stored = {
@@ -156,9 +161,10 @@ function writeAttempt(userId: string, a: Attempt | null): void {
       unknown: a.unknown,
       existing: a.existing,
       phoneMasked: a.phoneMasked,
+      subSnap: a.subSnap,
     };
-    localStorage.setItem(storageKey(userId), JSON.stringify(stored));
-    if (a.body) sessionStorage.setItem(bodyKey(userId), JSON.stringify({ id: a.id, body: a.body }));
+    localStorage.setItem(storageKey(userId, payerId), JSON.stringify(stored));
+    if (a.body) sessionStorage.setItem(bodyKey(userId, payerId), JSON.stringify({ id: a.id, body: a.body }));
   } catch (e) {
     warn('ecriture', e);
   }
@@ -196,6 +202,8 @@ export interface Tracker {
   submit: (body: PayBody, meta: { planName: string; amount: Money | null }) => void;
   /** Repart de zero (issue definitive vue, ou suivi abandonne). */
   dismiss: () => void;
+  /** Abandon d'un envoi sans reponse : repart de zero puis recharge l'abonnement et previent (le paiement a pu aboutir). */
+  abandon: () => void;
   clearError: () => void;
   /** La fenetre de paiement est ouverte : une issue definitive reste affichee jusqu'a sa fermeture. */
   setViewing: (v: boolean) => void;
@@ -209,6 +217,10 @@ export function usePaymentTracker(): Tracker {
   return v;
 }
 
+function snapshotOf(sub: Subscription | null | undefined): Attempt['subSnap'] {
+  return sub ? { plan: sub.plan, expires_at: sub.expires_at ?? null } : null;
+}
+
 const isGone = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404);
 
 /**
@@ -217,12 +229,16 @@ const isGone = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.s
  * « Paiement recu » arrive sur n'importe quelle page de la console.
  */
 export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
-  const { me } = useAuth();
+  const { me, orgId } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
   const userId = me?.id ?? null;
   const userIdRef = useRef<string | null>(userId);
   userIdRef.current = userId;
+  /** Compte payeur courant : l'organisation active, sinon l'utilisateur (meme regle que le corps du checkout). */
+  const payerId = userId ? (orgId ?? userId) : null;
+  const payerRef = useRef<string | null>(payerId);
+  payerRef.current = payerId;
   const [attempt, setAttemptState] = useState<Attempt | null>(null);
   const attemptRef = useRef<Attempt | null>(null);
   const announced = useRef<string | null>(null);
@@ -231,28 +247,42 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
   const [viewing, setViewing] = useState(false);
 
   const update = useCallback((a: Attempt | null) => {
-    if (a && a.ownerId !== userIdRef.current) return; // une tentative d'un autre compte n'entre jamais
+    if (a && (a.ownerId !== userIdRef.current || a.payerId !== payerRef.current)) return; // une tentative d'un autre compte ou payeur n'entre jamais
+    const payer = a?.payerId ?? attemptRef.current?.payerId ?? payerRef.current;
     attemptRef.current = a;
     setAttemptState(a);
-    if (userIdRef.current) writeAttempt(userIdRef.current, a);
+    if (userIdRef.current && payer) writeAttempt(userIdRef.current, payer, a);
   }, []);
+
+  /**
+   * Applique l'issue d'un envoi. Reponse d'un autre compte (deconnexion) : ignoree. D'un autre payeur (changement d'organisation) :
+   * seulement rangee sous la cle de ce payeur. D'une tentative abandonnee ou remplacee (autre id) : ignoree, sans toucher a l'envoi en cours.
+   */
+  const settle = useCallback(
+    (a: Attempt, next: Attempt | null) => {
+      const uid = userIdRef.current;
+      if (a.ownerId !== uid || !uid) return;
+      if (a.payerId !== payerRef.current) {
+        writeAttempt(uid, a.payerId, next);
+        return;
+      }
+      if (attemptRef.current?.id !== a.id) return;
+      sendingRef.current = false;
+      update(next);
+    },
+    [update],
+  );
 
   const m = useMutation<CheckoutResponse, unknown, Attempt>({
     mutationFn: (a) => api.checkout({ id: a.id, ...a.body! }),
-    onSuccess: (r, a) => {
-      if (a.ownerId !== userIdRef.current) return; // reponse arrivee apres une deconnexion ou un changement de compte
-      sendingRef.current = false;
-      update({ ...a, paymentId: r.payment_id, unsent: false, sentAt: Date.now() });
-    },
+    onSuccess: (r, a) => settle(a, { ...a, paymentId: r.payment_id, unsent: false, sentAt: Date.now() }),
     onError: (err, a) => {
-      if (a.ownerId !== userIdRef.current) return;
-      sendingRef.current = false;
       const o = checkoutOutcome(err);
-      if (o.kind === 'pending') update({ ...a, paymentId: o.paymentId, unsent: false, unknown: true });
+      if (o.kind === 'pending') settle(a, { ...a, paymentId: o.paymentId, unsent: false, unknown: true });
       else if (o.kind === 'open') {
         // le compte n'a qu'un abonnement : le paiement ouvert peut etre d'une autre formule, c'est elle qu'on annonce
         const differs = !!o.plan && o.plan !== a.plan;
-        update({
+        settle(a, {
           ...a,
           paymentId: o.paymentId,
           unsent: false,
@@ -263,20 +293,20 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
           amount: differs ? null : a.amount,
           sentAt: Date.now(),
         });
-      } else if (o.kind === 'refused' || o.kind === 'conflict' || isDefinitiveRejection(err)) update(null); // rien n'a ete cree : nouvelle cle au prochain essai
-      else update({ ...a, unsent: true }); // issue inconnue : bloque tout nouveau checkout, seul « Reessayer » est offert
+      } else if (o.kind === 'refused' || o.kind === 'conflict' || isDefinitiveRejection(err)) settle(a, null); // rien n'a ete cree : nouvelle cle au prochain essai
+      else settle(a, { ...a, unsent: true, tries: a.unsent ? a.tries + 1 : 0 }); // issue inconnue : bloque tout nouveau checkout ; les echecs de « Reessayer » sont comptes ici, pas les clics
     },
   });
   const { mutate, reset } = m;
 
-  // lecture au montage et au changement de compte ; deconnexion : plus de suivi, plus d'envoi en vol
+  // lecture au montage et au changement de compte ou de payeur ; deconnexion : plus de suivi, plus d'envoi en vol
   useEffect(() => {
     sendingRef.current = false;
     reset();
-    const a = userId ? readAttempt(userId) : null;
+    const a = userId && payerId ? readAttempt(userId, payerId) : null;
     attemptRef.current = a;
     setAttemptState(a);
-  }, [userId, reset]);
+  }, [userId, payerId, reset]);
 
   // deconnexion ou expiration : purge
   useEffect(
@@ -293,25 +323,40 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
 
   // autre onglet : on suit son etat, on ne ressuscite jamais une tentative qu'il a effacee
   useEffect(() => {
-    if (!userId) return;
-    const key = storageKey(userId);
+    if (!userId || !payerId) return;
+    const key = storageKey(userId, payerId);
     const onStorage = (e: StorageEvent) => {
-      if (e.key !== key || sendingRef.current) return;
+      if (e.key !== key) return;
       if (e.newValue === null) {
-        attemptRef.current = null;
-        setAttemptState(null);
+        try {
+          sessionStorage.removeItem(bodyKey(userId, payerId)); // le corps de cet onglet ne survit pas a l'effacement
+        } catch (err) {
+          warn('suppression du corps', err);
+        }
+        const cur = attemptRef.current;
+        if (cur?.paymentId) {
+          // l'autre onglet a pu voir une issue que cet onglet n'a pas encore vue : on ne repasse jamais au formulaire,
+          // on interroge le paiement et on laisse le flux normal (issue, annonce, remise a zero) conclure
+          qc.invalidateQueries({ queryKey: ['payment', cur.paymentId] });
+          return;
+        }
+        if (cur && !sendingRef.current) {
+          attemptRef.current = null;
+          setAttemptState(null);
+        }
         return;
       }
+      if (sendingRef.current) return;
       const s = parseStored(e.newValue, userId);
       if (!s) return;
       const cur = attemptRef.current;
-      const next = fromStored(s, cur?.id === s.id ? cur.body : readBody(userId, s.id));
+      const next = fromStored(s, payerId, cur?.id === s.id ? cur.body : readBody(userId, payerId, s.id));
       attemptRef.current = next;
       setAttemptState(next); // sans reecriture : l'autre onglet en est l'auteur
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
-  }, [userId]);
+  }, [userId, payerId, qc]);
 
   const submit = useCallback<Tracker['submit']>(
     (body, meta) => {
@@ -320,16 +365,15 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       const cur = attemptRef.current;
       if (cur && cur.unsent) {
         if (!cur.body) return; // corps perdu (autre onglet) : seul « Abandonner » reste
-        const next = { ...cur, tries: cur.tries + 1 };
         sendingRef.current = true;
-        update(next);
-        mutate(next); // meme id, meme corps : la formule choisie entre-temps est ignoree
+        mutate(cur); // meme id, meme corps : la formule choisie entre-temps est ignoree
         return;
       }
       if (cur && cur.paymentId && !terminalRef.current) return; // un paiement est deja suivi
       const a: Attempt = {
         id: newPaymentId(),
         ownerId: owner,
+        payerId: body.account_id,
         plan: body.plan,
         planName: meta.planName,
         period: body.period,
@@ -338,6 +382,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         amount: meta.amount,
         body,
         paymentId: null,
+        subSnap: snapshotOf(qc.getQueryData<Subscription | null>(['subscription'])),
         sentAt: Date.now(),
         tries: 0,
         unsent: false,
@@ -349,7 +394,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       update(a); // persiste avant l'envoi : un rechargement en plein vol retrouve la meme cle
       mutate(a);
     },
-    [mutate, reset, update],
+    [mutate, reset, update, qc],
   );
 
   /* ------------------------------------------------------------ suivi */
@@ -359,7 +404,10 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
   sentAtRef.current = sentAt;
   const [now, setNow] = useState(() => Date.now());
   const quietRef = useRef(false);
+  /** Nombre de reponses deja recues quand le paiement est entre en revue : les paliers de recul partent de la. */
+  const reviewBase = useRef<number | null>(null);
   useEffect(() => {
+    reviewBase.current = null;
     if (!paymentId) return;
     setNow(Date.now());
     // le compte a rebours ne tourne que jusqu'au delai ou a une issue
@@ -378,7 +426,11 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     refetchInterval: (query) => {
       const s = query.state.data?.status;
       if (isTerminal(s) || isGone(query.state.error)) return false;
-      if (isUnderReview(s)) return reviewInterval(query.state.dataUpdateCount);
+      if (isUnderReview(s)) {
+        if (reviewBase.current === null) reviewBase.current = query.state.dataUpdateCount;
+        return reviewInterval(query.state.dataUpdateCount - reviewBase.current);
+      }
+      reviewBase.current = null;
       if (Date.now() - sentAtRef.current >= pollTiming.maxMs) return pollTiming.slowMs;
       return pollTiming.intervalMs;
     },
@@ -400,10 +452,28 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     update(null);
   }, [reset, update]);
 
+  const abandon = useCallback(() => {
+    const a = attemptRef.current;
+    dismiss();
+    if (!a) return;
+    // PAY-OPEN ne couvre pas un paiement deja confirme : on recharge l'abonnement et on dit quoi verifier, sans rien promettre
+    qc.fetchQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription, staleTime: 0 }).then(
+      (sub) => {
+        const snap = a.subSnap;
+        const changed = !!sub && !!snap && (sub.plan !== snap.plan || (sub.expires_at ?? null) !== snap.expires_at);
+        toast(changed ? t('pay.abandon.changed', { plan: PLAN_LABEL[sub!.plan] ?? sub!.plan }) : t('pay.abandon.check'));
+      },
+      (e) => {
+        console.warn('[paiement] abonnement non rechargeable apres abandon', e);
+        toast(t('pay.abandon.check'));
+      },
+    );
+  }, [dismiss, qc, toast]);
+
   // issue definitive : on ne garde plus rien en stockage ; annonce une seule fois
   useEffect(() => {
     if (!attempt || !paymentId || !isTerminal(status)) return;
-    if (userIdRef.current) writeAttempt(userIdRef.current, null);
+    if (userIdRef.current && attempt.payerId) writeAttempt(userIdRef.current, attempt.payerId, null);
     if (announced.current === paymentId) return;
     announced.current = paymentId;
     if (status === 'confirme') {
@@ -436,10 +506,11 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       submitError: m.error,
       submit,
       dismiss,
+      abandon,
       clearError,
       setViewing,
     }),
-    [attempt, status, timedOut, elapsed, notFound, q.error, m.isPending, m.error, submit, dismiss, clearError],
+    [attempt, status, timedOut, elapsed, notFound, q.error, m.isPending, m.error, submit, dismiss, abandon, clearError],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
