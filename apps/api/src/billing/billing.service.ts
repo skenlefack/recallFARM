@@ -26,6 +26,33 @@ export interface CheckoutInput {
 /** Statuses after which nothing can change the money flow without an operator (refund in progress or done). */
 const REFUND_STATUSES = ['remboursement_en_cours', 'rembourse'];
 
+/**
+ * Payments whose money may still be taken (EF-ABO-01, PAY-OPEN): while one of them exists for a payer
+ * and a plan, a new checkout is refused. Same list as the partial unique index payments_open_payer_plan_uq
+ * (migration 1761500000005), which makes the rule hold under concurrent requests.
+ */
+export const OPEN_PAYMENT_STATUSES = ['initie', 'en_attente', 'a_verifier'];
+
+/** Provider event as shown to clients: date, status and source only (no raw aggregator body, Q-WEB-03). */
+export interface PaymentEvent {
+  at: string;
+  status: string;
+  source: 'webhook' | 'statut';
+}
+
+/** Cleans the journal kept in payments.raw.events (webhook bodies may hold phone numbers or names). */
+export function paymentEvents(raw: unknown): PaymentEvent[] {
+  const events = raw && typeof raw === 'object' ? (raw as { events?: unknown }).events : undefined;
+  if (!Array.isArray(events)) return [];
+  return events.flatMap((e): PaymentEvent[] => {
+    if (!e || typeof e !== 'object') return [];
+    const { at, status, body } = e as { at?: unknown; status?: unknown; body?: unknown };
+    if (typeof at !== 'string' || typeof status !== 'string') return [];
+    const source = body && typeof body === 'object' && (body as { source?: unknown }).source === 'statut' ? 'statut' : 'webhook';
+    return [{ at, status, source }];
+  });
+}
+
 /** Payment id derived from (user, idempotency key): same key, same payment (RFC 9562 version 8 layout). */
 export function idFromKey(userId: string, key: string): string {
   const h = createHash('sha256').update(`${userId}:${key}`).digest('hex');
@@ -67,10 +94,39 @@ export class BillingService implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * Currency of a country (ISO 4217), from its published country pack (`currency`). Never a default
+   * written in the code: null when no country pack gives one.
+   */
+  async countryCurrency(country: string): Promise<string | null> {
+    const packs = await this.params.publishedPacks();
+    const pack = packs
+      .filter((p) => p.doc.level === 'pays' && p.doc.country === country && typeof p.doc.currency === 'string' && /^[A-Z]{3}$/.test(p.doc.currency))
+      .at(-1);
+    return pack?.doc.currency ?? null;
+  }
+
+  /** Currency of the country of an account (subscription recorded without its currency). */
+  private async accountCurrency(accountType: string, accountId: string): Promise<string> {
+    const table = accountType === 'organisation' ? 'organisations' : 'users';
+    const rows: Array<{ country: string }> = await this.ds.query(`SELECT country FROM ${table} WHERE id = $1`, [accountId]);
+    const country = rows[0]?.country ?? '';
+    const currency = country ? await this.countryCurrency(country) : null;
+    if (!currency) throw this.noCurrency(country || 'inconnu');
+    return currency;
+  }
+
+  private noCurrency(country: string) {
+    return Errors.business('PAY-CURRENCY', `Aucune devise n’est paramétrée pour le pays ${country}.`, { country });
+  }
+
   /** GET /plans: plans, prices (Money), features and quotas for a country. */
   async plans(country = 'CM') {
     const r = await this.params.resolveBase(country);
     const prices = Object.values(r.objects).filter((o) => o.kind === 'plan_price');
+    // Currency of the country pack; a pack without one but with prices uses the currency of its prices.
+    const countryCurrency = (await this.countryCurrency(country)) ?? (prices.map((x) => x.currency).find((c) => typeof c === 'string') as string | undefined);
+    if (!countryCurrency) throw this.noCurrency(country);
     // Only methods that can actually be paid: with connectors, the routed ones (m12).
     const routed = this.provider.methods?.();
     const methods = Object.values(r.objects)
@@ -78,7 +134,7 @@ export class BillingService implements OnApplicationBootstrap {
       .map((o) => ({ code: o.code, label: o.label }));
     const plans = this.params.plans(r).map((p) => {
       const price = prices.find((x) => x.code === p.code) as { currency: string; monthly_minor: number; yearly_minor: number; note?: string } | undefined;
-      const currency = price?.currency ?? 'XAF';
+      const currency = price?.currency ?? countryCurrency;
       return {
         code: p.code,
         label: this.params.label(r, p.code),
@@ -109,7 +165,7 @@ export class BillingService implements OnApplicationBootstrap {
           ? { monthly: { amount_minor: 0, currency: p.prices.monthly.currency }, yearly: { amount_minor: 0, currency: p.prices.monthly.currency }, from: false }
           : null,
     }));
-    return { country, currency: plans.find((p) => p.purchasable)?.prices.monthly.currency ?? 'XAF', data, plans, payment_methods: methods };
+    return { country, currency: countryCurrency, data, plans, payment_methods: methods };
   }
 
   async checkout(user: AuthUser, input: CheckoutInput) {
@@ -128,30 +184,45 @@ export class BillingService implements OnApplicationBootstrap {
     const id = input.id ?? (input.idempotency_key ? idFromKey(user.id, input.idempotency_key) : randomUUID());
     const known = await repo.findOne({ where: { id } });
     if (known) return this.replayCheckout(user, known, input, plan.code);
-    const inserted = await repo
-      .createQueryBuilder()
-      .insert()
-      .into(Payment)
-      .values({
-        id,
-        payer_type: input.account_type,
-        payer_id: input.account_id,
-        purpose: 'abonnement',
-        plan: plan.code,
-        period: input.period === 'yearly' ? 'annuel' : 'mensuel',
-        amount_minor: price.amount_minor,
-        currency: price.currency,
-        method: input.method,
-        phone: input.phone,
-        status: 'initie',
-        created_by: user.id,
-      })
-      .orIgnore()
-      .returning('id')
-      .execute();
-    if (!inserted.raw.length) {
-      // Same id created by a concurrent request a moment ago.
-      return this.replayCheckout(user, (await repo.findOne({ where: { id } }))!, input, plan.code);
+    // Created, or answered without creating: the primary key and the partial unique index
+    // payments_open_payer_plan_uq decide, so two simultaneous checkouts with different ids give one payment.
+    for (let attempt = 0; ; attempt++) {
+      const inserted = await repo
+        .createQueryBuilder()
+        .insert()
+        .into(Payment)
+        .values({
+          id,
+          payer_type: input.account_type,
+          payer_id: input.account_id,
+          purpose: 'abonnement',
+          plan: plan.code,
+          period: input.period === 'yearly' ? 'annuel' : 'mensuel',
+          amount_minor: price.amount_minor,
+          currency: price.currency,
+          method: input.method,
+          phone: input.phone,
+          status: 'initie',
+          created_by: user.id,
+        })
+        .orIgnore()
+        .returning('id')
+        .execute();
+      if (inserted.raw.length) break;
+      // Same id created by a concurrent request a moment ago: answered like a replay.
+      const same = await repo.findOne({ where: { id } });
+      if (same) return this.replayCheckout(user, same, input, plan.code);
+      // Another payment of this payer for this plan is still open: never a second debit (EF-ABO-01).
+      const open = await this.openPayment(input.account_type, input.account_id, plan.code);
+      if (open) {
+        throw Errors.conflict('Un paiement est déjà en cours pour cette formule. Validez-le sur votre téléphone ou attendez son issue.', {
+          rule: 'PAY-OPEN',
+          payment_id: open.id,
+          status: open.status,
+        });
+      }
+      // The open payment ended between the insert and the read: one more try.
+      if (attempt >= 2) throw new Error(`checkout ${id}: insertion ignoree sans paiement ouvert identifiable`);
     }
     // The routed connector is recorded before the call: a webhook faster than the HTTP answer is accepted.
     const route = this.provider.routeOf?.(input.method);
@@ -192,6 +263,22 @@ export class BillingService implements OnApplicationBootstrap {
       amount: { amount_minor: Number(payment.amount_minor), currency: payment.currency },
       provider_ref: init.provider_ref,
     };
+  }
+
+  /** Open payment of a payer for a plan (at most one: partial unique index). */
+  private openPayment(payerType: string, payerId: string, plan: string): Promise<Payment | null> {
+    return this.ds
+      .getRepository(Payment)
+      .createQueryBuilder('p')
+      .where('p.payer_type = :payerType AND p.payer_id = :payerId AND p.plan = :plan AND p.purpose = :purpose AND p.status IN (:...open)', {
+        payerType,
+        payerId,
+        plan,
+        purpose: 'abonnement',
+        open: OPEN_PAYMENT_STATUSES,
+      })
+      .orderBy('p.created_at', 'DESC')
+      .getOne();
   }
 
   /**
@@ -262,6 +349,7 @@ export class BillingService implements OnApplicationBootstrap {
       provider_ref: p.provider_ref,
       paid_at: p.paid_at,
       created_at: p.created_at,
+      events: paymentEvents(p.raw),
     };
   }
 
@@ -403,7 +491,7 @@ export class BillingService implements OnApplicationBootstrap {
       started_at: sub?.started_at ?? null,
       expires_at: e.expires_at,
       grace_until: e.grace_until,
-      price: sub?.price_minor !== null && sub?.price_minor !== undefined ? { amount_minor: Number(sub.price_minor), currency: sub.currency ?? 'XAF' } : null,
+      price: sub?.price_minor !== null && sub?.price_minor !== undefined ? { amount_minor: Number(sub.price_minor), currency: sub.currency ?? (await this.accountCurrency(sub.account_type, sub.account_id)) } : null,
       subscription: sub ? { id: sub.id, account_type: sub.account_type, account_id: sub.account_id } : null,
       entitlements: e,
     };

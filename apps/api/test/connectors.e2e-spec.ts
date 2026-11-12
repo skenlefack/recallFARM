@@ -4,7 +4,7 @@
  * Runs against TEST_DATABASE_URL (schema reset + migrations + seed).
  */
 import { createHmac } from 'crypto';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, readFileSync } from 'fs';
 import { createServer, IncomingMessage, Server } from 'http';
 import { AddressInfo } from 'net';
 import { tmpdir } from 'os';
@@ -12,6 +12,7 @@ import { join } from 'path';
 import { Client } from 'pg';
 import request from 'supertest';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { check, response } from './openapi-contract';
 
 const TEST_DB = process.env.TEST_DATABASE_URL || 'postgres://recallfarm:recallfarm@localhost:5432/recallfarm_test';
 
@@ -195,6 +196,12 @@ afterAll(async () => {
 });
 
 describe('declarative connectors', () => {
+  // PAY-OPEN (EF-ABO-01): one open payment per payer and plan. Each test starts without a payment left
+  // open by the previous one (as if the aggregator had reported it failed).
+  beforeEach(async () => {
+    await db.query(`UPDATE payments SET status = 'echoue' WHERE status IN ('initie', 'en_attente', 'a_verifier')`);
+  });
+
   it('sends OTP SMS through the described aggregator with its auth and body format', async () => {
     const before = received.length;
     await http.post('/v1/auth/otp/request').send({ phone: '+237690000005' }).expect(200);
@@ -548,11 +555,140 @@ describe('declarative connectors', () => {
     const b = await send('tap-1').expect(201);
     expect(b.body.payment_id).toBe(a.body.payment_id);
     expect(collects() - before).toBe(1);
+    // The first payment fails at the aggregator: a new key may then pay again (PAY-OPEN otherwise).
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: a.body.payment_id, status: 'FAILED' }).expect(200);
     queued['/v1/payments/collect'] = [{ status: 400, body: { error: 'solde' } }];
     const refused = await send('tap-2').expect(422);
     const replay = await send('tap-2').expect(422);
     expect(replay.body.error.details).toMatchObject({ rule: 'PAY-INIT', payment_id: refused.body.error.details.payment_id, replayed: true });
     await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}`, 'idempotency-key': 'a b' }).send(body({ account_id: m.id })).expect(422);
+  });
+
+  /* ---------- PAY-OPEN: no second debit while a payment of the same payer and plan is open (EF-ABO-01) ---------- */
+
+  const paymentsOf = async (payerId: string, plan = 'pro') =>
+    (await db.query(`SELECT id, status FROM payments WHERE payer_id = $1 AND plan = $2 ORDER BY created_at`, [payerId, plan])).rows as Array<{ id: string; status: string }>;
+
+  it('EF-ABO-01 PAY-OPEN: a 2nd checkout with another id while "en_attente" gets 409 with the open payment; allowed again after "echoue"', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const first = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000001', account_id: m.id })).expect(201);
+    expect(await status(m.token, first.body.payment_id)).toBe('en_attente');
+    const before = collects();
+    const second = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000002', account_id: m.id, period: 'yearly' })).expect(409);
+    expect(second.body).toEqual({
+      error: {
+        code: 'CONFLICT',
+        message: expect.stringMatching(/déjà en cours/),
+        details: { rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'en_attente' },
+      },
+    });
+    expect(check(second.body, response('/v1/subscriptions/checkout', 'post', '409'))).toEqual([]);
+    // Same with an Idempotency-Key, and while the payment is "a_verifier": the aggregator is not called.
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [first.body.payment_id]);
+    const keyed = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'autre-onglet' }).send(body({ account_id: m.id })).expect(409);
+    expect(keyed.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'a_verifier' });
+    expect(collects()).toBe(before);
+    expect((await paymentsOf(m.id)).filter((p) => ['initie', 'en_attente', 'a_verifier'].includes(p.status))).toHaveLength(1);
+    // Another plan is another purchase.
+    const other = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, plan: 'structure' })).expect(201);
+    expect(other.body.payment_id).not.toBe(first.body.payment_id);
+    // The open payment fails at the aggregator: a new checkout is accepted.
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: first.body.payment_id, status: 'FAILED' }).expect(200);
+    expect(await status(m.token, first.body.payment_id)).toBe('echoue');
+    const again = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000002', account_id: m.id })).expect(201);
+    expect(again.body).toMatchObject({ payment_id: 'a1b2c3d4-0001-4000-8000-000000000002', status: 'initie' });
+    expect(again.body.replayed).toBeUndefined();
+  });
+
+  it('EF-ABO-01 PAY-OPEN: the replay of the same id or Idempotency-Key still answers as a replay, not 409', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const id = 'a1b2c3d4-0002-4000-8000-000000000001';
+    const first = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201);
+    const replay = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201);
+    expect(replay.body).toMatchObject({ payment_id: id, status: 'initie', replayed: true, provider_ref: first.body.provider_ref });
+    expect(check(replay.body, response('/v1/subscriptions/checkout', 'post', '201'))).toEqual([]);
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [id]);
+    expect((await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201)).body).toMatchObject({ payment_id: id, replayed: true });
+    // Idempotency-Key: the key of the open payment replays it; it is the only open one.
+    await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [id]);
+    const keyed = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-open' }).send(body({ account_id: m.id })).expect(201);
+    const keyedAgain = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-open' }).send(body({ account_id: m.id })).expect(201);
+    expect(keyedAgain.body).toMatchObject({ payment_id: keyed.body.payment_id, replayed: true });
+    // A pending payment left by an initiation timeout replays PAY-PENDING (422), never PAY-OPEN.
+    await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [keyed.body.payment_id]);
+    queued['/v1/payments/collect'] = [{ status: 503, body: {} }];
+    const pending = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-timeout' }).send(body({ account_id: m.id })).expect(422);
+    expect(pending.body.error.details.rule).toBe('PAY-PENDING');
+    const pendingAgain = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-timeout' }).send(body({ account_id: m.id })).expect(422);
+    expect(pendingAgain.body.error.details).toMatchObject({ rule: 'PAY-PENDING', payment_id: pending.body.error.details.payment_id, replayed: true });
+  });
+
+  it('EF-ABO-01 PAY-OPEN: two simultaneous checkouts with different ids create one payment and one USSD prompt', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const before = collects();
+    const ids = Array.from({ length: 4 }, (_, i) => `a1b2c3d4-0003-4000-8000-00000000000${i + 1}`);
+    const results = await Promise.all(ids.map((id) => http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id }))));
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409, 409, 409]);
+    const created = results.find((r) => r.status === 201)!.body.payment_id;
+    results.filter((r) => r.status === 409).forEach((r) => expect(r.body.error.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: created }));
+    expect(collects() - before).toBe(1);
+    const rows = await db.query(`SELECT id FROM payments WHERE id = ANY($1)`, [ids]);
+    expect(rows.rows.map((r) => r.id)).toEqual([created]);
+  });
+
+  it('Q-WEB-03: GET /payments/:id and /admin/payments/:id give the provider journal (date, status, source) without raw bodies', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const co = await checkout(m.token, m.id).expect(201);
+    const id = co.body.payment_id;
+    // A webhook carrying personal data, then a status query.
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'PENDING', msisdn: '237690000001', name: 'Marthe' }).expect(200);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 100, msisdn: '237690000001', name: 'Marthe' }).expect(200);
+    queued[`/v1/payments/by-reference/${id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
+    await http.post(`/v1/admin/payments/${id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    const mine = await http.get(`/v1/payments/${id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+    expect(mine.body.status).toBe('confirme');
+    expect(mine.body.events).toEqual([
+      { at: expect.any(String), status: 'confirme', source: 'webhook' },
+      { at: expect.any(String), status: 'confirme', source: 'statut' },
+    ]);
+    expect(JSON.stringify(mine.body)).not.toMatch(/Marthe|237690000001|msisdn|body/);
+    expect(check(mine.body, response('/v1/payments/{id}', 'get', '200'))).toEqual([]);
+    const adm = await http.get(`/v1/admin/payments/${id}`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(adm.body).toMatchObject({ id, payer_id: m.id, connector: 'fakeagg', events: mine.body.events });
+    expect(JSON.stringify(adm.body)).not.toMatch(/Marthe|msisdn/);
+    expect(check(adm.body, response('/v1/admin/payments/{id}', 'get', '200'))).toEqual([]);
+    await http.get(`/v1/admin/payments/${id}`).set({ authorization: `Bearer ${m.token}` }).expect(403);
+    await http.get('/v1/admin/payments/0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e').set({ authorization: `Bearer ${admin.token}` }).expect(404);
+    const list = await http.get('/v1/admin/payments').set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(check(list.body, response('/v1/admin/payments', 'get', '200'))).toEqual([]);
+  });
+
+  it('currency comes from the country pack: GET /plans, /subscriptions/current; PAY-CURRENCY without one', async () => {
+    const plans = await http.get('/v1/plans?country=CM').expect(200);
+    const pack = JSON.parse(readFileSync(join(process.env.PACKS_DIR || join(__dirname, '../../../packages/params/packs'), 'pays.CM.json'), 'utf8')) as { currency: string };
+    expect(plans.body.currency).toBe(pack.currency);
+    expect(new Set(plans.body.plans.map((p: { prices: { monthly: { currency: string } } }) => p.prices.monthly.currency))).toEqual(new Set([pack.currency]));
+    expect(check(plans.body, response('/v1/plans', 'get', '200'))).toEqual([]);
+    const none = await http.get('/v1/plans?country=ZZ').expect(422);
+    expect(none.body.error.details).toEqual({ rule: 'PAY-CURRENCY', country: 'ZZ' });
+    expect(check(none.body, response('/v1/plans', 'get', '422'))).toEqual([]);
+    // A subscription recorded without its currency shows the currency of the account's country pack.
+    const m = await login('+237690000001');
+    await db.query(`UPDATE subscriptions SET currency = NULL WHERE account_type = 'user' AND account_id = $1`, [m.id]);
+    try {
+      const cur = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+      expect(cur.body.price).toEqual({ amount_minor: expect.any(Number), currency: pack.currency });
+      await db.query(`UPDATE users SET country = 'ZZ' WHERE id = $1`, [m.id]);
+      const unknown = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(422);
+      expect(unknown.body.error.details).toEqual({ rule: 'PAY-CURRENCY', country: 'ZZ' });
+    } finally {
+      await db.query(`UPDATE users SET country = 'CM' WHERE id = $1`, [m.id]);
+      await db.query(`UPDATE subscriptions SET currency = $2 WHERE account_type = 'user' AND account_id = $1`, [m.id, pack.currency]);
+    }
   });
 
   it('only routed payment methods are offered (m12) and the global webhook is closed with connectors (m13)', async () => {
@@ -612,6 +748,7 @@ describe('declarative connectors', () => {
     queued[`/v1/payments/by-reference/${co.body.payment_id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
     const r = await http.post(`/v1/admin/payments/${co.body.payment_id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
     expect(r.body).toMatchObject({ id: co.body.payment_id, status: 'confirme', checked: true, outcome: 'confirmed' });
+    expect(check(r.body, response('/v1/admin/payments/{id}/check', 'post', '200'))).toEqual([]);
     // A status with another amount is refused like a webhook.
     const co2 = await checkout(m.token, m.id).expect(201);
     queued[`/v1/payments/by-reference/${co2.body.payment_id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 1 } }];
@@ -635,6 +772,7 @@ describe('declarative connectors', () => {
     expect(await status(m.token, id)).toBe('remboursement_en_cours');
     const done = await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(200);
     expect(done.body).toMatchObject({ id, status: 'rembourse', refund: expect.objectContaining({ status: 'rembourse', http_status: 409, reason: 'Erreur de formule' }) });
+    expect(check(done.body, response('/v1/admin/payments/{id}/refund', 'post', '200'))).toEqual([]);
     const calls = received.filter((r) => r.path === '/v1/refunds');
     expect(calls.slice(-2).map((c) => c.body.key)).toEqual([done.body.refund.id, done.body.refund.id]);
     expect(calls[calls.length - 1].body).toMatchObject({ transaction: co.body.provider_ref, amount: 2500, reason: 'Erreur de formule' });
@@ -722,6 +860,8 @@ describe('declarative connectors', () => {
     expect(r.body.totals.confirmed_amounts).toEqual([expect.objectContaining({ currency: 'XAF' })]);
     const stored = await http.get(`/v1/admin/payments/reconciliations?day=${today}`).set(aauth).expect(200);
     expect(stored.body.data[0]).toMatchObject({ day: today, divergences: expect.any(Array) });
+    expect(check(r.body, response('/v1/admin/payments/reconciliations', 'post', '200'))).toEqual([]);
+    expect(check(stored.body, response('/v1/admin/payments/reconciliations', 'get', '200'))).toEqual([]);
   });
 
   it('reconciliation falls back on status queries without a list, reports unverifiable connectors, and runs once a day', async () => {

@@ -6,7 +6,7 @@ import { ProvidersConfig } from '../connectors/connector.types';
 import { logSafe } from '../connectors/connectors.controller';
 import { Payment } from '../database/entities';
 import { DataSource } from 'typeorm';
-import { BillingService, idFromKey } from './billing.service';
+import { BillingService, idFromKey, paymentEvents } from './billing.service';
 import { nextPollDelayMin, PaymentOpsService } from './payment-ops.service';
 import { ConnectorPaymentProvider, isNetworkError, PaymentProviderError, SimulatorPaymentProvider } from './payment.providers';
 
@@ -191,5 +191,63 @@ describe('PaymentOpsService.pollPending', () => {
     // Counted as an error of this payment, the poll bookkeeping is not written as "network".
     expect(await ops.pollPending(new Date())).toMatchObject({ checked: 1, errors: 1 });
     expect(ds.query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('BillingService: currency from the country pack, never written in the code', () => {
+  const pack = (country: string, currency?: string, level = 'pays') => ({ level, doc: { pack: `pays.${country}`, version: '1.0.0', level, country, ...(currency ? { currency } : {}), objects: [] } });
+  function service(packs: unknown[], objects: Record<string, unknown>) {
+    const params = {
+      publishedPacks: jest.fn().mockResolvedValue(packs),
+      resolveBase: jest.fn().mockResolvedValue({ objects }),
+      plans: jest.fn().mockReturnValue([
+        { code: 'gratuit', rank: 0, features: [], quotas: {} },
+        { code: 'pro', rank: 1, features: ['x'], quotas: {} },
+      ]),
+      label: jest.fn((_r: unknown, code: string) => code),
+    };
+    const provider = { name: 'sim', initiate: jest.fn() };
+    return new BillingService({} as DataSource, params as never, {} as never, {} as never, provider);
+  }
+
+  it('takes the currency of the country pack (XOF), for free plans too', async () => {
+    const s = service([pack('SN', 'XOF'), pack('CM', 'XAF')], { 'plan_price:pro': { kind: 'plan_price', code: 'pro', monthly_minor: 300000, yearly_minor: 3000000 } });
+    const r = await s.plans('SN');
+    expect(r.currency).toBe('XOF');
+    expect(r.plans.map((p) => p.prices.monthly.currency)).toEqual(['XOF', 'XOF']);
+    expect(r.data[0].price).toEqual({ monthly: { amount_minor: 0, currency: 'XOF' }, yearly: { amount_minor: 0, currency: 'XOF' }, from: false });
+  });
+
+  it('keeps the currency written on a price, and uses it when the pack has none', async () => {
+    const s = service([pack('GN'), pack('GN', 'bad')], { 'plan_price:pro': { kind: 'plan_price', code: 'pro', currency: 'GNF', monthly_minor: 1, yearly_minor: 2 } });
+    expect((await s.plans('GN')).currency).toBe('GNF');
+    expect(await s.countryCurrency('GN')).toBeNull();
+  });
+
+  it('answers PAY-CURRENCY instead of inventing a currency', async () => {
+    const s = service([pack('CM', 'XAF'), pack('ZZ', 'XAF', 'global')], {});
+    await expect(s.plans('ZZ')).rejects.toMatchObject({ code: 'BUSINESS_RULE', extra: { details: { rule: 'PAY-CURRENCY', country: 'ZZ' } } });
+  });
+});
+
+describe('paymentEvents (Q-WEB-03)', () => {
+  it('keeps date, status and source only; drops malformed entries and raw bodies', () => {
+    const raw = {
+      events: [
+        { at: '2026-11-13T08:00:00.000Z', status: 'confirme', body: { msisdn: '237690000001', name: 'Marthe', amount: 100 } },
+        { at: '2026-11-13T08:05:00.000Z', status: 'confirme', body: { source: 'statut', status: 'SUCCESS' } },
+        { at: '2026-11-13T08:06:00.000Z', status: 'echoue', body: null },
+        { at: 12, status: 'confirme' },
+        null,
+        'texte',
+      ],
+    };
+    expect(paymentEvents(raw)).toEqual([
+      { at: '2026-11-13T08:00:00.000Z', status: 'confirme', source: 'webhook' },
+      { at: '2026-11-13T08:05:00.000Z', status: 'confirme', source: 'statut' },
+      { at: '2026-11-13T08:06:00.000Z', status: 'echoue', source: 'webhook' },
+    ]);
+    expect(paymentEvents(null)).toEqual([]);
+    expect(paymentEvents({ events: 'x' })).toEqual([]);
   });
 });
