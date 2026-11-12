@@ -88,6 +88,24 @@ farm `locality`; `/alerts?organisation_id=`; `/studio/versions/:id/test` returns
 simulation offsets read from `events[].notifications`; inherited labels fetched with
 `/params/packs/:code/versions/:version`; axial hex coordinates of the coverage map laid out as a honeycomb.
 
+## Payments (P1.1 / P1.2)
+
+- **Money**: integer in the ISO 4217 minor unit + the currency received from the API, formatted by
+  `money(amountMinor, currency)` (`Intl.NumberFormat`, exponent and label from the platform). No default
+  currency, no hard-coded « FCFA »; `src/lib/no-hardcoded-currency.test.ts` fails when one appears in `src/`
+  (mocks and tests excluded). Prices come from `GET /plans` only (no fallback amounts).
+- **Checkout** (`Subscriptions.tsx`): sends `id` = client-made UUID v4 (`newPaymentId`). The same id is kept for any retry
+  of the same payment (network error, double tap); a new id is taken after an explicit refusal (`PAY-INIT`, the server
+  would replay the same refusal) or when phone/method change (`409 PAY-IDEMPOTENCY`).
+  `PAY-PENDING` never re-sends: « Paiement en cours de vérification », the payment is polled. Statuses handled:
+  `initie, en_attente, a_verifier, confirme, echoue, remboursement_en_cours, rembourse` (`lib/payment.ts`).
+- **Administration** (`/admin/paiements`, `pages/Payments.tsx`): list filtered by status, detail with history, « Interroger »
+  (`ops`), « Rembourser » with a reason (`platform_admin` only), daily reconciliation reports and manual run
+  (`platform_admin`). Rights mirror `admin-payments.controller.ts` (`paymentRights`). Texts: `lib/i18n-payments.ts` (fr + en keys).
+- **Tests**: vitest + testing-library for every screen and state (loading, empty, error, forbidden); axe-core on each screen
+  (`src/test/a11y.ts`, ADR-005); Playwright `e2e/admin-paiements.spec.ts` against the mock build
+  (`SHOT_DIR=<dir>` saves screenshots).
+
 ## API assumptions beyond MVP-SCOPE.md
 
 Typed in `src/api/types.ts` (marked ASSUMPTION) and mirrored by `src/mocks/server.ts`:

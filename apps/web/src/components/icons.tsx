@@ -60,6 +60,7 @@ export const IconCard = nav(
     <path d="M3 10h18M7 15h4" />
   </>,
 );
+export const IconReceipt = nav(<path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3zM9 8h6M9 12h6" />);
 export const IconDownload = nav(
   <>
     <path d="M12 3v12M7.5 10.5L12 15l4.5-4.5" />

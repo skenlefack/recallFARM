@@ -13,6 +13,7 @@ import {
   IconBell,
   IconCampaign,
   IconCard,
+  IconReceipt,
   IconDashboard,
   IconDownload,
   IconFarm,
@@ -23,7 +24,9 @@ import {
 import { LogoMark } from '../components/Logo';
 import { Dialog, ErrorState, FieldErrors, Skeleton, useToast } from '../components/ui';
 import { initials, num, PLAN_LABEL, ROLE_LABEL, shortName, since } from '../lib/format';
+import { t } from '../lib/i18n';
 import { useAuth } from './auth';
+import { paymentRights } from './pages/Payments';
 import { PageMetaCtx, useOpenAlerts, useOrganisation, useOverdueCount, type PageMeta } from './hooks';
 
 /* ------------------------------------------------------------ header bits */
@@ -384,6 +387,7 @@ export default function AdminShell() {
   const config: Tile[] = [
     { to: '/admin/studio', label: 'Studio', icon: <IconSliders /> },
     { to: '/admin/abonnements', label: 'Abonnements', icon: <IconCard /> },
+    ...(paymentRights(me).read ? [{ to: '/admin/paiements', label: t('padm.title'), icon: <IconReceipt /> }] : []),
     { to: '/admin/exports', label: 'Exports', icon: <IconDownload /> },
     { to: '/admin/utilisateurs', label: 'Utilisateurs', icon: <IconUsers /> },
   ];

@@ -38,6 +38,14 @@ L'orchestrateur ou le proprietaire du produit repond et deplace la reponse dans 
 | Q-INT-06 | Libelle « Suite » et textes du menu USSD : en dur en francais dans l'API (comme avant). Les passer en `message_template` du pack pays ? | `more.label` configurable par connecteur ; les textes du menu restent a migrer vers le pack. |
 
 
+## Questions web (V1 paiements, 2026-11-13)
+
+| ID | Question | Contexte | Proposition |
+|----|----------|----------|-------------|
+| Q-WEB-01 | Pays « CM » ecrit en dur : `api.plans('CM')` (Abonnements, site public) et `PlansResponse` | Regle « le code ne connait aucun pays ». Hors du perimetre de ce lot (devises) mais meme famille. | Le pays vient du profil (`/me`) pour la console, d'un parametre de build ou de la locale pour le site public. A decider avec le proprietaire du produit. |
+| Q-WEB-02 | Tarifs de repli du site public | `FALLBACK_PRICES` (2 500 / 25 000 / 15 000 + « FCFA ») supprime : un montant sans devise recue de l'API est une devise en dur de fait. Si `/plans` est injoignable, le site affiche « Tarif indisponible ». | Si le PO veut des tarifs de repli, les servir par un fichier statique genere depuis le pack pays (devise incluse) au build, pas dans le code. |
+| Q-WEB-03 | Detail d'un paiement avec journal d'evenements | Aucun endpoint de detail : l'historique affiche est reconstitue des champs de la liste. | Voir docs/plan/requests.md (2026-11-13). |
+
 ## Questions mobile-socle (P0.1, 2026-11-10)
 
 | ID | Question | Contexte | Proposition |

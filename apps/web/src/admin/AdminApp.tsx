@@ -10,6 +10,7 @@ import FarmDetail from './pages/FarmDetail';
 import Farms from './pages/Farms';
 import Login from './pages/Login';
 import Reminders from './pages/Reminders';
+import Payments from './pages/Payments';
 import Subscriptions from './pages/Subscriptions';
 import Users from './pages/Users';
 import { Campaigns, Surveillance } from './pages/V2Pages';
@@ -61,6 +62,7 @@ export default function AdminApp() {
         <Route path="campagnes" element={<Campaigns />} />
         <Route path="surveillance" element={<Surveillance />} />
         <Route path="abonnements" element={<Subscriptions />} />
+        <Route path="paiements" element={<Payments />} />
         <Route path="exports" element={<Exports />} />
         <Route path="utilisateurs" element={<Users />} />
         <Route path="*" element={<AdminNotFound />} />
