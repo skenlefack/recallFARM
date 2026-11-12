@@ -32,8 +32,8 @@ describe('mock : regle de remboursement du serveur (payment-ops.service.ts)', ()
 });
 
 describe('mock : suivi et rejeu du checkout', () => {
-  const checkout = (token: string, id: string, phone: string) =>
-    call('POST', '/v1/subscriptions/checkout', token, { id, account_type: 'user', account_id: 'u-1', plan: 'pro', period: 'monthly', method: 'orange_money', phone });
+  const checkout = (token: string, id: string, phone: string, plan = 'pro') =>
+    call('POST', '/v1/subscriptions/checkout', token, { id, account_type: 'user', account_id: 'u-1', plan, period: 'monthly', method: 'orange_money', phone });
 
   it("GET /payments/:id : le proprietaire lit, un autre compte sans role recoit 403", async () => {
     const owner = await tokenOf('+237690000002');
@@ -44,11 +44,21 @@ describe('mock : suivi et rejeu du checkout', () => {
     expect((await call('GET', `/v1/payments/${r.payment_id}`, await tokenOf('+237690000009'))).status).toBe(200);
   });
 
+  it('PAY-OPEN : un 2e paiement de la meme formule renvoie 409 avec le paiement ouvert ; une autre formule passe', async () => {
+    const owner = await tokenOf('+237690000002');
+    const first = (await (await checkout(owner, '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e70', '+237690000011', 'structure')).json()) as { payment_id: string };
+    const second = await checkout(owner, '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e71', '+237690000011', 'structure');
+    expect(second.status).toBe(409);
+    const err = ((await second.json()) as { error: { code: string; details: { rule: string; payment_id: string } } }).error;
+    expect(err.code).toBe('CONFLICT');
+    expect(err.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: first.payment_id });
+  });
+
   it('PAY-PENDING rejoue tant qu\'il n\'y a pas de reference fournisseur ni de confirmation', async () => {
     const owner = await tokenOf('+237690000002');
     const id = '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e60';
-    expect((await checkout(owner, id, '+237690000096')).status).toBe(422);
-    const again = await checkout(owner, id, '+237690000096');
+    expect((await checkout(owner, id, '+237690000096', 'decouverte')).status).toBe(422);
+    const again = await checkout(owner, id, '+237690000096', 'decouverte');
     expect(again.status).toBe(422);
     const rule = ((await again.json()) as { error: { details: { rule: string; replayed: boolean } } }).error.details;
     expect(rule).toMatchObject({ rule: 'PAY-PENDING', replayed: true });

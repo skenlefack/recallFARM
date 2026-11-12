@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom';
 import '../styles/admin.css';
 import '../styles/studio.css';
 import { RequireAuth } from './auth';
+import { PaymentTrackerProvider } from './paymentTracker';
 import AdminShell from './Shell';
 import Alerts from './pages/Alerts';
 import Dashboard from './pages/Dashboard';
@@ -30,6 +31,7 @@ function AdminNotFound() {
 /** Everything under /admin (lazy-loaded chunk). */
 export default function AdminApp() {
   return (
+    <PaymentTrackerProvider>
     <Routes>
       <Route path="login" element={<Login />} />
       <Route
@@ -68,5 +70,6 @@ export default function AdminApp() {
         <Route path="*" element={<AdminNotFound />} />
       </Route>
     </Routes>
+    </PaymentTrackerProvider>
   );
 }

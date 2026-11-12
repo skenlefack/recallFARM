@@ -7,7 +7,7 @@ import type { AdminPayment, PlatformRole, ReconciliationReport } from '../api/ty
 import { mockTransport } from '../mocks/server';
 import { expectNoSeriousViolations } from '../test/a11y';
 import { renderApp } from '../test/utils';
-import { eventsOf, issuesOf, paymentRights, refundAction } from './pages/Payments';
+import { eventsOf, issuesOf, mergeCheck, paymentRights, refundAction } from './pages/Payments';
 import Payments from './pages/Payments';
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -548,6 +548,34 @@ describe('Paiements : relance d\'un remboursement sans issue (regle du serveur)'
     const { dlg } = await openRow(rp({ status: 'a_verifier', reason: 'x', requested_at: iso(60) }), ['ops']);
     expect(within(dlg).queryByRole('button', { name: 'Relancer le remboursement' })).toBeNull();
     expect(within(dlg).getByText(/réservé aux administrateurs/)).toBeInTheDocument();
+  });
+});
+
+describe('Paiements : la reponse de /check remplace la copie de la ligne (S2)', () => {
+  it('mergeCheck : champs du paiement remplaces, champs d\'administration gardes, checked/outcome ecartes', () => {
+    const merged = mergeCheck(P_VERIF, { id: P_VERIF.id, status: 'confirme', paid_at: iso(1), provider_ref: 'PRV-NEW', amount: { amount_minor: 2500, currency: 'XAF' }, checked: true, outcome: 'confirme' });
+    expect(merged).toMatchObject({ status: 'confirme', paid_at: iso(1), provider_ref: 'PRV-NEW', payer_id: P_VERIF.payer_id, connector: 'agregateur' });
+    expect(merged).not.toHaveProperty('checked');
+    expect(merged).not.toHaveProperty('outcome');
+  });
+
+  it('ligne sortie du filtre : le detail affiche la reference et la date de confirmation du /check', async () => {
+    const b = fresh();
+    b.check = (id) => {
+      b.payments.find((p) => p.id === id)!.status = 'confirme'; // le serveur a change le statut : la ligne sort du filtre
+      return json(200, { id, status: 'confirme', provider_ref: 'PRV-NEW', paid_at: iso(1), checked: true, outcome: 'confirme' });
+    };
+    setTransport(backend(['ops'], b));
+    renderApp(<Payments />);
+    await screen.findByRole('table');
+    await userEvent.selectOptions(screen.getByLabelText('Statut'), 'a_verifier');
+    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2));
+    await userEvent.click(screen.getByRole('button', { name: /Détails du paiement/ }));
+    const dlg = await screen.findByRole('dialog');
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Interroger' }));
+    await screen.findByText(/Statut : Confirmé/);
+    expect(await within(screen.getByRole('dialog')).findByText('PRV-NEW')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByText('Paiement confirmé')).toBeInTheDocument();
   });
 });
 

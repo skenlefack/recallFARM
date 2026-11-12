@@ -72,7 +72,7 @@ describe("EF-ABO-01 : cle d'idempotence du checkout (POST idempotent)", () => {
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
   });
 
-  it('erreur reseau : la relance reutilise le meme id (aucun double prelevement)', async () => {
+  it('erreur reseau : seul « Reessayer » est offert, avec le meme id et le meme corps (aucun double prelevement)', async () => {
     const r = recorder((n) => {
       if (n === 1) throw new TypeError('network');
       return json(201, { payment_id: 'pay-1', status: 'initie', ussd_push: true, replayed: true });
@@ -80,12 +80,12 @@ describe("EF-ABO-01 : cle d'idempotence du checkout (POST idempotent)", () => {
     setTransport(r.transport);
     await openCheckout();
     await userEvent.click(screen.getByRole('button', { name: 'Payer' }));
-    await waitFor(() => expect(r.bodies).toHaveLength(1));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled());
-    await userEvent.click(screen.getByRole('button', { name: 'Payer' }));
+    expect(await screen.findByText(/La demande n’a pas reçu de réponse/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(r.bodies).toHaveLength(2);
-    expect(r.bodies[1].id).toBe(r.bodies[0].id);
+    expect(r.bodies[1]).toEqual(r.bodies[0]);
   });
 
   it('PAY-INIT : refus explicite, la relance prend un NOUVEL id (le serveur rejouerait le meme refus)', async () => {
@@ -101,17 +101,34 @@ describe("EF-ABO-01 : cle d'idempotence du checkout (POST idempotent)", () => {
     expect(r.bodies[1].id).not.toBe(r.bodies[0].id);
   });
 
-  it("numero modifie apres une erreur : nouvel id (une cle ne sert qu'a une demande)", async () => {
+  it('A2 : apres une erreur reseau, aucun nouveau checkout (autre formule, autre periode) : pas de Payer, Reessayer = meme id', async () => {
     const r = recorder((n) => {
       if (n === 1) throw new TypeError('network');
       return created();
     });
     setTransport(r.transport);
+    renderApp(<Subscriptions />);
+    await userEvent.click(await screen.findByRole('button', { name: /Renouveler/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Payer' }));
+    await screen.findByText(/La demande n’a pas reçu de réponse/);
+    await userEvent.click(screen.getByRole('button', { name: 'Annuler' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await userEvent.click(screen.getByRole('button', { name: /Annuel/ }));
+    await userEvent.click(screen.getAllByRole('button', { name: /^(Passer à|Choisir) / })[0]);
+    await screen.findByRole('dialog');
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(r.bodies).toHaveLength(2);
+    expect(r.bodies[1]).toEqual(r.bodies[0]);
+  });
+
+  it('erreur de validation (422) : rien n\'a ete cree, le formulaire reste utilisable avec une nouvelle cle', async () => {
+    const r = recorder((n) => (n === 1 ? json(422, { error: { code: 'VALIDATION_ERROR', message: 'invalide', fields: { phone: 'format invalide' } } }) : created()));
+    setTransport(r.transport);
     await openCheckout();
     await userEvent.click(screen.getByRole('button', { name: 'Payer' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled());
-    await userEvent.clear(screen.getByLabelText(/Numéro/));
-    await userEvent.type(screen.getByLabelText(/Numéro/), '690000011');
+    await screen.findByText('format invalide');
     await userEvent.click(screen.getByRole('button', { name: 'Payer' }));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(r.bodies[1].id).not.toBe(r.bodies[0].id);

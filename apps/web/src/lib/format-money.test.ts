@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { ApiError } from '../api/client';
 import type { Plan } from '../api/types';
 import { currencyLabel, money } from './format';
-import { checkoutKey, isSettled, methodInitials, newPaymentId, PAYMENT_STATUSES, PAYMENT_TONE } from './payment';
+import { isDefinitiveRejection, isTerminal, isUnderReview, methodInitials, newPaymentId, PAYMENT_STATUSES, PAYMENT_TONE } from './payment';
 import { priceOf } from './plans';
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -78,14 +79,20 @@ describe('lib/payment', () => {
       Object.defineProperty(globalThis, 'crypto', { value: c, configurable: true });
     }
   });
-  it('checkoutKey change des qu\'un parametre change', () => {
-    const base = { account_id: 'a', plan: 'pro', period: 'monthly', method: 'm', phone: '+1' };
-    expect(checkoutKey(base)).toBe(checkoutKey({ ...base }));
-    for (const k of Object.keys(base)) expect(checkoutKey({ ...base, [k]: 'autre' })).not.toBe(checkoutKey(base));
+  it('isTerminal : seuls confirme, echoue et rembourse sont definitifs', () => {
+    expect(PAYMENT_STATUSES.filter((s) => isTerminal(s))).toEqual(['confirme', 'echoue', 'rembourse']);
+    expect(isTerminal(undefined)).toBe(false);
   });
-  it('isSettled : seuls initie et en_attente restent a suivre', () => {
-    expect(PAYMENT_STATUSES.filter((s) => !isSettled(s))).toEqual(['initie', 'en_attente']);
-    expect(isSettled(undefined)).toBe(false);
+  it('isUnderReview : a_verifier et remboursement_en_cours', () => {
+    expect(PAYMENT_STATUSES.filter((s) => isUnderReview(s))).toEqual(['a_verifier', 'remboursement_en_cours']);
+  });
+  it('isDefinitiveRejection : 4xx oui (hors 408), 5xx, reseau et delai non', () => {
+    const e = (status: number) => new ApiError(status, 'X', 'x');
+    expect(isDefinitiveRejection(e(422))).toBe(true);
+    expect(isDefinitiveRejection(e(409))).toBe(true);
+    expect(isDefinitiveRejection(e(408))).toBe(false);
+    expect(isDefinitiveRejection(e(500))).toBe(false);
+    expect(isDefinitiveRejection(new TypeError('network'))).toBe(false);
   });
   it('chaque statut a une teinte', () => {
     for (const s of PAYMENT_STATUSES) expect(PAYMENT_TONE[s]).toBeTruthy();

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, errorMessage } from '../../api/client';
 import { api, listOf } from '../../api/endpoints';
-import type { AdminPayment, Me, Money, PaymentStatus, ReconciliationReport } from '../../api/types';
+import type { AdminCheckResult, AdminPayment, Me, Money, PaymentStatus, ReconciliationReport } from '../../api/types';
 import { Card, Dialog, EmptyState, ErrorState, FieldErrors, Pill, Seg, SkeletonRows, useToast } from '../../components/ui';
 import { dateShort, dateTime, money } from '../../lib/format';
 import { t } from '../../lib/i18n';
@@ -45,6 +45,12 @@ export function refundAction(p: AdminPayment, now = Date.now()): 'refund' | 'ret
   const age = now - Date.parse(p.refund?.requested_at ?? '');
   if (st === 'en_cours' && age < REFUND_IN_FLIGHT_MS) return null;
   return 'retry';
+}
+
+/** La reponse de /check (paiement a jour) remplace les champs de la copie ; les champs propres a l'administration (payeur, connecteur) sont gardes. */
+export function mergeCheck(old: AdminPayment, r: AdminCheckResult): AdminPayment {
+  const { checked: _checked, outcome: _outcome, ...fresh } = r;
+  return { ...old, ...fresh };
 }
 
 const shortId = (id: string) => id.slice(0, 8);
@@ -157,7 +163,7 @@ function RefundDialog({ payment, retry, onClose, onDone }: { payment: AdminPayme
 
 /* ------------------------------------------------------------------ detail */
 
-function DetailDialog({ payment, onClose, onChecked }: { payment: AdminPayment | null; onClose: () => void; onChecked: (id: string, status: AdminPayment['status']) => void }) {
+function DetailDialog({ payment, onClose, onChecked }: { payment: AdminPayment | null; onClose: () => void; onChecked: (r: AdminCheckResult) => void }) {
   const { me } = useAuth();
   const rights = paymentRights(me);
   const qc = useQueryClient();
@@ -166,7 +172,7 @@ function DetailDialog({ payment, onClose, onChecked }: { payment: AdminPayment |
   const check = useMutation({
     mutationFn: () => api.adminCheckPayment(payment!.id),
     onSuccess: (r) => {
-      onChecked(r.id, r.status); // la ligne reste ouverte meme si elle sort du filtre
+      onChecked(r); // la ligne reste ouverte (et a jour) meme si elle sort du filtre
       qc.invalidateQueries({ queryKey: ['admin-payments'] });
       if (!r.checked) toast(t('padm.check.nothing'));
       else if (r.status === 'a_verifier' || r.status === 'en_attente') toast(t('padm.check.unknown', { outcome: r.outcome ?? '—' }));
@@ -372,7 +378,7 @@ function PaymentsList() {
           </div>
         )}
       </Card>
-      <DetailDialog payment={selected} onClose={closeDetail} onChecked={(id, status) => setOpened((o) => (o && o.id === id ? { ...o, status } : o))} />
+      <DetailDialog payment={selected} onClose={closeDetail} onChecked={(r) => setOpened((o) => (o && o.id === r.id ? mergeCheck(o, r) : o))} />
     </>
   );
 }

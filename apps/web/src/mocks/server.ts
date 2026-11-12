@@ -304,10 +304,15 @@ on('POST', '/subscriptions/checkout', ({ body, user }) => {
     if (known.error_code && !known.provider_ref && known.status !== 'confirme') throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: known.id, status: known.status, replayed: true });
     return { payment_id: known.id, status: 'initie', ussd_push: true, amount: known.amount, replayed: true };
   }
+  // garde serveur : un seul paiement ouvert par formule et par compte (409 PAY-OPEN avec le paiement existant)
+  const open = payments.find((x) => x.sim && x.payer_id === (user?.id ?? '') && x.plan === b.plan && ['initie', 'en_attente', 'a_verifier'].includes(x.status));
+  if (open) throw new HttpError(409, 'CONFLICT', 'Un paiement de cette formule est déjà en cours.', undefined, { rule: 'PAY-OPEN', payment_id: open.id, status: open.status });
   const amount = b.period === 'yearly' ? pl.price.yearly : pl.price.monthly;
   const pay: MockPayment = {
     id: uid(),
     status: 'initie',
+    plan: b.plan,
+    period: b.period === 'yearly' ? 'annuel' : 'mensuel',
     amount: amount ?? undefined,
     method: b.method,
     created: Date.now(),
