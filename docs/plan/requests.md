@@ -65,3 +65,11 @@ Changements demandes dans le job `mobile` :
    `app-release.apk` n'existe plus avec `--split-per-abi`).
 6. Facultatif (job manuel, emulateur) : `flutter test integration_test/... --dart-define=API_BASE_URL=...`
    via `reactivecircus/android-emulator-runner` contre la pile docker du job (voir apps/mobile/README.md §9).
+
+| Date | Demandeur | Fichier(s) | Proprietaire | Action demandee | Statut |
+|------|-----------|------------|--------------|-----------------|--------|
+| 2026-11-12 | securite-conformite | apps/api/src/imports-exports/imports-exports.controller.ts | backend-economie-reseau | **Fait dans fix/api-cve-high, a relire** : `FileInterceptor` remplace par `SafeFileInterceptor` (apps/api/src/common/security/multipart.ts). Sans les limites opt-in de multer 2.5, un champ `b[999999999]` bloquait le CPU > 60 s (constat eleve). Regle : tout televersement utilise `SafeFileInterceptor`. | A relire |
+| 2026-11-12 | securite-conformite | apps/api/package.json, package-lock.json, apps/api/Dockerfile | backend-elevage / devops-sre | **Fait dans fix/api-cve-high, a relire** (ferme la demande « 22 CVE HIGH » du 2026-11-10) : `overrides` portes par `@nestjs/platform-express` (body-parser 1.20.9, multer 2.5.0) et `@nestjs/swagger` (js-yaml 4.3.2, lodash 4.18.1) ; stage runtime : `apk upgrade`, suppression de npm/npx/corepack/yarn. | A relire |
+| 2026-11-12 | securite-conformite | .github/workflows/ci.yml (job `security` et publication d'images) | devops-sre | Ajouter `no-cache-filters: runtime` a `docker/build-push-action` : sinon la couche `apk upgrade` reste en cache gha tant que le digest de base ne change pas (vu en local : 3 HIGH libxslt sur l'image web, 0 apres reconstruction du stage runtime). | Ouvert |
+| 2026-11-12 | securite-conformite | apps/api/src/common/error.filter.ts | backend-elevage | Faible : les erreurs body-parser (ex. `Content-Encoding: gzip` invalide, `err.status` 400/415) sortent en 500 « Erreur interne ». Rendre `err.status`/`err.statusCode` 4xx en 422/415 `VALIDATION_ERROR`. | Ouvert |
+| 2026-11-12 | securite-conformite | apps/api/test (e2e) | qa-automatisation | Ajouter un e2e d'import multipart (`.csv` et `.xlsx`) : aujourd'hui seule la variante JSON `csv` est couverte, la mise a jour de multer n'est prouvee que par le test unitaire de `SafeFileInterceptor` et un essai manuel sur l'image. | Ouvert |
