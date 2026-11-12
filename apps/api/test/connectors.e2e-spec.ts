@@ -196,7 +196,7 @@ afterAll(async () => {
 });
 
 describe('declarative connectors', () => {
-  // PAY-OPEN (EF-ABO-01): one open payment per payer and plan. Each test starts without a payment left
+  // PAY-OPEN (EF-ABO-01): one open subscription payment per payer. Each test starts without a payment left
   // open by the previous one (as if the aggregator had reported it failed).
   beforeEach(async () => {
     await db.query(`UPDATE payments SET status = 'echoue' WHERE status IN ('initie', 'en_attente', 'a_verifier')`);
@@ -333,7 +333,10 @@ describe('declarative connectors', () => {
     expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
     const raw = await db.query(`SELECT raw FROM payments WHERE id = $1`, [co.body.payment_id]);
     expect(raw.rows[0].raw.connector).toBe('fakeagg');
-    expect(raw.rows[0].raw.events).toEqual([expect.objectContaining({ status: 'confirme', body: expect.objectContaining({ amount: 100 }) })]);
+    expect(raw.rows[0].raw.events).toEqual([
+      expect.objectContaining({ status: 'confirme', source: 'webhook', ignored: true, reason: 'montant', body: expect.objectContaining({ amount: 100 }) }),
+      expect.objectContaining({ status: 'confirme', source: 'webhook', ignored: true, reason: 'connecteur' }),
+    ]);
   });
 
   it('two simultaneous confirmations extend the subscription only once', async () => {
@@ -564,12 +567,12 @@ describe('declarative connectors', () => {
     await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}`, 'idempotency-key': 'a b' }).send(body({ account_id: m.id })).expect(422);
   });
 
-  /* ---------- PAY-OPEN: no second debit while a payment of the same payer and plan is open (EF-ABO-01) ---------- */
+  /* ---------- PAY-OPEN: no second debit while a subscription payment of the same payer is open (EF-ABO-01) ---------- */
 
-  const paymentsOf = async (payerId: string, plan = 'pro') =>
-    (await db.query(`SELECT id, status FROM payments WHERE payer_id = $1 AND plan = $2 ORDER BY created_at`, [payerId, plan])).rows as Array<{ id: string; status: string }>;
+  const paymentsOf = async (payerId: string) =>
+    (await db.query(`SELECT id, status FROM payments WHERE payer_id = $1 AND purpose = 'abonnement' ORDER BY created_at`, [payerId])).rows as Array<{ id: string; status: string }>;
 
-  it('EF-ABO-01 PAY-OPEN: a 2nd checkout with another id while "en_attente" gets 409 with the open payment; allowed again after "echoue"', async () => {
+  it('EF-ABO-01 PAY-OPEN: a 2nd checkout with another id or another plan while "en_attente" gets 409 with the open payment; allowed again after "echoue"', async () => {
     const m = await login('+237690000001');
     const auth = { authorization: `Bearer ${m.token}` };
     const first = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000001', account_id: m.id })).expect(201);
@@ -580,19 +583,20 @@ describe('declarative connectors', () => {
       error: {
         code: 'CONFLICT',
         message: expect.stringMatching(/déjà en cours/),
-        details: { rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'en_attente' },
+        details: { rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'en_attente', plan: 'pro' },
       },
     });
     expect(check(second.body, response('/v1/subscriptions/checkout', 'post', '409'))).toEqual([]);
     // Same with an Idempotency-Key, and while the payment is "a_verifier": the aggregator is not called.
     await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [first.body.payment_id]);
     const keyed = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'autre-onglet' }).send(body({ account_id: m.id })).expect(409);
-    expect(keyed.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'a_verifier' });
+    expect(keyed.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'a_verifier', plan: 'pro' });
     expect(collects()).toBe(before);
     expect((await paymentsOf(m.id)).filter((p) => ['initie', 'en_attente', 'a_verifier'].includes(p.status))).toHaveLength(1);
-    // Another plan is another purchase.
-    const other = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, plan: 'structure' })).expect(201);
-    expect(other.body.payment_id).not.toBe(first.body.payment_id);
+    // Another plan is refused as well: one subscription per account, two prompts validated would debit twice.
+    const other = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, plan: 'structure' })).expect(409);
+    expect(other.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'a_verifier', plan: 'pro' });
+    expect(collects()).toBe(before);
     // The open payment fails at the aggregator: a new checkout is accepted.
     await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: first.body.payment_id, status: 'FAILED' }).expect(200);
     expect(await status(m.token, first.body.payment_id)).toBe('echoue');
@@ -625,6 +629,40 @@ describe('declarative connectors', () => {
     expect(pendingAgain.body.error.details).toMatchObject({ rule: 'PAY-PENDING', payment_id: pending.body.error.details.payment_id, replayed: true });
   });
 
+  it('EF-ABO-01: id and Idempotency-Key that do not designate the same payment are refused (422)', async () => {
+    const m = await login('+237690000001');
+    const before = collects();
+    const r = await http
+      .post('/v1/subscriptions/checkout')
+      .set({ authorization: `Bearer ${m.token}`, 'idempotency-key': 'tap-mixte' })
+      .send(body({ id: 'a1b2c3d4-0004-4000-8000-000000000001', account_id: m.id }))
+      .expect(422);
+    expect(r.body.error).toMatchObject({ code: 'VALIDATION_ERROR', fields: { 'Idempotency-Key': expect.stringMatching(/incompatible/) } });
+    expect(collects()).toBe(before);
+    expect((await db.query(`SELECT count(*)::int AS n FROM payments WHERE id = 'a1b2c3d4-0004-4000-8000-000000000001'`)).rows[0].n).toBe(0);
+  });
+
+  it('EF-ABO-01 PAY-OPEN: an organisation payer, two managers: the second gets 409 with the first one\'s payment', async () => {
+    const aicha = await login('+237690000002');
+    const paul = await login('+237690000005');
+    const org = (await db.query(`SELECT organisation_id FROM memberships WHERE user_id = $1 AND role = 'admin'`, [aicha.id])).rows[0].organisation_id as string;
+    await db.query(`UPDATE memberships SET role = 'admin' WHERE user_id = $1 AND organisation_id = $2`, [paul.id, org]);
+    try {
+      const orgBody = body({ account_type: 'organisation', account_id: org, plan: 'structure', phone: '+237690000002' });
+      const first = await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${aicha.token}` }).send(orgBody).expect(201);
+      const second = await http
+        .post('/v1/subscriptions/checkout')
+        .set({ authorization: `Bearer ${paul.token}` })
+        .send({ ...orgBody, phone: '+237690000005' })
+        .expect(409);
+      expect(second.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'en_attente', plan: 'structure' });
+      // The organisation's open payment does not block the managers' own accounts.
+      await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${paul.token}` }).send(body({ account_id: paul.id, phone: '+237690000005' })).expect(201);
+    } finally {
+      await db.query(`UPDATE memberships SET role = 'agent' WHERE user_id = $1 AND organisation_id = $2`, [paul.id, org]);
+    }
+  });
+
   it('EF-ABO-01 PAY-OPEN: two simultaneous checkouts with different ids create one payment and one USSD prompt', async () => {
     const m = await login('+237690000001');
     const auth = { authorization: `Bearer ${m.token}` };
@@ -651,14 +689,16 @@ describe('declarative connectors', () => {
     await http.post(`/v1/admin/payments/${id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
     const mine = await http.get(`/v1/payments/${id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
     expect(mine.body.status).toBe('confirme');
-    expect(mine.body.events).toEqual([
-      { at: expect.any(String), status: 'confirme', source: 'webhook' },
-      { at: expect.any(String), status: 'confirme', source: 'statut' },
-    ]);
+    // The webhook with another amount was refused: the payer never sees it as an acquired status.
+    expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'confirme', source: 'statut' }]);
     expect(JSON.stringify(mine.body)).not.toMatch(/Marthe|237690000001|msisdn|body/);
     expect(check(mine.body, response('/v1/payments/{id}', 'get', '200'))).toEqual([]);
     const adm = await http.get(`/v1/admin/payments/${id}`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
-    expect(adm.body).toMatchObject({ id, payer_id: m.id, connector: 'fakeagg', events: mine.body.events });
+    expect(adm.body).toMatchObject({ id, payer_id: m.id, connector: 'fakeagg' });
+    expect(adm.body.events).toEqual([
+      { at: expect.any(String), status: 'confirme', source: 'webhook', ignored: true, reason: 'montant' },
+      { at: expect.any(String), status: 'confirme', source: 'statut' },
+    ]);
     expect(JSON.stringify(adm.body)).not.toMatch(/Marthe|msisdn/);
     expect(check(adm.body, response('/v1/admin/payments/{id}', 'get', '200'))).toEqual([]);
     await http.get(`/v1/admin/payments/${id}`).set({ authorization: `Bearer ${m.token}` }).expect(403);
@@ -667,7 +707,54 @@ describe('declarative connectors', () => {
     expect(check(list.body, response('/v1/admin/payments', 'get', '200'))).toEqual([]);
   });
 
-  it('currency comes from the country pack: GET /plans, /subscriptions/current; PAY-CURRENCY without one', async () => {
+  it('EF-ABO-01 resolve: platform_admin settles an "a_verifier" payment with a reason; audit_log and journal; rights and status checked', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const staff = await login('+237690000003');
+    const resolve = (id: string, token: string, b: Record<string, unknown>) => http.post(`/v1/admin/payments/${id}/resolve`).set({ authorization: `Bearer ${token}` }).send(b);
+    const co = await checkout(m.token, m.id).expect(201);
+    const id = co.body.payment_id as string;
+    // Only from "a_verifier": an "en_attente" payment gets 409 with its status.
+    const early = await resolve(id, admin.token, { outcome: 'confirme', reason: 'Releve de l agregateur' }).expect(409);
+    expect(early.body.error.details).toEqual({ rule: 'PAY-RESOLVE-STATUS', status: 'en_attente' });
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [id]);
+    // Rights: platform_admin only (ops, support and the farmer get 403).
+    for (const roles of ['{ops}', '{support}', '{ops,support}']) {
+      await db.query(`UPDATE users SET platform_roles = $2 WHERE id = $1`, [staff.id, roles]);
+      await resolve(id, staff.token, { outcome: 'confirme', reason: 'Releve de l agregateur' }).expect(403);
+    }
+    await db.query(`UPDATE users SET platform_roles = '{param_author}' WHERE id = $1`, [staff.id]);
+    await resolve(id, m.token, { outcome: 'confirme', reason: 'Releve de l agregateur' }).expect(403);
+    await resolve(id, admin.token, { outcome: 'confirme', reason: '  ab  ' }).expect(422);
+    await resolve(id, admin.token, { outcome: 'rembourse', reason: 'Releve de l agregateur' }).expect(422);
+    expect(await status(m.token, id)).toBe('a_verifier');
+    // "confirme": the subscription is extended by the payment.
+    const before = (await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id])).rows[0].expires_at as Date;
+    const ok = await resolve(id, admin.token, { outcome: 'confirme', reason: 'Releve Orange Money : debit constate' }).expect(200);
+    expect(ok.body).toMatchObject({ id, status: 'confirme' });
+    expect(ok.body.events.at(-1)).toEqual({ at: expect.any(String), status: 'confirme', source: 'operateur' });
+    expect(check(ok.body, response('/v1/admin/payments/{id}/resolve', 'post', '200'))).toEqual([]);
+    const sub = (await db.query(`SELECT s.expires_at, p.subscription_id = s.id AS linked FROM subscriptions s JOIN payments p ON p.id = $2 WHERE s.account_type = 'user' AND s.account_id = $1`, [m.id, id])).rows[0];
+    expect(sub.linked).toBe(true);
+    expect(new Date(sub.expires_at).getTime()).toBeGreaterThan(new Date(before).getTime());
+    const audit = await db.query(`SELECT action, actor_id, actor_role, diff FROM audit_log WHERE entity = 'payments' AND entity_id = $1 ORDER BY id`, [id]);
+    expect(audit.rows).toEqual([{ action: 'resolve_confirme', actor_id: admin.id, actor_role: 'platform_admin', diff: { outcome: 'confirme', reason: 'Releve Orange Money : debit constate', from_status: 'a_verifier' } }]);
+    // Already settled: 409, nothing journaled twice.
+    await resolve(id, admin.token, { outcome: 'echoue', reason: 'Deuxieme decision' }).expect(409);
+    expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [id])).rows[0].n).toBe(1);
+    // "echoue" frees PAY-OPEN: the payer can pay again.
+    const co2 = await checkout(m.token, m.id).expect(201);
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [co2.body.payment_id]);
+    expect((await checkout(m.token, m.id).expect(409)).body.error.details.payment_id).toBe(co2.body.payment_id);
+    const ko = await resolve(co2.body.payment_id, admin.token, { outcome: 'echoue', reason: 'Aucun debit sur le releve' }).expect(200);
+    expect(ko.body.status).toBe('echoue');
+    const mine = await http.get(`/v1/payments/${co2.body.payment_id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+    expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'echoue', source: 'operateur' }]);
+    expect(JSON.stringify(mine.body)).not.toMatch(/releve/i);
+    await checkout(m.token, m.id).expect(201);
+  });
+
+  it('currency comes from the country pack: GET /plans (PAY-CURRENCY without one), /subscriptions/current (price null without one)', async () => {
     const plans = await http.get('/v1/plans?country=CM').expect(200);
     const pack = JSON.parse(readFileSync(join(process.env.PACKS_DIR || join(__dirname, '../../../packages/params/packs'), 'pays.CM.json'), 'utf8')) as { currency: string };
     expect(plans.body.currency).toBe(pack.currency);
@@ -683,8 +770,9 @@ describe('declarative connectors', () => {
       const cur = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
       expect(cur.body.price).toEqual({ amount_minor: expect.any(Number), currency: pack.currency });
       await db.query(`UPDATE users SET country = 'ZZ' WHERE id = $1`, [m.id]);
-      const unknown = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(422);
-      expect(unknown.body.error.details).toEqual({ rule: 'PAY-CURRENCY', country: 'ZZ' });
+      // No currency for the country: no price, the rest of the answer is still given.
+      const unknown = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+      expect(unknown.body).toMatchObject({ plan: cur.body.plan, price: null });
     } finally {
       await db.query(`UPDATE users SET country = 'CM' WHERE id = $1`, [m.id]);
       await db.query(`UPDATE subscriptions SET currency = $2 WHERE account_type = 'user' AND account_id = $1`, [m.id, pack.currency]);

@@ -235,6 +235,7 @@ export class ConnectorsController {
         ...(Number.isInteger(fees) && w.fees_minor ? { fees_minor: fees } : {}),
       },
       {
+        source: 'webhook',
         connector: name,
         body,
         ...(amount !== undefined ? { amount_minor: Number.isInteger(amount) ? amount : NaN } : {}),
