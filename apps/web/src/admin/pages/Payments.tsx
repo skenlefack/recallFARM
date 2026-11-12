@@ -29,6 +29,24 @@ export function StatusPill({ status }: { status: string }) {
   return <Pill tone={PAYMENT_TONE[status as PayStatus] ?? 'neutral'}>{statusLabel(status)}</Pill>;
 }
 
+/** Delai pendant lequel un remboursement « en_cours » est tenu pour encore en vol (miroir de REFUND_IN_FLIGHT_MS cote serveur : 10 min). */
+export const REFUND_IN_FLIGHT_MS = 10 * 60_000;
+
+/**
+ * Action de remboursement possible, d'apres la regle du serveur (payment-ops.service.ts) :
+ * « confirme » se rembourse ; « remboursement_en_cours » se relance (meme reference, jamais deux fois) sauf si le
+ * remboursement est « en_attente » ou « en_cours » depuis moins de 10 min (le serveur repond alors 409).
+ */
+export function refundAction(p: AdminPayment, now = Date.now()): 'refund' | 'retry' | null {
+  if (p.status === 'confirme') return 'refund';
+  if (p.status !== 'remboursement_en_cours') return null;
+  const st = p.refund?.status;
+  if (st === 'en_attente') return null;
+  const age = now - Date.parse(p.refund?.requested_at ?? '');
+  if (st === 'en_cours' && age < REFUND_IN_FLIGHT_MS) return null;
+  return 'retry';
+}
+
 const shortId = (id: string) => id.slice(0, 8);
 const amountOf = (a?: Money) => (a ? money(a.amount_minor, a.currency) : '—');
 
@@ -58,16 +76,16 @@ export function eventsOf(p: AdminPayment): PayEvent[] {
 
 /* ------------------------------------------------------------ remboursement */
 
-function RefundDialog({ payment, onClose, onDone }: { payment: AdminPayment | null; onClose: () => void; onDone: () => void }) {
+function RefundDialog({ payment, retry, onClose, onDone }: { payment: AdminPayment | null; retry: boolean; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
   const [reason, setReason] = useState('');
   const [touched, setTouched] = useState(false);
   useEffect(() => {
     if (payment) {
-      setReason('');
+      setReason(retry ? (payment.refund?.reason ?? '') : '');
       setTouched(false);
     }
-  }, [payment]);
+  }, [payment, retry]);
   const m = useMutation({
     mutationFn: () => api.adminRefundPayment(payment!.id, reason.trim()),
     onSuccess: () => {
@@ -89,22 +107,26 @@ function RefundDialog({ payment, onClose, onDone }: { payment: AdminPayment | nu
     if (tooShort || m.isPending) return;
     m.mutate();
   };
+  const close = () => {
+    m.reset();
+    onClose();
+  };
   const reasonErr = m.error instanceof ApiError ? m.error.fields?.reason : undefined;
   const err = touched && tooShort ? t('padm.refund.too_short') : reasonErr;
   return (
     <Dialog
       open={!!payment}
-      onClose={() => (m.reset(), onClose())}
+      onClose={close}
       size="sm"
-      title={t('padm.refund.title')}
-      description={payment ? t('padm.refund.body', { amount: amountOf(payment.amount) }) : undefined}
+      title={t(retry ? 'padm.refund.retry.title' : 'padm.refund.title')}
+      description={payment ? t(retry ? 'padm.refund.retry.body' : 'padm.refund.body', { amount: amountOf(payment.amount) }) : undefined}
       footer={
         <>
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
+          <button type="button" className="btn btn-ghost" onClick={close}>
             {t('padm.refund.cancel')}
           </button>
           <button type="submit" form="refund-form" className="btn btn-danger" disabled={m.isPending} aria-busy={m.isPending}>
-            {m.isPending ? t('padm.refund.busy') : t('padm.refund.confirm')}
+            {m.isPending ? t('padm.refund.busy') : t(retry ? 'padm.refund.retry' : 'padm.refund.confirm')}
           </button>
         </>
       }
@@ -135,7 +157,7 @@ function RefundDialog({ payment, onClose, onDone }: { payment: AdminPayment | nu
 
 /* ------------------------------------------------------------------ detail */
 
-function DetailDialog({ payment, onClose }: { payment: AdminPayment | null; onClose: () => void }) {
+function DetailDialog({ payment, onClose, onChecked }: { payment: AdminPayment | null; onClose: () => void; onChecked: (id: string, status: AdminPayment['status']) => void }) {
   const { me } = useAuth();
   const rights = paymentRights(me);
   const qc = useQueryClient();
@@ -144,6 +166,7 @@ function DetailDialog({ payment, onClose }: { payment: AdminPayment | null; onCl
   const check = useMutation({
     mutationFn: () => api.adminCheckPayment(payment!.id),
     onSuccess: (r) => {
+      onChecked(r.id, r.status); // la ligne reste ouverte meme si elle sort du filtre
       qc.invalidateQueries({ queryKey: ['admin-payments'] });
       if (!r.checked) toast(t('padm.check.nothing'));
       else if (r.status === 'a_verifier' || r.status === 'en_attente') toast(t('padm.check.unknown', { outcome: r.outcome ?? '—' }));
@@ -152,18 +175,23 @@ function DetailDialog({ payment, onClose }: { payment: AdminPayment | null; onCl
   });
   const p = payment;
   const canCheck = !!p && rights.check && ['initie', 'en_attente', 'a_verifier'].includes(p.status);
-  const canRefund = !!p && rights.refund && p.status === 'confirme';
+  const action = p ? refundAction(p) : null;
+  const canRefund = rights.refund && action !== null;
+  const close = () => {
+    check.reset();
+    onClose();
+  };
   const events = p ? eventsOf(p) : [];
   return (
     <>
       <Dialog
         open={!!p && !refunding}
-        onClose={() => (check.reset(), onClose())}
+        onClose={close}
         size="md"
         title={p ? t('padm.detail.title', { id: shortId(p.id) }) : ''}
         footer={
           <>
-            <button type="button" className="btn btn-ghost" onClick={onClose}>
+            <button type="button" className="btn btn-ghost" onClick={close}>
               {t('padm.detail.close')}
             </button>
             {canCheck && (
@@ -173,7 +201,7 @@ function DetailDialog({ payment, onClose }: { payment: AdminPayment | null; onCl
             )}
             {canRefund && (
               <button type="button" className="btn btn-danger" onClick={() => setRefunding(p)}>
-                {t('padm.refund')}
+                {t(action === 'retry' ? 'padm.refund.retry' : 'padm.refund')}
               </button>
             )}
           </>
@@ -236,13 +264,14 @@ function DetailDialog({ payment, onClose }: { payment: AdminPayment | null; onCl
                 </ol>
               )}
             </section>
-            {!rights.refund && p.status === 'confirme' && <p className="muted small">{t('padm.refund.only_admin')}</p>}
+            {!rights.refund && action !== null && <p className="muted small">{t('padm.refund.only_admin')}</p>}
             {check.error != null && <FieldErrors error={check.error} />}
           </div>
         )}
       </Dialog>
       <RefundDialog
         payment={refunding}
+        retry={!!refunding && refundAction(refunding) === 'retry'}
         onClose={() => setRefunding(null)}
         onDone={() => {
           setRefunding(null);
@@ -259,9 +288,19 @@ function DetailDialog({ payment, onClose }: { payment: AdminPayment | null; onCl
 function PaymentsList() {
   const [status, setStatus] = useState<PaymentStatus | ''>('');
   const [openId, setOpenId] = useState<string | null>(null);
+  /** Copie de la ligne ouverte : elle reste affichee si un rechargement la fait sortir du filtre. */
+  const [opened, setOpened] = useState<AdminPayment | null>(null);
   const q = useQuery({ queryKey: ['admin-payments', status], queryFn: () => api.adminPayments({ status: status || undefined, limit: 100 }), select: listOf });
   const rows = q.data ?? [];
-  const selected = rows.find((r) => r.id === openId) ?? null;
+  const selected = (openId ? (rows.find((r) => r.id === openId) ?? (opened?.id === openId ? opened : null)) : null);
+  const closeDetail = () => {
+    setOpenId(null);
+    setOpened(null);
+    // la ligne a pu disparaitre (filtre) : le focus ne doit pas se perdre
+    setTimeout(() => {
+      if (!document.activeElement || document.activeElement === document.body) document.getElementById('pay-status')?.focus();
+    }, 0);
+  };
   return (
     <>
       <div className="toolbar">
@@ -322,7 +361,7 @@ function PaymentsList() {
                       <StatusPill status={p.status} />
                     </td>
                     <td className="right">
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpenId(p.id)} aria-label={t('padm.detail.open', { id: shortId(p.id) })}>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => (setOpenId(p.id), setOpened(p))} aria-label={t('padm.detail.open', { id: shortId(p.id) })}>
                         {t('padm.detail.button')}
                       </button>
                     </td>
@@ -333,7 +372,7 @@ function PaymentsList() {
           </div>
         )}
       </Card>
-      <DetailDialog payment={selected} onClose={() => setOpenId(null)} />
+      <DetailDialog payment={selected} onClose={closeDetail} onChecked={(id, status) => setOpened((o) => (o && o.id === id ? { ...o, status } : o))} />
     </>
   );
 }

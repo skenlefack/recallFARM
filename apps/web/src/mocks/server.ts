@@ -301,7 +301,7 @@ on('POST', '/subscriptions/checkout', ({ body, user }) => {
   if (known) {
     if (known.idem?.key !== key) throw new HttpError(409, 'CONFLICT', 'Identifiant de paiement déjà utilisé pour une autre demande', undefined, { rule: 'PAY-IDEMPOTENCY' });
     if (known.status === 'echoue') throw new HttpError(422, 'BUSINESS_RULE', 'Paiement refusé.', undefined, { rule: 'PAY-INIT', payment_id: known.id, replayed: true });
-    if (known.error_code) throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: known.id, status: known.status, replayed: true });
+    if (known.error_code && !known.provider_ref && known.status !== 'confirme') throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: known.id, status: known.status, replayed: true });
     return { payment_id: known.id, status: 'initie', ussd_push: true, amount: known.amount, replayed: true };
   }
   const amount = b.period === 'yearly' ? pl.price.yearly : pl.price.monthly;
@@ -336,9 +336,12 @@ on('POST', '/subscriptions/checkout', ({ body, user }) => {
   }
   return { payment_id: pay.id, status: 'initie', ussd_push: true, amount: pay.amount };
 });
-on('GET', '/payments/:id', (_c, p) => {
+on('GET', '/payments/:id', ({ user }, p) => {
+  const u = need(user);
   const pay = payments.find((x) => x.id === p.id);
   if (!pay) throw notFound();
+  // proprietaire ou role plateforme (comme getPayment cote API)
+  if (pay.payer_id !== u.id && u.platform_roles.length === 0) throw new HttpError(403, 'FORBIDDEN', "Vous n'avez pas accès à cette fonction.");
   if (pay.sim) {
     const age = Date.now() - pay.created;
     // simulator: confirms after ~6 s; numbers ending in 99 fail, ending in 98 never answer (timeout demo), 95 -> a_verifier
@@ -412,11 +415,15 @@ on('POST', '/admin/payments/:id/refund', ({ user, body }, p) => {
   const reason = String((body as { reason?: string })?.reason ?? '');
   if (reason.length < 5 || reason.length > 300) throw new HttpError(422, 'VALIDATION_ERROR', 'Motif invalide.', { reason: 'entre 5 et 300 caractères' });
   if (pay.status === 'rembourse') return { id: pay.id, status: pay.status };
-  if (pay.status === 'remboursement_en_cours') throw new HttpError(409, 'CONFLICT', 'Un remboursement est déjà en cours pour ce paiement.', undefined, { rule: 'PAY-REFUND-IN-PROGRESS', refund_status: pay.refund?.status });
-  if (pay.status !== 'confirme') throw new HttpError(422, 'BUSINESS_RULE', 'Seul un paiement confirmé peut être remboursé.', undefined, { rule: 'PAY-REFUND-STATUS', status: pay.status });
+  if (pay.status === 'remboursement_en_cours') {
+    // regle du serveur : 409 seulement si en_attente, ou en_cours depuis moins de 10 min ; sinon relance avec la meme reference
+    const st = pay.refund?.status;
+    const age = Date.now() - Date.parse(pay.refund?.requested_at ?? '');
+    if (st === 'en_attente' || (st === 'en_cours' && age < 10 * 60_000)) throw new HttpError(409, 'CONFLICT', 'Un remboursement est déjà en cours pour ce paiement.', undefined, { rule: 'PAY-REFUND-IN-PROGRESS', refund_status: st });
+  } else if (pay.status !== 'confirme') throw new HttpError(422, 'BUSINESS_RULE', 'Seul un paiement confirmé peut être remboursé.', undefined, { rule: 'PAY-REFUND-STATUS', status: pay.status });
   pay.status = 'rembourse';
-  pay.refund = { id: uid(), status: 'rembourse', reason, requested_at: new Date().toISOString(), requested_by: u.id, done_at: new Date().toISOString() };
-  return { id: pay.id, status: pay.status };
+  pay.refund = { ...pay.refund, id: pay.refund?.id ?? uid(), status: 'rembourse', reason, requested_at: new Date().toISOString(), requested_by: u.id, done_at: new Date().toISOString() };
+  return adminView(pay);
 });
 
 /* ----------------------------------------------------- import / export */

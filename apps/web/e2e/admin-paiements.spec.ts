@@ -44,6 +44,17 @@ test.describe('Administration des paiements', () => {
     await shot(page, 'paiements-remboursement');
     await refund.getByRole('button', { name: 'Confirmer le remboursement' }).click();
     await expect(page.getByText('Remboursement effectué.')).toBeVisible();
+
+    // remboursement reste sans issue (a_verifier) : relance possible ; en_attente : aucun bouton
+    await page.getByLabel('Statut').selectOption('remboursement_en_cours');
+    await expect(page.getByRole('row')).toHaveCount(3);
+    const details = page.getByRole('button', { name: /Détails du paiement/ });
+    await details.nth(0).click(); // a7 : refund a_verifier -> relance possible
+    await expect(page.getByRole('dialog').getByRole('button', { name: 'Relancer le remboursement' })).toHaveCount(1);
+    await shot(page, 'paiements-relance-remboursement');
+    await page.keyboard.press('Escape');
+    await details.nth(1).click(); // a5 : refund en_attente -> 409 cote serveur, donc aucun bouton
+    await expect(page.getByRole('dialog').getByRole('button', { name: /embours/ })).toHaveCount(0);
   });
 
   test('rapprochement : rapports et detail', async ({ page }) => {

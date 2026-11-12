@@ -102,7 +102,7 @@ export const api = {
   /* administration des paiements (roles plateforme : lecture ops/support, remboursement platform_admin) */
   adminPayments: (q: { status?: PaymentStatus; limit?: number }) => http.get<Page<AdminPayment>>('/admin/payments', q),
   adminCheckPayment: (id: string) => http.post<AdminCheckResult>(`/admin/payments/${id}/check`, {}),
-  adminRefundPayment: (id: string, reason: string) => http.post<Payment>(`/admin/payments/${id}/refund`, { reason }),
+  adminRefundPayment: (id: string, reason: string) => http.post<AdminPayment>(`/admin/payments/${id}/refund`, { reason }),
   adminReconciliations: (q: { day?: string; limit?: number } = {}) => http.get<Page<ReconciliationReport>>('/admin/payments/reconciliations', q),
   adminReconcile: (day: string) => http.post<ReconciliationReport>('/admin/payments/reconciliations', { day }),
 

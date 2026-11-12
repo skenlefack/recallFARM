@@ -7,7 +7,7 @@ import type { AdminPayment, PlatformRole, ReconciliationReport } from '../api/ty
 import { mockTransport } from '../mocks/server';
 import { expectNoSeriousViolations } from '../test/a11y';
 import { renderApp } from '../test/utils';
-import { eventsOf, issuesOf, paymentRights } from './pages/Payments';
+import { eventsOf, issuesOf, paymentRights, refundAction } from './pages/Payments';
 import Payments from './pages/Payments';
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -489,6 +489,119 @@ describe('Paiements : rapprochement', () => {
     await userEvent.type(await screen.findByLabelText('Jour à rapprocher'), '2026-11-09');
     await userEvent.click(screen.getByRole('button', { name: 'Relancer' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Panne du rapprochement.');
+  });
+});
+
+describe('Paiements : relance d\'un remboursement sans issue (regle du serveur)', () => {
+  const T0 = Date.UTC(2026, 10, 12, 12, 0);
+  const rp = (refund: AdminPayment['refund'], status: AdminPayment['status'] = 'remboursement_en_cours') => pay('77777777-0000-4000-8000-000000000007', status, { refund });
+
+  it('refundAction : confirme -> refund ; relance si a_verifier, inconnu, en_cours > 10 min, date absente ; sinon rien', () => {
+    expect(refundAction(pay('x', 'confirme'), T0)).toBe('refund');
+    expect(refundAction(pay('x', 'echoue'), T0)).toBeNull();
+    expect(refundAction(pay('x', 'rembourse'), T0)).toBeNull();
+    expect(refundAction(rp({ status: 'en_attente', requested_at: new Date(T0 - 3_600_000).toISOString() }), T0)).toBeNull();
+    expect(refundAction(rp({ status: 'en_cours', requested_at: new Date(T0 - 9 * 60_000).toISOString() }), T0)).toBeNull();
+    expect(refundAction(rp({ status: 'en_cours', requested_at: new Date(T0 - 11 * 60_000).toISOString() }), T0)).toBe('retry');
+    expect(refundAction(rp({ status: 'en_cours' }), T0)).toBe('retry');
+    expect(refundAction(rp({ status: 'a_verifier', requested_at: new Date(T0 - 60_000).toISOString() }), T0)).toBe('retry');
+    expect(refundAction(rp({ status: 'inconnu', requested_at: new Date(T0 - 60_000).toISOString() }), T0)).toBe('retry');
+    expect(refundAction(rp(null), T0)).toBe('retry');
+  });
+
+  async function openRow(p: AdminPayment, roles: PlatformRole[] = ['platform_admin']) {
+    const b = fresh();
+    b.payments = [p];
+    setTransport(backend(roles, b));
+    renderApp(<Payments />);
+    const dlg = await openDetail(p.id);
+    return { b, dlg };
+  }
+
+  it('a_verifier : bouton « Relancer le remboursement », motif repris, POST /refund envoye', async () => {
+    const { b, dlg } = await openRow(rp({ id: 'r1', status: 'a_verifier', reason: 'Erreur de formule', requested_at: iso(60) }));
+    expect(within(dlg).queryByRole('button', { name: 'Rembourser' })).toBeNull();
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Relancer le remboursement' }));
+    const rd = await screen.findByRole('dialog', { name: 'Relancer ce remboursement ?' });
+    expect(within(rd).getByLabelText('Motif du remboursement')).toHaveValue('Erreur de formule');
+    await userEvent.click(within(rd).getByRole('button', { name: 'Relancer le remboursement' }));
+    expect(await screen.findByText('Remboursement effectué.')).toBeInTheDocument();
+    expect(b.calls.filter((c) => c.includes('/refund'))).toHaveLength(1);
+  });
+
+  it('en_cours depuis plus de 10 min : relance possible', async () => {
+    const { dlg } = await openRow(rp({ status: 'en_cours', reason: 'Double paiement', requested_at: new Date(Date.now() - 20 * 60_000).toISOString() }));
+    expect(within(dlg).getByRole('button', { name: 'Relancer le remboursement' })).toBeInTheDocument();
+  });
+
+  it('en_attente, ou en_cours depuis moins de 10 min : pas de relance (le serveur repondrait 409)', async () => {
+    const first = await openRow(rp({ status: 'en_attente', reason: 'Double paiement', requested_at: iso(90) }));
+    expect(within(first.dlg).queryByRole('button', { name: /embours/ })).toBeNull();
+  });
+
+  it('en_cours depuis moins de 10 min : pas de bouton', async () => {
+    const { dlg } = await openRow(rp({ status: 'en_cours', reason: 'Double paiement', requested_at: new Date(Date.now() - 2 * 60_000).toISOString() }));
+    expect(within(dlg).queryByRole('button', { name: /embours/ })).toBeNull();
+  });
+
+  it('ops : pas de relance de remboursement, note explicative', async () => {
+    const { dlg } = await openRow(rp({ status: 'a_verifier', reason: 'x', requested_at: iso(60) }), ['ops']);
+    expect(within(dlg).queryByRole('button', { name: 'Relancer le remboursement' })).toBeNull();
+    expect(within(dlg).getByText(/réservé aux administrateurs/)).toBeInTheDocument();
+  });
+});
+
+describe('Paiements : fermeture, ligne ouverte, focus', () => {
+  it('Annuler et Echap font le meme reset : l\'erreur du remboursement ne reste pas a la reouverture', async () => {
+    const b = fresh();
+    b.refund = () => err(422, 'BUSINESS_RULE', 'Le fournisseur a refusé le remboursement.', { rule: 'PAY-REFUND-REFUSED' });
+    setTransport(backend(['platform_admin'], b));
+    renderApp(<Payments />);
+    let dlg = await openDetail(P_OK.id);
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Rembourser' }));
+    let rd = await screen.findByRole('dialog', { name: 'Rembourser ce paiement ?' });
+    await userEvent.type(within(rd).getByLabelText('Motif du remboursement'), 'double paiement');
+    await userEvent.click(within(rd).getByRole('button', { name: 'Confirmer le remboursement' }));
+    await within(rd).findByText(/Le fournisseur a refusé/);
+    await userEvent.click(within(rd).getByRole('button', { name: 'Annuler' }));
+    dlg = await screen.findByRole('dialog', { name: /Paiement 22222222/ });
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Rembourser' }));
+    rd = await screen.findByRole('dialog', { name: 'Rembourser ce paiement ?' });
+    expect(within(rd).queryByText(/Le fournisseur a refusé/)).toBeNull();
+  });
+
+  it('Terminé efface l\'erreur d\'interrogation comme Echap', async () => {
+    const b = fresh();
+    b.check = () => err(500, 'SERVER_ERROR', 'Le serveur rencontre un problème.');
+    setTransport(backend(['ops'], b));
+    renderApp(<Payments />);
+    let dlg = await openDetail(P_VERIF.id);
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Interroger' }));
+    await within(dlg).findByText(/Le serveur rencontre un problème/);
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Terminé' }));
+    dlg = await openDetail(P_VERIF.id);
+    expect(within(dlg).queryByText(/Le serveur rencontre un problème/)).toBeNull();
+  });
+
+  it('Interroger depuis le filtre « a verifier » : la ligne reste ouverte apres le rechargement, le focus ne se perd pas', async () => {
+    const b = fresh();
+    setTransport(backend(['ops'], b));
+    renderApp(<Payments />);
+    await screen.findByRole('table');
+    await userEvent.selectOptions(screen.getByLabelText('Statut'), 'a_verifier');
+    await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2));
+    await userEvent.click(screen.getByRole('button', { name: /Détails du paiement/ }));
+    const dlg = await screen.findByRole('dialog');
+    await userEvent.click(within(dlg).getByRole('button', { name: 'Interroger' }));
+    await screen.findByText('Le fournisseur a été interrogé. Statut : Confirmé.');
+    // la ligne est sortie du filtre mais le detail reste affiche, avec son nouveau statut
+    await waitFor(() => expect(screen.queryByRole('table')).toBeNull());
+    const still = screen.getByRole('dialog');
+    expect(within(still).getByText('Confirmé')).toBeInTheDocument();
+    await userEvent.click(within(still).getByRole('button', { name: 'Terminé' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.body).not.toHaveFocus());
+    expect(document.activeElement).toBe(screen.getByLabelText('Statut'));
   });
 });
 

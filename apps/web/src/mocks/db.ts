@@ -462,6 +462,9 @@ export const payments: MockPayment[] = [
   seedPay('00000000-0000-4000-8000-0000000000a5', 'remboursement_en_cours', 'pro', 'mensuel', 2500, 'orange_money', 2900, {
     refund: { id: '00000000-0000-4000-8000-0000000000b5', status: 'en_attente', reason: 'Double paiement constate par le support', requested_at: ago(30) },
   }),
+  seedPay('00000000-0000-4000-8000-0000000000a7', 'remboursement_en_cours', 'pro', 'mensuel', 2500, 'mtn_momo', 2800, {
+    refund: { id: '00000000-0000-4000-8000-0000000000b7', status: 'a_verifier', reason: 'Erreur de formule', requested_at: ago(1200) },
+  }),
   seedPay('00000000-0000-4000-8000-0000000000a6', 'rembourse', 'pro', 'mensuel', 2500, 'mtn_momo', 4400, {
     refund: { id: '00000000-0000-4000-8000-0000000000b6', status: 'rembourse', reason: 'Erreur de formule', requested_at: ago(4300), done_at: ago(4290), ref: 'RF-8841' },
   }),

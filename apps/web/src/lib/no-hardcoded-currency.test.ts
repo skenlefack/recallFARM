@@ -50,6 +50,14 @@ describe('aucune devise codee en dur dans le rendu', () => {
     expect(findHardcodedCurrency(' * « FCFA » vient du pack')).toEqual([]);
   });
 
+  it('index.html, public/ et vite.config.ts (manifeste PWA) ne contiennent aucune devise en dur', () => {
+    const files = ['index.html', 'vite.config.ts'].map((f) => join(process.cwd(), f));
+    const pub = join(process.cwd(), 'public');
+    for (const name of readdirSync(pub)) if (/\.(html|svg|json|txt|webmanifest|xml)$/.test(name)) files.push(join(pub, name));
+    const found = files.flatMap((f) => findHardcodedCurrency(readFileSync(f, 'utf8')).map((h) => `${relative(process.cwd(), f)}:${h}`));
+    expect(found).toEqual([]);
+  });
+
   it('src/ (hors mocks et tests) ne contient aucune devise en dur', () => {
     const root = join(process.cwd(), 'src');
     const found = sources(root).flatMap((f) => findHardcodedCurrency(readFileSync(f, 'utf8')).map((h) => `${relative(root, f)}:${h}`));
