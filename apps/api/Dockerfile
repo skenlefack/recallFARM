@@ -3,6 +3,8 @@
 FROM node:22-alpine AS build
 WORKDIR /app/apps/api
 COPY apps/api/package.json apps/api/package-lock.json ./
+# Dependance hors registre (SheetJS, ADR-006) : archive versionnee, empreinte verifiee par npm ci.
+COPY apps/api/vendor ./vendor
 RUN npm ci
 COPY apps/api/tsconfig.json apps/api/tsconfig.build.json ./
 COPY apps/api/src ./src

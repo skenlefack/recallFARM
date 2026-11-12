@@ -19,8 +19,8 @@ const FLOORS: Floor[] = [
   },
   { pkg: 'js-yaml', via: ['@nestjs/swagger'], min: '4.3.2', cves: ['CVE-2026-59869', 'CVE-2026-84375', 'GHSA-5p4m-2wfm-xmqj'] },
   { pkg: 'lodash', via: ['@nestjs/swagger'], min: '4.18.0', cves: ['CVE-2026-4800'] },
-  // xlsx (CVE-2023-30533, CVE-2024-22363) : aucun correctif sur le registre npm (0.18.5 = derniere version),
-  // decision ouverte Q-SEC-01 dans docs/plan/questions.md ; plancher a ajouter une fois tranchee.
+  // xlsx : correctif publie seulement sur cdn.sheetjs.com (Q-SEC-01 tranchee, ADR-006), verrouille par empreinte.
+  { pkg: 'xlsx', via: [], min: '0.20.2', cves: ['CVE-2023-30533', 'CVE-2024-22363'] },
 ];
 
 /** Compare deux versions x.y.z (sans pre-version) ; < 0 si a < b. */
@@ -35,7 +35,13 @@ function compareVersions(a: string, b: string): number {
 function installedVersion(pkg: string, via: string[]): string {
   let base = join(__dirname, '..', '..', '..');
   for (const parent of via) base = dirname(require.resolve(`${parent}/package.json`, { paths: [base] }));
-  const file = require.resolve(`${pkg}/package.json`, { paths: [base] });
+  let file: string;
+  try {
+    file = require.resolve(`${pkg}/package.json`, { paths: [base] });
+  } catch {
+    // Package whose `exports` hides package.json (xlsx): read it from node_modules directly.
+    file = join(base, 'node_modules', pkg, 'package.json');
+  }
   return (JSON.parse(readFileSync(file, 'utf8')) as { version: string }).version;
 }
 
