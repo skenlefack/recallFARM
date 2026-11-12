@@ -13,8 +13,8 @@ import { usePageMeta } from '../hooks';
 import { normalizePhone } from './Login';
 
 type Period = 'monthly' | 'yearly';
-export const POLL_MS = 5000;
-export const POLL_MAX_MS = 120_000;
+/** Intervalle de suivi ; `maxMs` = delai apres lequel on previent (le suivi continue, plus lentement). Modifiable par les tests. */
+export const pollTiming = { intervalMs: 5000, slowMs: 15_000, maxMs: 120_000 };
 
 const FEATURE_LABEL: Record<string, string> = {
   rappels_sms: 'Rappels SMS',
@@ -42,18 +42,25 @@ const FEATURE_LABEL: Record<string, string> = {
   api: 'API et marque blanche',
 };
 
-/** Polls GET /payments/:id every 5 s, gives up after 2 min. */
+/** Polls GET /payments/:id every 5 s ; after 2 min without outcome the polling slows down but never stops (a late validation must be seen). */
 export function usePaymentPolling(paymentId: string | null) {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
+  const doneRef = useRef(false);
   useEffect(() => {
     if (!paymentId) return;
-    setStartedAt(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const start = Date.now();
+    setStartedAt(start);
+    setNow(start);
+    // le compte a rebours ne tourne que jusqu'au delai ou a l'issue
+    const t = setInterval(() => {
+      setNow(Date.now());
+      if (Date.now() - start >= pollTiming.maxMs || doneRef.current) clearInterval(t);
+    }, 1000);
     return () => clearInterval(t);
   }, [paymentId]);
   const elapsed = startedAt ? now - startedAt : 0;
-  const timedOut = elapsed >= POLL_MAX_MS;
+  const timedOut = elapsed >= pollTiming.maxMs;
   const q = useQuery({
     queryKey: ['payment', paymentId],
     queryFn: () => api.payment(paymentId!),
@@ -61,15 +68,16 @@ export function usePaymentPolling(paymentId: string | null) {
     refetchInterval: (query) => {
       const s = query.state.data?.status as PaymentStatus | undefined;
       if (isSettled(s)) return false;
-      if (startedAt && Date.now() - startedAt >= POLL_MAX_MS) return false;
-      return POLL_MS;
+      if (startedAt && Date.now() - startedAt >= pollTiming.maxMs) return pollTiming.slowMs;
+      return pollTiming.intervalMs;
     },
     refetchIntervalInBackground: true,
     retry: 2,
   });
   const status = q.data?.status;
   const done = isSettled(status);
-  return { status, done, timedOut: timedOut && !done, remaining: Math.max(0, Math.ceil((POLL_MAX_MS - elapsed) / 1000)), error: q.error };
+  doneRef.current = done;
+  return { status, done, timedOut: timedOut && !done, remaining: Math.max(0, Math.ceil((pollTiming.maxMs - elapsed) / 1000)), error: q.error };
 }
 
 function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | null; period: Period; methods: PaymentMethodOption[]; currency?: string; onClose: () => void }) {
@@ -89,12 +97,6 @@ function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | n
   /** Cle d'idempotence : creee a l'appui, gardee pour toute relance du meme paiement (reseau coupe, double appui). */
   const attempt = useRef<{ id: string; key: string } | null>(null);
 
-  useEffect(() => {
-    if (!plan) {
-      setPaymentId(null);
-      announced.current = false;
-    }
-  }, [plan]);
   useEffect(() => {
     if (poll.status === 'confirme' && !announced.current) {
       announced.current = true;
@@ -133,6 +135,25 @@ function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | n
       }
     },
   });
+  /**
+   * Fermeture de la fenetre : si l'issue est tranchee (confirme, echoue, a_verifier, remboursement) on repart de zero
+   * (nouvelle cle, mutation remise a zero : pas de faux « Paiement recu » ni de refus rejoue). Si l'issue est inconnue,
+   * on garde le paiement suivi et sa cle : jamais de second paiement.
+   */
+  useEffect(() => {
+    if (plan) return;
+    if (poll.done) {
+      setUnknownOutcome(false);
+      setPaymentId(null);
+      m.reset();
+      announced.current = false;
+      attempt.current = null;
+    } else if (!paymentId && m.isError) {
+      m.reset(); // erreur sans paiement (refus deja annule, reseau : la cle est gardee)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, poll.done, paymentId, m.isError]);
+
   const refused = m.isError && checkoutOutcome(m.error).kind === 'refused';
   const conflict = m.isError && checkoutOutcome(m.error).kind === 'conflict';
   const otherError = m.isError && !refused && !conflict && checkoutOutcome(m.error).kind === 'other';
@@ -158,9 +179,8 @@ function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | n
   useEffect(() => {
     if (refused || (paymentId && (poll.done || poll.timedOut))) statusRef.current?.focus();
   }, [outcomeKey, refused, paymentId, poll.done, poll.timedOut]);
-  const canRetry = poll.status === 'echoue' || (poll.timedOut && !unknownOutcome);
-  /** a_verifier, PAY-PENDING non tranche : on ne relance jamais, on previent. */
-  const verifying = poll.status === 'a_verifier' || (unknownOutcome && poll.timedOut && !poll.done);
+  /** « Reessayer » uniquement apres un refus certain : sinon (en attente, a verifier, delai depasse) un 2e paiement pourrait doubler le premier. */
+  const canRetry = poll.status === 'echoue';
   return (
     <Dialog
       open={!!plan}
@@ -238,7 +258,7 @@ function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | n
         </form>
       ) : (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
-          {unknownOutcome && !isSettled(poll.status) && (
+          {unknownOutcome && !isSettled(poll.status) && !poll.timedOut && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
               <b>{t('pay.pending.title')}.</b> {t('pay.pending.body')}
             </p>
@@ -295,14 +315,9 @@ function Checkout({ plan, period, methods, currency, onClose }: { plan: Plan | n
               <b>Paiement refusé.</b> Le solde est peut-être insuffisant ou la demande a été annulée. Aucun montant n'a été prélevé.
             </p>
           )}
-          {poll.timedOut && !verifying && (
+          {poll.timedOut && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
               <b>{t('pay.timeout.title')}</b> {t('pay.timeout.body')}
-            </p>
-          )}
-          {poll.timedOut && verifying && (
-            <p className="notice notice-warn" style={{ width: '100%' }}>
-              <b>{t('pay.verify.title')}.</b> {t('pay.verify.body')}
             </p>
           )}
           {poll.error != null && <ErrorState compact error={poll.error} />}
@@ -425,14 +440,14 @@ export default function Subscriptions() {
                   </h3>
                   <div className="plan-price">
                     {pr.amount === null ? (
-                      'Sur devis'
+                      t('price.quote')
                     ) : pr.amount === undefined ? (
-                      '—'
+                      <small>{t('price.unavailable')}</small>
                     ) : (
                       <>
-                        {pr.from && <small>dès </small>}
+                        {pr.from && <small>{t('price.from')} </small>}
                         {money(pr.amount, pr.currency)}
-                        {pr.amount > 0 && <small> / {period === 'yearly' ? 'an' : 'mois'}</small>}
+                        {pr.amount > 0 && <small> {t(period === 'yearly' ? 'price.per_year' : 'price.per_month')}</small>}
                       </>
                     )}
                   </div>

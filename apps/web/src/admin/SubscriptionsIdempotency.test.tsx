@@ -196,13 +196,13 @@ describe("RG montants : devise venant de l'API, jamais en dur", () => {
     expect(document.body.textContent).not.toMatch(/FCFA/);
   });
 
-  it('tarif inconnu : tiret, jamais un prix invente', async () => {
+  it('tarif inconnu : texte visible, jamais un prix invente', async () => {
     setTransport(async (method, url, init) => {
       if (url.includes('/plans')) return json(200, { data: [{ code: 'pro', name: 'Pro', features: [], quotas: { farms: 3, cameras: 2, sms_per_month: 60 } }], payment_methods: [] });
       return mockTransport(method, url, init);
     });
     renderApp(<Subscriptions />);
     await screen.findByRole('heading', { name: /Pro/ });
-    expect(screen.getByText('—', { selector: '.plan-price' })).toBeInTheDocument();
+    expect(screen.getByText('Tarif indisponible pour le moment')).toBeVisible();
   });
 });

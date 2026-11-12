@@ -1,5 +1,7 @@
 /** French formatting helpers (narrow no-break space thousands separator, comma decimals). */
 
+import { getLocale } from './i18n';
+
 const NNBSP = '\u202F';
 const NBSP = '\u00A0';
 
@@ -18,13 +20,14 @@ export function asPercent(v: number): number {
   return Math.abs(v) <= 1 ? v * 100 : v;
 }
 
-/** Formats Intl en cache (la construction d'un Intl.NumberFormat est couteuse). */
+/** Formats Intl en cache par locale et devise (la construction d'un Intl.NumberFormat est couteuse). */
 const currencyFormats = new Map<string, Intl.NumberFormat | null>();
 function currencyFormat(currency: string): Intl.NumberFormat | null {
-  const key = currency.toUpperCase();
+  const tag = getLocale() === 'en' ? 'en' : 'fr-FR';
+  const key = `${tag}|${currency.toUpperCase()}`;
   if (!currencyFormats.has(key)) {
     try {
-      currencyFormats.set(key, new Intl.NumberFormat('fr-FR', { style: 'currency', currency: key }));
+      currencyFormats.set(key, new Intl.NumberFormat(tag, { style: 'currency', currency: currency.toUpperCase() }));
     } catch {
       currencyFormats.set(key, null); // code de devise inconnu de l'environnement
     }

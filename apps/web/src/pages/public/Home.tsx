@@ -5,6 +5,7 @@ import { api, listOf } from '../../api/endpoints';
 import type { Plan } from '../../api/types';
 import { Check } from '../../components/icons';
 import { money } from '../../lib/format';
+import { t } from '../../lib/i18n';
 import { SiteFooter, SiteHeader, useDocumentTitle } from './SiteChrome';
 
 import { priceOf, type Period } from '../../lib/plans';
@@ -12,13 +13,13 @@ import { priceOf, type Period } from '../../lib/plans';
 function Price({ plans, currency, code, period, loading }: { plans: Plan[] | undefined; currency: string | undefined; code: string; period: Period; loading: boolean }) {
   if (loading) return <div className="price" aria-busy="true"><span className="price-skel" /></div>;
   const { amount, currency: cur, from } = priceOf(plans?.find((p) => p.code === code), code, period, currency);
-  if (amount === null) return <div className="price">Sur devis</div>;
-  if (amount === undefined) return <div className="price"><span aria-hidden="true">—</span><span className="sr-only">Tarif indisponible pour le moment</span></div>;
+  if (amount === null) return <div className="price">{t('price.quote')}</div>;
+  if (amount === undefined) return <div className="price"><small>{t('price.unavailable')}</small></div>;
   return (
     <div className="price">
-      {from && <small>dès </small>}
+      {from && <small>{t('price.from')} </small>}
       {money(amount, cur)}
-      {amount > 0 && <small> / {period === 'yearly' ? 'an' : 'mois'}</small>}
+      {amount > 0 && <small> {t(period === 'yearly' ? 'price.per_year' : 'price.per_month')}</small>}
     </div>
   );
 }
@@ -89,7 +90,7 @@ function Pricing() {
           </article>
           <article className="plan">
             <h3>Institution</h3>
-            <div className="price">Sur devis</div>
+            <div className="price">{t('price.quote')}</div>
             <ul>
               <li>Surveillance nationale</li>
               <li>Exports DHIS2, ARIS, ICAR</li>

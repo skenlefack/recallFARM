@@ -44,6 +44,9 @@ let locale: Locale = 'fr';
 export function setLocale(l: Locale): void {
   locale = l;
 }
+export function getLocale(): Locale {
+  return locale;
+}
 
 export function t(key: string, vars?: Record<string, string>): string {
   const raw = DICT[locale][key] ?? DICT.fr[key] ?? key;
