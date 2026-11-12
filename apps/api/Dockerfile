@@ -9,7 +9,14 @@ COPY apps/api/src ./src
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-alpine AS runtime
-RUN apk add --no-cache tzdata tini
+# Correctifs Alpine publies apres l'image de base, puis retrait des gestionnaires de paquets livres
+# avec l'image node (npm, npx, corepack, yarn) : inutiles a l'execution (entrypoint et CMD n'appellent
+# que node) et porteurs de CVE HIGH (Trivy : brace-expansion, ip-address, pacote, picomatch, sigstore
+# dans /usr/local/lib/node_modules/npm). Voir docs/security/cve-image-api.md.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache tzdata tini \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 ENV NODE_ENV=production \
     PORT=3000 \
     TZ=Africa/Douala \
