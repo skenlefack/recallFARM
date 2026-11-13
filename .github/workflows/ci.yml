@@ -180,6 +180,8 @@ jobs:
           tags: recallfarm-${{ matrix.image }}:scan
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          # L'etape runtime (apk upgrade) n'est jamais reprise du cache : correctifs OS toujours a jour pour le scan.
+          no-cache-filters: runtime
       # Trivy lance depuis son image officielle a version figee (pas d'action tierce : l'action
       # trivy-action ne se resout plus et a deja ete la cible d'attaques de chaine d'approvisionnement).
       - name: Rapport HIGH (informatif)
@@ -226,6 +228,7 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/recallfarm-api:${{ github.sha }},ghcr.io/${{ github.repository_owner }}/recallfarm-api:latest
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
+          no-cache-filters: runtime
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -234,3 +237,4 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/recallfarm-web:${{ github.sha }},ghcr.io/${{ github.repository_owner }}/recallfarm-web:latest
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
+          no-cache-filters: runtime
