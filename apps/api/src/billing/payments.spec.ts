@@ -361,6 +361,58 @@ describe('BillingService.checkout: PAY-RETRY (m6)', () => {
   });
 });
 
+describe('BillingService.checkout: lock timeout (S1)', () => {
+  it('waits at most lock_timeout for the payer lock, then answers 409 PAY-RETRY', async () => {
+    const qb: Record<string, jest.Mock> = {};
+    for (const k of ['where', 'andWhere', 'orderBy']) qb[k] = jest.fn(() => qb);
+    qb.getOne = jest.fn().mockResolvedValue(null);
+    const repo = { findOne: jest.fn().mockResolvedValue(null), createQueryBuilder: jest.fn(() => qb) };
+    const timeout = Object.assign(new Error('canceling statement due to lock timeout'), { driverError: { code: '55P03' } });
+    const m = { getRepository: () => repo, query: jest.fn(async (sql: string) => (/pg_advisory_xact_lock/.test(sql) ? Promise.reject(timeout) : [])) };
+    const ds = { getRepository: jest.fn(() => repo), transaction: jest.fn(async (fn: (x: unknown) => unknown) => fn(m)) };
+    const params = {
+      publishedPacks: jest.fn().mockResolvedValue([{ level: 'pays', doc: { level: 'pays', country: 'CM', currency: 'XAF' } }]),
+      resolveBase: jest.fn().mockResolvedValue({
+        objects: {
+          'plan_price:pro': { kind: 'plan_price', code: 'pro', currency: 'XAF', monthly_minor: 2500, yearly_minor: 25000 },
+          'payment_method:om': { kind: 'payment_method', code: 'orange_money', label: 'Orange Money' },
+        },
+      }),
+      plans: jest.fn().mockReturnValue([{ code: 'pro', rank: 1, features: [], quotas: {} }]),
+      label: jest.fn((_r: unknown, c: string) => c),
+    };
+    const provider = { name: 'x', initiate: jest.fn() };
+    const s = new BillingService(ds as unknown as DataSource, params as never, {} as never, {} as never, provider);
+    const user = { id: '0b7c6f2e-1d2a-4c3b-9e8f-7a6b5c4d3e2f', phone: '+237690000001', platform_roles: [] };
+    const input = { account_type: 'user' as const, account_id: user.id, plan: 'pro', period: 'monthly' as const, method: 'orange_money', phone: '+237690000001' };
+    await expect(s.checkout(user, input)).rejects.toMatchObject({ code: 'CONFLICT', extra: { details: { rule: 'PAY-RETRY' } } });
+    expect(m.query.mock.calls[0][0]).toMatch(/SET LOCAL lock_timeout = '5s'/);
+    expect(provider.initiate).not.toHaveBeenCalled();
+    // Any other database error is not hidden behind a 409.
+    m.query.mockImplementation(async () => Promise.reject(new Error('connexion perdue')));
+    await expect(s.checkout(user, input)).rejects.toThrow('connexion perdue');
+  });
+});
+
+describe('config CHECKOUT_THROTTLE_LIMIT (S1)', () => {
+  const before = process.env.CHECKOUT_THROTTLE_LIMIT;
+  afterEach(() => {
+    if (before === undefined) delete process.env.CHECKOUT_THROTTLE_LIMIT;
+    else process.env.CHECKOUT_THROTTLE_LIMIT = before;
+  });
+
+  it('defaults to 10 per minute, refuses 0, negative and non-integer values at start-up', () => {
+    delete process.env.CHECKOUT_THROTTLE_LIMIT;
+    expect(loadConfig().checkoutThrottleLimit).toBe(10);
+    process.env.CHECKOUT_THROTTLE_LIMIT = '3';
+    expect(loadConfig().checkoutThrottleLimit).toBe(3);
+    for (const bad of ['0', '-2', '1.5', 'dix']) {
+      process.env.CHECKOUT_THROTTLE_LIMIT = bad;
+      expect(() => loadConfig()).toThrow(/CHECKOUT_THROTTLE_LIMIT invalide/);
+    }
+  });
+});
+
 describe('config PAYMENT_RECENT_GUARD_MIN (PAY-RECENT)', () => {
   const before = process.env.PAYMENT_RECENT_GUARD_MIN;
   afterEach(() => {

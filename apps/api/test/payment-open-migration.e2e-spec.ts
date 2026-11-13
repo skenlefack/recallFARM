@@ -111,6 +111,11 @@ describe('EF-ABO-01 PAY-OPEN: migration and contract', () => {
     expect(OPENAPI.components.schemas.CheckoutDto.properties?.confirm_repeat).toMatchObject({ type: 'string', format: 'uuid' });
     expect(Object.keys(OPENAPI.paths['/v1/admin/payments/{id}/reviewed'].post.responses).sort()).toEqual(['200', '403', '409']);
     expect(OPENAPI.components.schemas.ReviewedDto.required).toEqual(['reason']);
+    // Connectors summary (m-c) and the dedicated checkout limit (S1).
+    expect(response('/v1/admin/connectors', 'get', '200')).toEqual({ $ref: '#/components/schemas/ConnectorSummaryListView' });
+    expect(OPENAPI.components.schemas.ConnectorSummaryView.properties?.foreign_payment_events).toMatchObject({ type: 'integer', minimum: 0 });
+    expect(OPENAPI.components.schemas.ConnectorSummaryView.required).toContain('foreign_payment_events');
+    expect(response('/v1/subscriptions/checkout', 'post', '429')).toEqual({ $ref: '#/components/schemas/ErrorView' });
     expect(OPENAPI.components.schemas.AdminPaymentView.required).toContain('needs_review');
     // {id} of the payment routes are documented as UUIDs; /subscriptions/current has a schema (price nullable).
     const paths = OPENAPI.paths as unknown as Record<string, Record<string, { parameters?: Array<{ name: string; in: string; schema?: { format?: string } }> }>>;

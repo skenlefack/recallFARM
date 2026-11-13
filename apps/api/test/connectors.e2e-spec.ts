@@ -162,6 +162,8 @@ beforeAll(async () => {
     THROTTLE_LIMIT: '100000',
     // PAY-RECENT is off here (tests pay several times in a row); its own test turns it on.
     PAYMENT_RECENT_GUARD_MIN: '0',
+    // The dedicated checkout limit (10/min by default) is raised here; its own test lowers it.
+    CHECKOUT_THROTTLE_LIMIT: '100000',
     PAYMENT_WEBHOOK_SECRET: 'e2e-webhook-secret',
     KEYS_DIR: mkdtempSync(join(tmpdir(), 'rf-keys-')),
     EXPORTS_DIR: mkdtempSync(join(tmpdir(), 'rf-exports-')),
@@ -377,6 +379,7 @@ describe('declarative connectors', () => {
       { name: 'lastagg', label: 'lastagg', channels: ['ussd'], routed_for: [], foreign_payment_events: 0 },
     ]);
     expect(JSON.stringify(list.body)).not.toMatch(/agg-token|cb-secret|other-secret|last-secret|127\.0\.0\.1/);
+    expect(check(list.body, response('/v1/admin/connectors', 'get', '200'))).toEqual([]);
     const t = await http.post('/v1/admin/connectors/fakeagg/test-sms').set({ authorization: `Bearer ${admin.token}` }).send({ phone: '+237690000002' }).expect(200);
     expect(t.body).toMatchObject({ connector: 'fakeagg', channel: 'sms', status: 'envoye', provider_ref: expect.stringMatching(/^MSG-/), cost_minor: 20, currency: 'XAF' });
     const farmer = await login('+237690000001');
@@ -821,7 +824,7 @@ describe('declarative connectors', () => {
       const m = await login('+237690000001');
       const other = await login('+237690000005');
       // Start from payments confirmed long ago (earlier tests confirm some a moment ago).
-      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE paid_at > now() - interval '2 hours'`);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE payer_id = $1 AND paid_at > now() - interval '2 hours'`, [m.id]);
       const auth = { authorization: `Bearer ${m.token}` };
       const paid = await checkout(m.token, m.id).expect(201);
       await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: paid.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
@@ -878,7 +881,7 @@ describe('declarative connectors', () => {
       const auth = { authorization: `Bearer ${m.token}` };
       const send = (id: string, extra: Record<string, unknown> = {}) => http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, ...extra }));
       const confirm = (pid: string) => http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: pid, status: 'SUCCESS', amount: 2500 }).expect(200);
-      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE paid_at > now() - interval '2 hours'`);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE payer_id = $1 AND paid_at > now() - interval '2 hours'`, [m.id]);
       // Unsolicited confirm_repeat (no recent payment): an ordinary payment, nothing journaled as a repeat.
       const p1 = await send('a1b2c3d4-0006-4000-8000-000000000001', { confirm_repeat: 'a1b2c3d4-0006-4000-8000-0000000000ff' }).expect(201);
       expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [p1.body.payment_id])).rows[0].n).toBe(0);
@@ -888,7 +891,8 @@ describe('declarative connectors', () => {
       const seen = await send('a1b2c3d4-0006-4000-8000-000000000002').expect(409);
       expect(seen.body.error.details).toMatchObject({ rule: 'PAY-RECENT', payment_id: p1.body.payment_id });
       // ...meanwhile P2 is paid (another device) and confirmed.
-      const p2 = await send('a1b2c3d4-0006-4000-8000-000000000003', { confirm_repeat: p1.body.payment_id }).expect(201);
+      // Written in capitals by the client: the same UUID (m-b).
+      const p2 = await send('a1b2c3d4-0006-4000-8000-000000000003', { confirm_repeat: (p1.body.payment_id as string).toUpperCase() }).expect(201);
       await confirm(p2.body.payment_id);
       // The stale confirmation of P1 does not cover P2: new 409 with P2.
       const stale = await send('a1b2c3d4-0006-4000-8000-000000000002', { confirm_repeat: p1.body.payment_id }).expect(409);
@@ -908,6 +912,51 @@ describe('declarative connectors', () => {
       process.env.PAYMENT_RECENT_GUARD_MIN = '0';
       reloadConfig();
     }
+  });
+
+  it('PAY-RECENT audit role: support paying for an organisation is recorded as support, its manager as gestionnaire_org (m-a)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    process.env.PAYMENT_RECENT_GUARD_MIN = '30';
+    reloadConfig();
+    const aicha = await login('+237690000002');
+    const staff = await login('+237690000003');
+    const org = (await db.query(`SELECT organisation_id FROM memberships WHERE user_id = $1 AND role = 'admin'`, [aicha.id])).rows[0].organisation_id as string;
+    await db.query(`UPDATE users SET platform_roles = '{support}' WHERE id = $1`, [staff.id]);
+    try {
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE payer_id = $1 AND paid_at > now() - interval '2 hours'`, [org]);
+      const orgBody = (extra: Record<string, unknown>) => body({ account_type: 'organisation', account_id: org, plan: 'structure', phone: '+237690000002', ...extra });
+      const pay = (token: string, extra: Record<string, unknown>) => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${token}` }).send(orgBody(extra));
+      const first = await pay(aicha.token, {}).expect(201);
+      await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: first.body.payment_id, status: 'SUCCESS', amount: 15000 }).expect(200);
+      expect(await status(aicha.token, first.body.payment_id)).toBe('confirme');
+      // Support (no membership of the organisation) pays again for it.
+      const refused = await pay(staff.token, {}).expect(409);
+      expect(refused.body.error.details).toMatchObject({ rule: 'PAY-RECENT', payment_id: first.body.payment_id });
+      const bySupport = await pay(staff.token, { confirm_repeat: first.body.payment_id }).expect(201);
+      const role = async (pid: string) => (await db.query(`SELECT actor_id, actor_role FROM audit_log WHERE entity_id = $1 AND action = 'checkout_repeat_confirmed'`, [pid])).rows[0];
+      expect(await role(bySupport.body.payment_id)).toEqual({ actor_id: staff.id, actor_role: 'support' });
+      // The organisation's manager.
+      await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [bySupport.body.payment_id]);
+      const byManager = await pay(aicha.token, { confirm_repeat: first.body.payment_id }).expect(201);
+      expect(await role(byManager.body.payment_id)).toEqual({ actor_id: aicha.id, actor_role: 'gestionnaire_org' });
+    } finally {
+      await db.query(`UPDATE users SET platform_roles = '{param_author}' WHERE id = $1`, [staff.id]);
+      process.env.PAYMENT_RECENT_GUARD_MIN = '0';
+      reloadConfig();
+    }
+  });
+
+  it('S2: a platform account asking for another user\'s subscription gets that user\'s, not its own', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const mine = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+    const asked = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(asked.body).toMatchObject({ account_type: 'user', account_id: m.id, plan: mine.body.plan, expires_at: mine.body.expires_at, subscription: mine.body.subscription });
+    expect(check(asked.body, response('/v1/subscriptions/current', 'get', '200'))).toEqual([]);
+    // Without a platform role, someone else's subscription stays refused.
+    const other = await login('+237690000005');
+    await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${other.token}` }).expect(403);
   });
 
   it('currency comes from the country pack: GET /plans (PAY-CURRENCY without one), /subscriptions/current (price null without one)', async () => {
@@ -1149,5 +1198,26 @@ describe('declarative connectors', () => {
     expect(day < today).toBe(true);
     expect(await scheduler.reconcileIfDue(new Date(`${today}T13:00:00Z`))).toBeNull();
     expect(await opsService().hasReport(day)).toBe(true);
+  });
+
+  // Last on purpose: once over its limit, the checkout route is blocked for the rest of the minute.
+  it('S1: subscriptions/checkout has its own limit (CHECKOUT_THROTTLE_LIMIT per minute), 429 RATE_LIMITED', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    const m = await login('+237690000001');
+    process.env.CHECKOUT_THROTTLE_LIMIT = '1';
+    reloadConfig();
+    try {
+      const send = () => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}` }).send(body({ account_id: m.id, plan: 'inconnue' }));
+      await send();
+      const limited = await send().expect(429);
+      expect(limited.body.error).toMatchObject({ code: 'RATE_LIMITED' });
+      expect(check(limited.body, response('/v1/subscriptions/checkout', 'post', '429'))).toEqual([]);
+      // The general limit of the other routes is untouched.
+      await http.get('/v1/plans').expect(200);
+    } finally {
+      process.env.CHECKOUT_THROTTLE_LIMIT = '100000';
+      reloadConfig();
+    }
   });
 });

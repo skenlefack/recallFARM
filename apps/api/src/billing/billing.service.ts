@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { DataSource, EntityManager } from 'typeorm';
-import { AccessService } from '../common/access.service';
+import { AccessService, ORG_MANAGER_ROLES } from '../common/access.service';
 import { AuthUser, hasPlatformRole } from '../common/auth';
 import { Errors } from '../common/errors';
 import { config } from '../config';
@@ -80,6 +80,12 @@ export function paymentEvents(raw: unknown, view: 'payeur' | 'admin' = 'payeur')
     }
     return [{ at, status, source: src, ...det }];
   });
+}
+
+/** PostgreSQL lock_not_available (lock_timeout reached), as raised by pg or wrapped by TypeORM. */
+export function isLockTimeout(e: unknown): boolean {
+  const err = e as { code?: string; driverError?: { code?: string } } | null;
+  return err?.code === '55P03' || err?.driverError?.code === '55P03';
 }
 
 /** Payment id derived from (user, idempotency key): same key, same payment (RFC 9562 version 8 layout). */
@@ -242,7 +248,12 @@ export class BillingService implements OnApplicationBootstrap {
     const labelOf = (code: string | null) => catalog.plans.find((p) => p.code === code)?.label ?? code ?? '';
     for (let attempt = 0; ; attempt++) {
       const outcome = await this.ds.transaction(async (m): Promise<{ same?: Payment; created?: boolean }> => {
-        await m.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`checkout:${input.account_type}:${input.account_id}`]);
+        // Another checkout of this payer holding the lock longer than 5 s: 409 PAY-RETRY, not a hanging request.
+        await m.query(`SET LOCAL lock_timeout = '5s'`);
+        await m.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`checkout:${input.account_type}:${input.account_id}`]).catch((e: unknown) => {
+          if (isLockTimeout(e)) throw Errors.conflict('Un autre paiement de ce compte est en cours de traitement. Réessayez dans un instant.', { rule: 'PAY-RETRY' });
+          throw e;
+        });
         // Same id created by a concurrent request a moment ago: answered like a replay.
         const same = await m.getRepository(Payment).findOne({ where: { id } });
         if (same) return { same };
@@ -274,7 +285,7 @@ export class BillingService implements OnApplicationBootstrap {
         const created = r.raw.length > 0;
         // The payer's confirmation is journaled with the payment, in the same transaction.
         if (created && repeatOf) {
-          const role = input.account_type === 'organisation' ? 'gestionnaire_org' : input.account_id === user.id ? 'payeur' : user.platform_roles.join(',') || 'payeur';
+          const role = await this.payerRole(user, input);
           await this.audit(m, id, 'checkout_repeat_confirmed', user, { recent_payment_id: repeatOf.id, plan: repeatOf.plan, paid_at: repeatOf.paid_at, new_plan: plan.code }, role);
         }
         return { created };
@@ -358,13 +369,25 @@ export class BillingService implements OnApplicationBootstrap {
     );
     const recent = rows[0];
     if (!recent) return null;
-    if (input.confirm_repeat === recent.id) return recent;
+    if (input.confirm_repeat?.toLowerCase() === recent.id.toLowerCase()) return recent;
     throw Errors.conflict(`Vous avez déjà payé la formule ${labelOf(recent.plan)} il y a ${Math.max(1, recent.ago_min)} min. Confirmez pour payer encore.`, {
       rule: 'PAY-RECENT',
       payment_id: recent.id,
       plan: recent.plan,
       paid_at: new Date(recent.paid_at).toISOString(),
     });
+  }
+
+  /**
+   * Who confirmed paying again, for the audit: the payer, a manager member of the organisation, or else
+   * the platform roles of the account that paid for someone (support, administrator).
+   */
+  private async payerRole(user: AuthUser, input: CheckoutInput): Promise<string> {
+    const platform = user.platform_roles.join(',');
+    if (input.account_type === 'user') return input.account_id === user.id ? 'payeur' : platform || 'payeur';
+    const membership = await this.access.membership(user, input.account_id);
+    if (membership && ORG_MANAGER_ROLES.includes(membership.role)) return 'gestionnaire_org';
+    return platform || 'gestionnaire_org';
   }
 
   /** Journal entry in audit_log; `user` null = the system. */
@@ -639,8 +662,9 @@ export class BillingService implements OnApplicationBootstrap {
       e = { ...e, token: await this.entitlements.sign(accountId, e) };
     } else {
       if (accountId && accountId !== user.id && !hasPlatformRole(user)) throw Errors.forbidden();
-      accountId = user.id;
-      e = await this.entitlements.forUser(user.id);
+      // A platform account asking for another user gets that user's subscription (S2).
+      accountId = accountId ?? user.id;
+      e = await this.entitlements.forUser(accountId);
     }
     // Subscription row actually in force (a member may benefit from their organisation's plan).
     const src = e.source.account_type !== 'none' ? e.source : { account_type: accountType, account_id: accountId };
