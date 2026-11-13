@@ -7948,7 +7948,7 @@
                 }
               }
             },
-            "description": "RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; details.retry_after_s"
+            "description": "RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; reessayer apres la minute en cours"
           }
         },
         "security": [

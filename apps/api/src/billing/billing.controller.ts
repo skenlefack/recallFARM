@@ -74,7 +74,7 @@ export class BillingController {
       'PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, ou un autre checkout du meme payeur est en cours (attente du verrou > 5 s) : reessayer.',
   })
   @ApiUnprocessableEntityResponse({ type: ErrorView, description: 'Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)' })
-  @ApiTooManyRequestsResponse({ type: ErrorView, description: 'RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; details.retry_after_s' })
+  @ApiTooManyRequestsResponse({ type: ErrorView, description: 'RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; reessayer apres la minute en cours' })
   // A payment prompt per request: its own limit, much lower than the general one.
   @Throttle({ default: { limit: () => config().checkoutThrottleLimit, ttl: () => 60_000 } })
   @Post('subscriptions/checkout')
