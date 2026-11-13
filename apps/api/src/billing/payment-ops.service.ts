@@ -194,12 +194,11 @@ export class PaymentOpsService {
     return res.status;
   }
 
-  async list(status?: string, limit = 50) {
-    const rows: Payment[] = await this.ds.getRepository(Payment).find({
-      where: status ? { status } : {},
-      order: { created_at: 'DESC' },
-      take: Math.min(Math.max(limit, 1), 200),
-    });
+  async list(status?: string, limit = 50, needsReview?: boolean) {
+    const q = this.ds.getRepository(Payment).createQueryBuilder('p').orderBy('p.created_at', 'DESC').take(Math.min(Math.max(limit, 1), 200));
+    if (status) q.andWhere('p.status = :status', { status });
+    if (needsReview !== undefined) q.andWhere(`COALESCE((p.raw->>'needs_review')::boolean, false) = :needsReview`, { needsReview });
+    const rows: Payment[] = await q.getMany();
     return { data: rows.map((p) => this.adminView(p)) };
   }
 
@@ -226,8 +225,17 @@ export class PaymentOpsService {
   }
 
   private adminView(p: Payment) {
-    const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string };
-    return { ...this.billing.serialize(p, 'admin'), payer_type: p.payer_type, payer_id: p.payer_id, connector: raw.connector ?? null, error_code: raw.error_code ?? null, poll: raw.poll ?? null, refund: raw.refund ?? null };
+    const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string; needs_review?: unknown };
+    return {
+      ...this.billing.serialize(p, 'admin'),
+      payer_type: p.payer_type,
+      payer_id: p.payer_id,
+      connector: raw.connector ?? null,
+      error_code: raw.error_code ?? null,
+      poll: raw.poll ?? null,
+      refund: raw.refund ?? null,
+      needs_review: raw.needs_review === true,
+    };
   }
 
   /* ---------------- refunds ---------------- */

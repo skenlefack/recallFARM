@@ -160,6 +160,8 @@ beforeAll(async () => {
     OTP_DEV_ECHO: 'false',
     SCHEDULER_ENABLED: 'false',
     THROTTLE_LIMIT: '100000',
+    // PAY-RECENT is off here (tests pay several times in a row); its own test turns it on.
+    PAYMENT_RECENT_GUARD_MIN: '0',
     PAYMENT_WEBHOOK_SECRET: 'e2e-webhook-secret',
     KEYS_DIR: mkdtempSync(join(tmpdir(), 'rf-keys-')),
     EXPORTS_DIR: mkdtempSync(join(tmpdir(), 'rf-exports-')),
@@ -320,7 +322,7 @@ describe('declarative connectors', () => {
     expect(await status(m.token, id)).toBe('confirme');
   });
 
-  it('refuses a confirmation with another amount, or from another connector, and keeps the webhook for audit', async () => {
+  it('refuses a confirmation with another amount (journaled) or from another connector (nothing written, counted)', async () => {
     const m = await login('+237690000001');
     const co = await checkout(m.token, m.id).expect(201);
     await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co.body.payment_id, status: 'SUCCESS', amount: 100 }).expect(200);
@@ -333,10 +335,18 @@ describe('declarative connectors', () => {
     expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
     const raw = await db.query(`SELECT raw FROM payments WHERE id = $1`, [co.body.payment_id]);
     expect(raw.rows[0].raw.connector).toBe('fakeagg');
+    // Only the refused amount is journaled: another connector cannot write on the payment (no flooding).
     expect(raw.rows[0].raw.events).toEqual([
       expect.objectContaining({ status: 'confirme', source: 'webhook', ignored: true, reason: 'montant', body: expect.objectContaining({ amount: 100 }) }),
-      expect.objectContaining({ status: 'confirme', source: 'webhook', ignored: true, reason: 'connecteur' }),
     ]);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const billing = app.get(require('../src/billing/billing.service').BillingService);
+    const counted = billing.foreignEventCounts().otheragg as number;
+    expect(counted).toBeGreaterThanOrEqual(1);
+    // Its own aggregator reference is not looked up among fakeagg's payments either.
+    await http.post('/v1/connectors/otheragg/payment').set({ 'x-callback-token': 'other-secret' }).send({ reference: co.body.provider_ref, status: 'SUCCESS' }).expect(404);
+    expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
+    expect((await db.query(`SELECT jsonb_array_length(raw->'events') AS n FROM payments WHERE id = $1`, [co.body.payment_id])).rows[0].n).toBe(1);
   });
 
   it('two simultaneous confirmations extend the subscription only once', async () => {
@@ -739,6 +749,12 @@ describe('declarative connectors', () => {
     expect(new Date(sub.expires_at).getTime()).toBeGreaterThan(new Date(before).getTime());
     const audit = await db.query(`SELECT action, actor_id, actor_role, diff FROM audit_log WHERE entity = 'payments' AND entity_id = $1 ORDER BY id`, [id]);
     expect(audit.rows).toEqual([{ action: 'resolve_confirme', actor_id: admin.id, actor_role: 'platform_admin', diff: { outcome: 'confirme', reason: 'Releve Orange Money : debit constate', from_status: 'a_verifier' } }]);
+    // A late provider confirmation of a payment decided "confirme" changes nothing (no second extension).
+    const aauth = { authorization: `Bearer ${admin.token}` };
+    const decided = (await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id])).rows[0].expires_at as Date;
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    expect((await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id])).rows[0].expires_at).toEqual(decided);
+    expect((await http.get(`/v1/admin/payments/${id}`).set(aauth).expect(200)).body.needs_review).toBe(false);
     // Already settled: 409, nothing journaled twice.
     await resolve(id, admin.token, { outcome: 'echoue', reason: 'Deuxieme decision' }).expect(409);
     expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [id])).rows[0].n).toBe(1);
@@ -751,7 +767,76 @@ describe('declarative connectors', () => {
     const mine = await http.get(`/v1/payments/${co2.body.payment_id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
     expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'echoue', source: 'operateur' }]);
     expect(JSON.stringify(mine.body)).not.toMatch(/releve/i);
+    // The money arrives after all: activated (a confirmation always wins), flagged for review, audited.
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co2.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    const late = await http.get(`/v1/admin/payments/${co2.body.payment_id}`).set(aauth).expect(200);
+    expect(late.body).toMatchObject({ status: 'confirme', needs_review: true });
+    expect(late.body.events.at(-1)).toEqual({ at: expect.any(String), status: 'confirme', source: 'webhook', detail: 'late_confirm_after_resolve' });
+    const review = await http.get('/v1/admin/payments?needs_review=true').set(aauth).expect(200);
+    expect(review.body.data.map((p: { id: string }) => p.id)).toEqual([co2.body.payment_id]);
+    expect(check(review.body, response('/v1/admin/payments', 'get', '200'))).toEqual([]);
+    const notReview = await http.get('/v1/admin/payments?needs_review=false&limit=200').set(aauth).expect(200);
+    expect(notReview.body.data.some((p: { id: string }) => p.id === co2.body.payment_id)).toBe(false);
+    await http.get('/v1/admin/payments?needs_review=oui').set(aauth).expect(422);
+    const lateAudit = await db.query(`SELECT action, actor_id, actor_role FROM audit_log WHERE entity_id = $1 ORDER BY id`, [co2.body.payment_id]);
+    expect(lateAudit.rows.map((r) => [r.action, r.actor_id, r.actor_role])).toEqual([
+      ['resolve_echoue', admin.id, 'platform_admin'],
+      ['late_confirm_after_resolve', null, 'systeme'],
+    ]);
     await checkout(m.token, m.id).expect(201);
+  });
+
+  it('PAY-RECENT (PO 2026-11-13): a subscription payment confirmed < 30 min ago needs confirm_repeat; replay, PAY-OPEN and other payers unaffected', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    process.env.PAYMENT_RECENT_GUARD_MIN = '30';
+    reloadConfig();
+    try {
+      const m = await login('+237690000001');
+      const other = await login('+237690000005');
+      // Start from payments confirmed long ago (earlier tests confirm some a moment ago).
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE paid_at > now() - interval '2 hours'`);
+      const auth = { authorization: `Bearer ${m.token}` };
+      const paid = await checkout(m.token, m.id).expect(201);
+      await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: paid.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '5 minutes' WHERE id = $1`, [paid.body.payment_id]);
+      const paidAt = (await db.query(`SELECT paid_at FROM payments WHERE id = $1`, [paid.body.payment_id])).rows[0].paid_at as Date;
+      const id = 'a1b2c3d4-0005-4000-8000-000000000001';
+      const before = collects();
+      // 5 minutes after: refused, with the plan and the date to show.
+      const recent = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure' })).expect(409);
+      expect(recent.body.error).toEqual({
+        code: 'CONFLICT',
+        message: expect.stringMatching(/il y a 5 min/),
+        details: { rule: 'PAY-RECENT', payment_id: paid.body.payment_id, plan: 'pro', paid_at: paidAt.toISOString() },
+      });
+      expect(check(recent.body, response('/v1/subscriptions/checkout', 'post', '409'))).toEqual([]);
+      expect(collects()).toBe(before);
+      // Another payer is not concerned.
+      await checkout(other.token, other.id).expect(201);
+      // Same checkout, explicitly confirmed: accepted, journaled.
+      const repeat = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure', confirm_repeat: true })).expect(201);
+      expect(repeat.body).toMatchObject({ payment_id: id, status: 'initie' });
+      const mine = await http.get(`/v1/payments/${id}`).set(auth).expect(200);
+      expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'initie', source: 'client', detail: 'repeat_confirmed' }]);
+      expect(check(mine.body, response('/v1/payments/{id}', 'get', '200'))).toEqual([]);
+      const audit = await db.query(`SELECT action, actor_id, diff FROM audit_log WHERE entity_id = $1`, [id]);
+      expect(audit.rows).toEqual([{ action: 'checkout_repeat_confirmed', actor_id: m.id, diff: expect.objectContaining({ recent_payment_id: paid.body.payment_id, plan: 'pro', new_plan: 'structure' }) }]);
+      // The replay of the same id is a replay, never PAY-RECENT (with or without confirm_repeat).
+      expect((await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure' })).expect(201)).body).toMatchObject({ payment_id: id, replayed: true });
+      // PAY-OPEN comes first while that payment is open, even with confirm_repeat.
+      const open = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, confirm_repeat: true })).expect(409);
+      expect(open.body.error.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: id });
+      // 31 minutes after the confirmation: accepted without confirmation.
+      await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [id]);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '31 minutes' WHERE id = $1`, [paid.body.payment_id]);
+      const later = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id })).expect(201);
+      expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [later.body.payment_id])).rows[0].n).toBe(0);
+      await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, confirm_repeat: 'oui' })).expect(422);
+    } finally {
+      process.env.PAYMENT_RECENT_GUARD_MIN = '0';
+      reloadConfig();
+    }
   });
 
   it('currency comes from the country pack: GET /plans (PAY-CURRENCY without one), /subscriptions/current (price null without one)', async () => {
@@ -769,10 +854,12 @@ describe('declarative connectors', () => {
     try {
       const cur = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
       expect(cur.body.price).toEqual({ amount_minor: expect.any(Number), currency: pack.currency });
+      expect(check(cur.body, response('/v1/subscriptions/current', 'get', '200'))).toEqual([]);
       await db.query(`UPDATE users SET country = 'ZZ' WHERE id = $1`, [m.id]);
       // No currency for the country: no price, the rest of the answer is still given.
       const unknown = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
       expect(unknown.body).toMatchObject({ plan: cur.body.plan, price: null });
+      expect(check(unknown.body, response('/v1/subscriptions/current', 'get', '200'))).toEqual([]);
     } finally {
       await db.query(`UPDATE users SET country = 'CM' WHERE id = $1`, [m.id]);
       await db.query(`UPDATE subscriptions SET currency = $2 WHERE account_type = 'user' AND account_id = $1`, [m.id, pack.currency]);

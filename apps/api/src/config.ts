@@ -52,6 +52,8 @@ export function loadConfig() {
     paymentStatusAfterMin: Math.max(1, int(env.PAYMENT_STATUS_AFTER_MIN, 5)),
     paymentStatusMaxAttempts: Math.max(1, int(env.PAYMENT_STATUS_MAX_ATTEMPTS, 6)),
     paymentStatusBackoffCapMin: Math.max(1, int(env.PAYMENT_STATUS_BACKOFF_CAP_MIN, 60)),
+    /** PAY-RECENT: a new subscription checkout this soon after a confirmed one needs confirm_repeat (0 = off). */
+    paymentRecentGuardMin: env.PAYMENT_RECENT_GUARD_MIN === undefined || env.PAYMENT_RECENT_GUARD_MIN === '' ? 30 : Number(env.PAYMENT_RECENT_GUARD_MIN),
     /** Local time (country time zone) after which yesterday's reconciliation is produced. */
     paymentReconcileAt: /^\d{2}:\d{2}$/.test(env.PAYMENT_RECONCILE_AT ?? '') ? (env.PAYMENT_RECONCILE_AT as string) : '02:00',
     corsOrigins: (env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:8080')
@@ -74,6 +76,9 @@ export function loadConfig() {
   for (const [k, values] of Object.entries(allowed)) {
     const v = (cfg as Record<string, unknown>)[k] as string;
     if (!values.includes(v)) throw new Error(`${k} invalide : "${v}" (valeurs : ${values.join(', ')})`);
+  }
+  if (!Number.isInteger(cfg.paymentRecentGuardMin) || cfg.paymentRecentGuardMin < 0 || cfg.paymentRecentGuardMin > 1440) {
+    throw new Error(`PAYMENT_RECENT_GUARD_MIN invalide : "${env.PAYMENT_RECENT_GUARD_MIN}" (entier de 0 a 1440 minutes, 0 = garde coupee)`);
   }
   if (production && !cfg.openapiExport && (cfg.paymentProvider === 'connector' || cfg.smsProvider === 'connector') && !env.PUBLIC_API_URL) {
     throw new Error('PUBLIC_API_URL requis en production avec des connecteurs (URL de rappel des agregateurs)');

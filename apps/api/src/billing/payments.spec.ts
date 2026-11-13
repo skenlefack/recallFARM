@@ -4,6 +4,7 @@ import { ConnectorRegistry } from '../connectors/connector-registry';
 import { FetchFn } from '../connectors/connector-http';
 import { ProvidersConfig } from '../connectors/connector.types';
 import { logSafe } from '../connectors/connectors.controller';
+import { loadConfig } from '../config';
 import { Payment } from '../database/entities';
 import { DataSource } from 'typeorm';
 import { BillingService, idFromKey, paymentEvents } from './billing.service';
@@ -268,16 +269,19 @@ describe('paymentEvents (Q-WEB-03)', () => {
 describe('BillingService.applyResult: journal written by our code (m4) and operator decisions (M2)', () => {
   function service(found: Partial<Payment>) {
     const p = payment({ status: 'en_attente', raw: { connector: 'agg' }, ...found });
-    const repo = { findOne: jest.fn().mockResolvedValue(p), save: jest.fn(async (x: Payment) => x) };
+    const q: Record<string, jest.Mock> = {};
+    for (const k of ['setLock', 'where', 'andWhere']) q[k] = jest.fn(() => q);
+    q.getOne = jest.fn().mockResolvedValue(p);
+    const repo = { createQueryBuilder: jest.fn(() => q), save: jest.fn(async (x: Payment) => x) };
     const subs = { findOne: jest.fn().mockResolvedValue(null), create: jest.fn((x: object) => x), save: jest.fn(async (x: object) => ({ ...x, id: 'sub' })) };
-    const m = { getRepository: (e: unknown) => (e === Payment ? repo : subs) };
+    const m = { getRepository: (e: unknown) => (e === Payment ? repo : subs), query: jest.fn().mockResolvedValue([]) };
     const ds = { transaction: jest.fn(async (fn: (m: unknown) => unknown) => fn(m)) };
     const s = new BillingService(ds as unknown as DataSource, {} as never, {} as never, {} as never, { name: 'x', initiate: jest.fn() });
-    return { s, p };
+    return { s, p, q, m };
   }
   const events = (p: Payment) => (p.raw as { events: Array<Record<string, unknown>> }).events;
 
-  it('refuses another amount, another currency and another connector, journaled with the reason', async () => {
+  it('refuses another amount or currency (journaled with the reason) and another connector (nothing written, counted)', async () => {
     let t = service({});
     expect((await t.s.applyResult({ payment_id: t.p.id, status: 'confirme' }, { source: 'webhook', connector: 'agg', amount_minor: 1 })).status).toBe('en_attente');
     expect(events(t.p)[0]).toMatchObject({ source: 'webhook', ignored: true, reason: 'montant' });
@@ -286,8 +290,26 @@ describe('BillingService.applyResult: journal written by our code (m4) and opera
     expect(events(t.p)[0]).toMatchObject({ source: 'statut', ignored: true, reason: 'devise' });
     t = service({});
     await expect(t.s.applyResult({ payment_id: t.p.id, status: 'confirme' }, { source: 'webhook', connector: 'autre' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    expect(events(t.p)[0]).toMatchObject({ ignored: true, reason: 'connecteur' });
+    await expect(t.s.applyResult({ payment_id: t.p.id, status: 'confirme' }, { source: 'webhook', connector: 'autre' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect((t.p.raw as { events?: unknown }).events).toBeUndefined();
     expect(t.p.status).toBe('en_attente');
+    expect(t.s.foreignEventCounts()).toEqual({ autre: 2 });
+  });
+
+  it('looks an aggregator reference up among the payments of the connector that sends it', async () => {
+    const t = service({});
+    await t.s.applyResult({ provider_ref: 'TX-9', status: 'confirme' }, { source: 'webhook', connector: 'agg' });
+    expect(t.q.where).toHaveBeenCalledWith('p.provider_ref = :ref', { ref: 'TX-9' });
+    expect(t.q.andWhere).toHaveBeenCalledWith(`p.raw->>'connector' = :connector`, { connector: 'agg' });
+  });
+
+  it('a confirmation after an operator "echoue" activates, flags needs_review and is audited', async () => {
+    const t = service({ status: 'echoue', raw: { connector: 'agg', resolved: { outcome: 'echoue', at: '2026-11-13T08:00:00.000Z' } } });
+    const r = await t.s.applyResult({ payment_id: t.p.id, status: 'confirme' }, { source: 'webhook', connector: 'agg' });
+    expect(r.status).toBe('confirme');
+    expect(t.p.raw).toMatchObject({ needs_review: true });
+    expect(events(t.p).at(-1)).toMatchObject({ source: 'webhook', detail: 'late_confirm_after_resolve' });
+    expect(t.m.query.mock.calls[0][1].slice(1, 4)).toEqual(['late_confirm_after_resolve', null, 'systeme']);
   });
 
   it('an operator decision needs the expected status, and runs its hook in the same transaction', async () => {
@@ -308,11 +330,11 @@ describe('BillingService.applyResult: journal written by our code (m4) and opera
 describe('BillingService.checkout: PAY-RETRY (m6)', () => {
   it('answers a clean 409 PAY-RETRY when the insert keeps being ignored without a readable open payment', async () => {
     const qb: Record<string, jest.Mock> = {};
-    for (const k of ['insert', 'into', 'values', 'orIgnore', 'returning', 'where', 'orderBy']) qb[k] = jest.fn(() => qb);
+    for (const k of ['insert', 'into', 'values', 'orIgnore', 'returning', 'where', 'andWhere', 'orderBy']) qb[k] = jest.fn(() => qb);
     qb.execute = jest.fn().mockResolvedValue({ raw: [] });
     qb.getOne = jest.fn().mockResolvedValue(null);
     const repo = { findOne: jest.fn().mockResolvedValue(null), createQueryBuilder: jest.fn(() => qb) };
-    const ds = { getRepository: jest.fn(() => repo) };
+    const ds = { getRepository: jest.fn(() => repo), transaction: jest.fn(async (fn: (m: unknown) => unknown) => fn({ createQueryBuilder: () => qb, query: jest.fn() })) };
     const params = {
       publishedPacks: jest.fn().mockResolvedValue([{ level: 'pays', doc: { level: 'pays', country: 'CM', currency: 'XAF' } }]),
       resolveBase: jest.fn().mockResolvedValue({
@@ -332,5 +354,26 @@ describe('BillingService.checkout: PAY-RETRY (m6)', () => {
     ).rejects.toMatchObject({ code: 'CONFLICT', extra: { details: { rule: 'PAY-RETRY' } } });
     expect(qb.execute).toHaveBeenCalledTimes(3);
     expect(provider.initiate).not.toHaveBeenCalled();
+  });
+});
+
+describe('config PAYMENT_RECENT_GUARD_MIN (PAY-RECENT)', () => {
+  const before = process.env.PAYMENT_RECENT_GUARD_MIN;
+  afterEach(() => {
+    if (before === undefined) delete process.env.PAYMENT_RECENT_GUARD_MIN;
+    else process.env.PAYMENT_RECENT_GUARD_MIN = before;
+  });
+
+  it('defaults to 30 minutes, accepts 0 (off) to 1440, refuses anything else at start-up', () => {
+    delete process.env.PAYMENT_RECENT_GUARD_MIN;
+    expect(loadConfig().paymentRecentGuardMin).toBe(30);
+    for (const ok of ['0', '45', '1440']) {
+      process.env.PAYMENT_RECENT_GUARD_MIN = ok;
+      expect(loadConfig().paymentRecentGuardMin).toBe(Number(ok));
+    }
+    for (const bad of ['-1', '1441', '2.5', 'trente']) {
+      process.env.PAYMENT_RECENT_GUARD_MIN = bad;
+      expect(() => loadConfig()).toThrow(/PAYMENT_RECENT_GUARD_MIN invalide/);
+    }
   });
 });
