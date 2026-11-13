@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom';
 import '../styles/admin.css';
 import '../styles/studio.css';
 import { RequireAuth } from './auth';
+import { PaymentTrackerProvider } from './paymentTracker';
 import AdminShell from './Shell';
 import Alerts from './pages/Alerts';
 import Dashboard from './pages/Dashboard';
@@ -10,6 +11,7 @@ import FarmDetail from './pages/FarmDetail';
 import Farms from './pages/Farms';
 import Login from './pages/Login';
 import Reminders from './pages/Reminders';
+import Payments from './pages/Payments';
 import Subscriptions from './pages/Subscriptions';
 import Users from './pages/Users';
 import { Campaigns, Surveillance } from './pages/V2Pages';
@@ -29,6 +31,7 @@ function AdminNotFound() {
 /** Everything under /admin (lazy-loaded chunk). */
 export default function AdminApp() {
   return (
+    <PaymentTrackerProvider>
     <Routes>
       <Route path="login" element={<Login />} />
       <Route
@@ -61,10 +64,12 @@ export default function AdminApp() {
         <Route path="campagnes" element={<Campaigns />} />
         <Route path="surveillance" element={<Surveillance />} />
         <Route path="abonnements" element={<Subscriptions />} />
+        <Route path="paiements" element={<Payments />} />
         <Route path="exports" element={<Exports />} />
         <Route path="utilisateurs" element={<Users />} />
         <Route path="*" element={<AdminNotFound />} />
       </Route>
     </Routes>
+    </PaymentTrackerProvider>
   );
 }

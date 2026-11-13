@@ -88,6 +88,66 @@ farm `locality`; `/alerts?organisation_id=`; `/studio/versions/:id/test` returns
 simulation offsets read from `events[].notifications`; inherited labels fetched with
 `/params/packs/:code/versions/:version`; axial hex coordinates of the coverage map laid out as a honeycomb.
 
+## Payments (P1.1 / P1.2)
+
+- **Money**: integer in the ISO 4217 minor unit + the currency received from the API, formatted by
+  `money(amountMinor, currency)` (`Intl.NumberFormat`, exponent and label from the platform). No default
+  currency, no hard-coded « FCFA »; `src/lib/no-hardcoded-currency.test.ts` fails when one appears in `src/`
+  (mocks and tests excluded). Prices come from `GET /plans` only (no fallback amounts).
+- **Checkout** (`Subscriptions.tsx`): sends `id` = client-made UUID v4 (`newPaymentId`). The same id is kept for any retry
+  of the same payment (network error, double tap); a new id is taken after an explicit refusal (`PAY-INIT`, the server
+  would replay the same refusal) or when phone/method change (`409 PAY-IDEMPOTENCY`).
+  `PAY-PENDING` never re-sends: « Paiement en cours de vérification », the payment is polled. Statuses handled:
+  `initie, en_attente, a_verifier, confirme, echoue, remboursement_en_cours, rembourse` (`lib/payment.ts`).
+- **Payment tracking** (`admin/paymentTracker.tsx`, mounted in `AdminApp`): one attempt per **paying account** (the active
+  organisation, otherwise the user: same rule as the server guard `PAY-OPEN`), followed app-wide (the « Paiement reçu » toast
+  arrives on any page). While the outcome is open the attempt is kept so that closing, reloading or navigating never
+  creates a 2nd payment; `a_verifier` / `remboursement_en_cours` are followed with a back-off (15 s, 60 s, 5 min counted from
+  entering review), no background polling past 2 min; 403/404 stop the tracking. Switching organisation shows the other
+  payer's attempt (kept under its own key); its announcement resumes when you switch back.
+  - **What is stored, and why**: `localStorage` `rf.payment.v1.<userId>.<payerId>` (the payer id is in the key, not in the
+    value) holds only non-personal data (`id, ownerId, paymentId, plan, planName, period, method, amount, sentAt, unsent,
+    unknown, existing, subSnap, subKnown`, masked phone `••••••11`; no phone number). The full request body (needed by
+    « Réessayer » with the same id) lives in `sessionStorage` `rf.payment.body.v1.<userId>.<payerId>` only. All `rf.payment.*`
+    keys are purged on sign-out and on session expiry. Other tabs are followed through the `storage` event; an empty event
+    never clears a tracked payment (it re-queries it and lets the normal flow conclude), and an attempt cleared elsewhere is
+    never rewritten. A response arriving after a sign-out, an account/payer switch, an abandon or a replaced attempt is
+    ignored (`ownerId`, `payerId`, attempt `id`). Storage errors only log a `console.warn`; tracking stays in memory.
+  - `409 PAY-OPEN` (`details: { payment_id, status, plan }`): the account already has an open payment, whatever the plan;
+    the screen says so with that plan and follows it, the announcement names `details.plan`.
+  - `409 PAY-RETRY`: another payment of this payer just finished. Never a plain refusal: the screen shows a dedicated text, the
+    subscription is reloaded and « Payer » stays disabled until it is back (same check as after an abandon).
+  - `409 PAY-RECENT` (`details: { payment_id, plan, paid_at }`): a payment of this payer was confirmed a few minutes ago. A
+    dedicated screen says « Vous venez de payer la formule X il y a N min » with the time (country time zone when the API
+    exposes `timezone` in `/plans`, otherwise the device's), the subscription is reloaded, nothing is ever re-sent
+    automatically. « Garder ma formule » sends nothing; « Payer quand même » re-sends the SAME checkout (same id, same body)
+    with `confirm_repeat: <details.payment_id>`. A 2nd `PAY-RECENT` with another `payment_id` shows the screen again with
+    the new payment.
+    « Payer quand même » is also gated on the subscription being reloaded, and the recent screen stays displayed (busy,
+    « Envoi… ») while it is sent. `confirm_repeat` must be a UUID: a `PAY-RECENT` whose `payment_id` is not one is treated like
+    `PAY-RETRY`. « Il y a N min » is whole minutes, refreshed every minute, corrected by the `Date` header of the 409 when the
+    device clock is off. The screen is dropped (and the subscription reloaded) once the server window is over: 30 min,
+    mirror of the default `PAYMENT_RECENT_GUARD_MIN` (not exposed by the API). `confirm_repeat` lives in memory only: « Réessayer »
+    in the same tab re-sends it, after a reload the re-send goes without it and the server answers `PAY-RECENT` again or replays.
+  - **Payer is gated on the subscription**: « Payer » and the plan buttons stay disabled until `GET /subscriptions/current`
+    (always called with the active payer's `account_type` / `account_id`: the server would otherwise pick the first
+    administered organisation) succeeded and is not refetching. If it fails: « Vérification impossible » + « Réessayer la
+    vérification », never an enabled « Payer ». The result of a post-abandon / `PAY-RETRY` check is attached to the account, the
+    payer and a generation counter: it is ignored (no toast) after a sign-out, an expiry or a switch.
+  - `unsent` (network, 5xx, timeout): no new checkout for any plan; only « Réessayer » (same id, same body; each retry refreshes
+    `sentAt` so other tabs see an active send). « Abandonner » after 3 failed retries, or when the body is gone (another tab) and
+    the last send is older than 2 min (before that: « peut-être en cours d'envoi dans un autre onglet »).
+  - **Assumed limit**: `PAY-OPEN` covers a payment that is still open, **not one that was already confirmed**. So an
+    abandon (here or in another tab) and a `PAY-RETRY` never promise anything: they reload the subscription, say whether it
+    changed since the send (`subSnap`, `subKnown`) and ask the farmer to check the current plan before paying again.
+  - No server error text is shown in the checkout: known rules and a generic message are translated (`lib/i18n-payments.ts`).
+- **Administration** (`/admin/paiements`, `pages/Payments.tsx`): list filtered by status, detail with history, « Interroger »
+  (`ops`), « Rembourser » with a reason (`platform_admin` only), daily reconciliation reports and manual run
+  (`platform_admin`). Rights mirror `admin-payments.controller.ts` (`paymentRights`). Texts: `lib/i18n-payments.ts` (fr + en keys).
+- **Tests**: vitest + testing-library for every screen and state (loading, empty, error, forbidden); axe-core on each screen
+  (`src/test/a11y.ts`, ADR-005); Playwright `e2e/admin-paiements.spec.ts` against the mock build
+  (`SHOT_DIR=<dir>` saves screenshots).
+
 ## API assumptions beyond MVP-SCOPE.md
 
 Typed in `src/api/types.ts` (marked ASSUMPTION) and mirrored by `src/mocks/server.ts`:

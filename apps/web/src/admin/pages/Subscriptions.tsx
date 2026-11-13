@@ -1,20 +1,20 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
-import { api, listOf } from '../../api/endpoints';
-import type { PaymentMethodOption, PaymentStatus, Plan, PlanCode } from '../../api/types';
-import { Card, Dialog, ErrorState, FieldErrors, Pill, Seg, Skeleton, useToast } from '../../components/ui';
-import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL } from '../../lib/format';
+import { api, listOf, subscriptionKey } from '../../api/endpoints';
+import type { PaymentMethodOption, Plan, PlanCode } from '../../api/types';
+import { Card, Dialog, ErrorState, Pill, Seg, Skeleton, useToast } from '../../components/ui';
+import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL, timeOfDay } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import { checkoutOutcome, methodInitials } from '../../lib/payment';
+import { checkoutOutcome, isTerminal, isUnderReview, methodInitials, recentMinutes } from '../../lib/payment';
 import { priceOf } from '../../lib/plans';
 import { useAuth } from '../auth';
 import { usePageMeta } from '../hooks';
+import { pollTiming, usePaymentTracker } from '../paymentTracker';
 import { normalizePhone } from './Login';
 
 type Period = 'monthly' | 'yearly';
-export const POLL_MS = 5000;
-export const POLL_MAX_MS = 120_000;
+export { pollTiming };
 
 const FEATURE_LABEL: Record<string, string> = {
   rappels_sms: 'Rappels SMS',
@@ -42,144 +42,272 @@ const FEATURE_LABEL: Record<string, string> = {
   api: 'API et marque blanche',
 };
 
-/** Polls GET /payments/:id every 5 s, gives up after 2 min. */
-export function usePaymentPolling(paymentId: string | null) {
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!paymentId) return;
-    setStartedAt(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [paymentId]);
-  const elapsed = startedAt ? now - startedAt : 0;
-  const timedOut = elapsed >= POLL_MAX_MS;
-  const q = useQuery({
-    queryKey: ['payment', paymentId],
-    queryFn: () => api.payment(paymentId!),
-    enabled: !!paymentId,
-    refetchInterval: (query) => {
-      const s = query.state.data?.status as PaymentStatus | undefined;
-      if (s === 'confirme' || s === 'echoue' || s === 'rembourse') return false;
-      if (startedAt && Date.now() - startedAt >= POLL_MAX_MS) return false;
-      return POLL_MS;
-    },
-    refetchIntervalInBackground: true,
-    retry: 2,
-  });
-  const status = q.data?.status;
-  const done = status === 'confirme' || status === 'echoue' || status === 'rembourse';
-  return { status, done, timedOut: timedOut && !done, remaining: Math.max(0, Math.ceil((POLL_MAX_MS - elapsed) / 1000)), error: q.error };
+/** Abonnement du payeur : tant qu'il n'est pas (re)charge avec succes, on ne propose jamais de payer. */
+interface Gate {
+  ready: boolean;
+  failed: boolean;
+  retry: () => void;
 }
 
-function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; period: Period; methods: PaymentMethodOption[]; onClose: () => void }) {
+/** Message d'un echec d'envoi (jamais le texte du serveur). */
+function failureText(err: unknown): string {
+  const kind = err ? checkoutOutcome(err).kind : 'other';
+  if (kind === 'ratelimit') return t('pay.ratelimit');
+  if (kind === 'refused') return `${t('pay.init.title')}. ${t('pay.init.body')}`;
+  if (kind === 'conflict') return t('pay.conflict');
+  return t('pay.error.generic');
+}
+
+/** « Vous venez de payer la formule X il y a N min. » (N en minutes entieres ; formule absente : texte sans formule). */
+function recentTitle(r: { plan: string; paidAt: string; skewMs: number }): string {
+  const n = recentMinutes(r);
+  const plan = r.plan ? (PLAN_LABEL[r.plan] ?? r.plan) : '';
+  const key = `pay.recent.title${plan ? '' : '.noplan'}${n < 1 ? '.now' : ''}`;
+  return t(key, { plan, n: String(n) });
+}
+
+function Checkout({ open, plan, period, methods, currency, timezone, gate, onClose }: { open: boolean; plan: Plan | null; period: Period; methods: PaymentMethodOption[]; currency?: string; timezone?: string; gate: Gate; onClose: () => void }) {
   const { me, orgId } = useAuth();
-  const qc = useQueryClient();
+  const tr = usePaymentTracker();
   const toast = useToast();
+  const { attempt, status } = tr;
   const [chosen, setChosen] = useState<string | null>(null);
   const method = chosen && methods.some((x) => x.code === chosen) ? chosen : (methods[0]?.code ?? '');
   const methodLabel = methods.find((x) => x.code === method)?.label ?? '';
-  /** PAY-PENDING : issue inconnue, on suit le paiement sans jamais relancer. */
-  const [unknownOutcome, setUnknownOutcome] = useState(false);
   const statusRef = useRef<HTMLDivElement>(null);
   const [tel, setTel] = useState(me?.phone ? fmtPhone(me.phone) : '');
-  const [paymentId, setPaymentId] = useState<string | null>(null);
-  const poll = usePaymentPolling(paymentId);
-  const announced = useRef(false);
 
+  // la fenetre ouverte garde une issue definitive a l'ecran jusqu'a sa fermeture
+  const { setViewing, clearError, setGateReady } = tr;
   useEffect(() => {
-    if (!plan) {
-      setPaymentId(null);
-      announced.current = false;
-    }
-  }, [plan]);
+    setGateReady(gate.ready);
+  }, [gate.ready, setGateReady]);
+  // l'ecran « paiement recent » rafraichit « il y a N min » chaque minute
+  const [, minuteTick] = useState(0);
+  const showsRecent = !!attempt?.recent;
   useEffect(() => {
-    if (poll.status === 'confirme' && !announced.current) {
-      announced.current = true;
-      qc.invalidateQueries({ queryKey: ['subscription'] });
-      qc.invalidateQueries({ queryKey: ['me'] });
-      toast(`Paiement reçu. Formule ${PLAN_LABEL[plan?.code ?? ''] ?? ''} activée.`);
-    }
-  }, [poll.status, qc, toast, plan]);
-
-  const m = useMutation({
-    mutationFn: () =>
-      api.checkout({
-        account_type: orgId ? 'organisation' : 'user',
-        account_id: orgId ?? me!.id,
-        plan: plan!.code,
-        period,
-        method,
-        phone: normalizePhone(tel),
-      }),
-    onSuccess: (r) => setPaymentId(r.payment_id),
-    onError: (err) => {
-      const o = checkoutOutcome(err);
-      if (o.kind === 'pending') {
-        setUnknownOutcome(true);
-        setPaymentId(o.paymentId);
+    if (!showsRecent) return;
+    const timer = setInterval(() => minuteTick((n) => n + 1), 60_000);
+    return () => clearInterval(timer);
+  }, [showsRecent]);
+  // « Garder ma formule » (ou fin de fenetre) ailleurs : l'ecran n'a plus rien a montrer, on ferme
+  const hadRecent = useRef(false);
+  const wasOpen = useRef(false); // la fenetre derivee se ferme des que la tentative disparait : on regarde son etat au rendu precedent
+  useEffect(() => {
+    if (hadRecent.current && !attempt && (open || wasOpen.current)) {
+      const cause = tr.lastEnd();
+      // keep / autre onglet / expiration : plus rien a montrer, on ferme. Un echec de « Payer quand meme » : jamais de fermeture muette,
+      // la fenetre reste ouverte avec la notice (ou, sans formule a afficher, un message)
+      if (cause === 'failed' && plan) {
+        /* le formulaire reste avec l'erreur du dernier envoi */
+      } else {
+        if (cause === 'failed') toast(failureText(tr.lastFailure()), 'err');
+        onClose();
       }
-    },
-  });
-  const refused = m.isError && checkoutOutcome(m.error).kind === 'refused';
-  const otherError = m.isError && !refused && checkoutOutcome(m.error).kind === 'other';
-  const price = plan ? priceOf(plan, plan.code, period) : null;
-  const phoneErr = m.error instanceof ApiError ? m.error.fields?.phone : undefined;
+    }
+    hadRecent.current = !!attempt?.recent;
+    wasOpen.current = open;
+    // Volontairement limite a [attempt, open] : l'effet decide d'une TRANSITION (ecran recent -> plus de tentative) ; plan, toast et tr y sont
+    // lus a l'instant de la transition, les mettre en dependances le rejouerait a chaque rendu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt, open]);
+  // les deux boutons de l'ecran recent ne s'activent qu'apres 500 ms : un double clic sur « Payer quand meme » ne tombe jamais sur « Garder ma formule »
+  const recentKey = attempt?.recent ? `${attempt.recent.paymentId}|${attempt.recent.paidAt}` : '';
+  const [armedKey, setArmedKey] = useState('');
+  useEffect(() => {
+    if (!recentKey) return;
+    const timer = setTimeout(() => setArmedKey(recentKey), 500);
+    return () => clearTimeout(timer);
+  }, [recentKey]);
+  const recentArmed = !!recentKey && armedKey === recentKey;
+  useEffect(() => {
+    setViewing(open);
+    return () => setViewing(false);
+  }, [open, setViewing]);
+  useEffect(() => {
+    if (!open) clearError();
+  }, [open, clearError]);
+
+  const price = plan ? priceOf(plan, plan.code, period, currency) : null;
+  /** Pas de paiement connu : formulaire (y compris pendant l'envoi). */
+  const formMode = !attempt || (!attempt.paymentId && !attempt.unsent && !attempt.recent);
+  const submitError = formMode ? tr.submitError : null;
+  const outcome = submitError ? checkoutOutcome(submitError).kind : null;
+  const refused = outcome === 'refused';
+  const conflict = outcome === 'conflict';
+  const phoneErr = submitError instanceof ApiError ? submitError.fields?.phone : undefined;
+  const retryRule = outcome === 'retry';
+  const ratelimit = outcome === 'ratelimit';
+  const malformed = outcome === 'malformed';
+  const otherError = !!submitError && !refused && !conflict && !retryRule && !ratelimit && !malformed;
+  /** Dernier envoi d'une tentative d'issue inconnue : 429 ou PAY-RETRY = « pas traite maintenant », la meme requete reste a refaire. */
+  const lastKind = tr.submitError ? checkoutOutcome(tr.submitError).kind : null;
+  const notNow = lastKind === 'ratelimit' || lastKind === 'retry' || lastKind === 'malformed';
+
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (m.isPending || !method) return; // pas de double envoi
-    setUnknownOutcome(false);
-    m.mutate();
+    if (tr.submitting || tr.checking || !gate.ready || !method || !plan) return;
+    tr.submit(
+      {
+        account_type: orgId ? 'organisation' : 'user',
+        account_id: orgId ?? me!.id,
+        plan: plan.code,
+        period,
+        method,
+        phone: normalizePhone(tel),
+      },
+      { planName: plan.name ?? PLAN_LABEL[plan.code] ?? plan.code, amount: price?.amount != null && price.currency ? { amount_minor: price.amount, currency: price.currency } : null },
+    );
   };
-  const reset = () => {
-    setUnknownOutcome(false);
-    setPaymentId(null);
-    m.reset();
-    announced.current = false;
+  const retrySend = () => {
+    if (attempt?.body) tr.submit(attempt.body, { planName: attempt.planName, amount: attempt.amount });
   };
 
-  const waiting = !!paymentId && !poll.done && !poll.timedOut;
-  const outcomeKey = `${paymentId ?? ''}|${poll.status ?? ''}|${poll.timedOut}|${refused}`;
+  // textes du paiement suivi : ceux de la tentative figee, jamais la formule regardee ensuite
+  const frozen = attempt;
+  // « Reessayer » attend la fin du delai d'un 429 (Retry-After, sinon 60 s)
+  const waitUntil = frozen?.retryNotBefore ?? 0;
+  const [, retryTick] = useState(0);
   useEffect(() => {
-    if (refused || (paymentId && (poll.done || poll.timedOut))) statusRef.current?.focus();
-  }, [outcomeKey, refused, paymentId, poll.done, poll.timedOut]);
-  const canRetry = poll.status === 'echoue' || (poll.timedOut && !unknownOutcome);
-  return (
-    <Dialog
-      open={!!plan}
-      onClose={onClose}
-      title={paymentId ? 'Paiement mobile money' : `Passer à ${PLAN_LABEL[plan?.code ?? ''] ?? ''}`}
-      description={!paymentId && price?.amount != null ? `${money(price.amount)} ${period === 'yearly' ? 'par an (2 mois offerts)' : 'par mois'}` : undefined}
-      footer={
-        !paymentId ? (
-          <>
-            <button type="button" className="btn btn-ghost" onClick={onClose}>
-              Annuler
-            </button>
-            <button type="submit" form="checkout-form" className="btn btn-primary" disabled={m.isPending || !method} aria-busy={m.isPending}>
-              {m.isPending ? t('pay.sending') : t('pay.pay')}
-            </button>
-          </>
-        ) : poll.done || poll.timedOut ? (
-          <>
-            {canRetry && (
-              <button type="button" className="btn btn-ghost" onClick={reset}>
-                {t('pay.retry')}
-              </button>
-            )}
-            <button type="button" className="btn btn-primary" onClick={onClose}>
-              {poll.status === 'confirme' ? 'Terminer' : 'Fermer'}
-            </button>
-          </>
-        ) : (
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            Continuer en arrière-plan
+    if (!waitUntil || waitUntil <= Date.now()) return;
+    const timer = setTimeout(() => retryTick((n) => n + 1), waitUntil - Date.now() + 20);
+    return () => clearTimeout(timer);
+  }, [waitUntil]);
+  const retryWaiting = waitUntil > Date.now();
+  const frozenAmount = frozen?.amount ? money(frozen.amount.amount_minor, frozen.amount.currency) : '';
+  const frozenMethod = methods.find((x) => x.code === frozen?.method)?.label ?? frozen?.method ?? '';
+  /** Reessayer exige le corps complet (memoire ou sessionStorage) ; apres 3 essais sans reponse, ou corps perdu : Abandonner. Un paiement deja confirme n'est PAS couvert par PAY-OPEN : l'abandon recharge l'abonnement et demande de le verifier. */
+  const canRetrySend = !!frozen?.body;
+  /** Un autre onglet est peut-etre en train d'envoyer (corps absent, envoi recent) : on attend avant de proposer d'abandonner. */
+  const elsewhere = !!frozen && frozen.unsent && !frozen.body && Date.now() - frozen.sentAt < pollTiming.maxMs;
+  const canAbandon = !!frozen && !tr.submitting && !elsewhere && (frozen.tries >= 3 || !frozen.body);
+  const [, forceTick] = useState(0);
+  const elsewhereUntil = elsewhere && frozen ? frozen.sentAt + pollTiming.maxMs : 0;
+  useEffect(() => {
+    if (!elsewhereUntil) return;
+    const timer = setTimeout(() => forceTick((n) => n + 1), Math.max(0, elsewhereUntil - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [elsewhereUntil]);
+  const tracking = !!frozen && !!frozen.paymentId;
+  const terminal = isTerminal(status);
+  const review = isUnderReview(status);
+  const waiting = tracking && !terminal && !review && !tr.timedOut && !tr.notFound;
+  const mmss = `${Math.floor(tr.remaining / 60)}:${String(tr.remaining % 60).padStart(2, '0')}`;
+  const everyS = String(Math.round(pollTiming.intervalMs / 1000));
+
+  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}|${frozen?.tries ?? 0}|${tr.submitError ? 'e' : ''}|${elsewhere}|${retryRule}|${ratelimit}|${malformed}|${notNow}|${!!frozen?.recent}`;
+  useEffect(() => {
+    if (refused || retryRule || ratelimit || malformed || frozen?.recent || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
+  }, [outcomeKey, refused, retryRule, ratelimit, malformed, frozen?.recent, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
+
+  const abandonAndClose = () => {
+    tr.abandon();
+    onClose();
+  };
+  const closeAfterGone = () => {
+    tr.dismiss();
+    onClose();
+  };
+  const dialogTitle = !formMode ? t('pay.dialog.title') : t('pay.dialog.upgrade', { plan: plan ? (plan.name ?? PLAN_LABEL[plan.code] ?? '') : '' });
+  const description = formMode && price?.amount != null ? `${money(price.amount, price.currency)} ${t(period === 'yearly' ? 'pay.price.year' : 'pay.price.month')}` : undefined;
+
+  let footer: ReactNode;
+  if (formMode) {
+    footer = (
+      <>
+        <button type="button" className="btn btn-ghost" onClick={onClose}>
+          {t('pay.cancel')}
+        </button>
+        <button type="submit" form="checkout-form" className="btn btn-primary" disabled={tr.submitting || tr.checking || !gate.ready || !method} aria-busy={tr.submitting || tr.checking}>
+          {tr.submitting ? t('pay.sending') : tr.checking || (!gate.ready && !gate.failed) ? t('pay.checking') : t('pay.pay')}
+        </button>
+      </>
+    );
+  } else if (frozen?.recent) {
+    const busy = !!frozen.repeating || tr.checking || (!gate.ready && !gate.failed);
+    footer = (
+      <>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={(e) => {
+            if (e.detail > 1) return; // un double clic ne confirme pas deux fois
+            tr.confirmRepeat();
+          }}
+          disabled={busy || !recentArmed || !gate.ready || !frozen.body}
+          aria-busy={busy}
+        >
+          {frozen.repeating ? t('pay.sending') : tr.checking || (!gate.ready && !gate.failed) ? t('pay.checking') : t('pay.recent.repeat')}
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!!frozen.repeating || !recentArmed}
+          onClick={(e) => {
+            if (e.detail > 1) return;
+            tr.keepPlan();
+            onClose();
+          }}
+        >
+          {t('pay.recent.keep')}
+        </button>
+      </>
+    );
+  } else if (frozen?.unsent) {
+    footer = (
+      <>
+        <button type="button" className="btn btn-ghost" onClick={onClose}>
+          {t('pay.cancel')}
+        </button>
+        {canAbandon && (
+          <button type="button" className="btn btn-ghost" onClick={abandonAndClose}>
+            {t('pay.abandon')}
           </button>
-        )
-      }
-    >
-      {!paymentId ? (
+        )}
+        {canRetrySend && (
+          <button type="button" className="btn btn-primary" onClick={retrySend} disabled={tr.submitting || retryWaiting} aria-busy={tr.submitting}>
+            {tr.submitting ? t('pay.sending') : t('pay.retry')}
+          </button>
+        )}
+      </>
+    );
+  } else if (tr.notFound) {
+    footer = (
+      <button type="button" className="btn btn-primary" onClick={closeAfterGone}>
+        {t('pay.close')}
+      </button>
+    );
+  } else if (terminal) {
+    footer = (
+      <>
+        {status === 'echoue' && (
+          <button type="button" className="btn btn-ghost" onClick={() => tr.dismiss()}>
+            {t('pay.retry')}
+          </button>
+        )}
+        <button type="button" className="btn btn-primary" onClick={onClose}>
+          {status === 'confirme' ? t('pay.done') : t('pay.close')}
+        </button>
+      </>
+    );
+  } else if (waiting) {
+    footer = (
+      <button type="button" className="btn btn-ghost" onClick={onClose}>
+        {t('pay.background')}
+      </button>
+    );
+  } else {
+    footer = (
+      <button type="button" className="btn btn-primary" onClick={onClose}>
+        {t('pay.close')}
+      </button>
+    );
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} title={dialogTitle} description={description} footer={footer}>
+      {formMode || !frozen ? (
         <form id="checkout-form" className="stack" onSubmit={submit} noValidate>
           <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0, gap: 8 }}>
             <legend className="label" style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500, marginBottom: 6 }}>
@@ -205,66 +333,140 @@ function Checkout({ plan, period, methods, onClose }: { plan: Plan | null; perio
             <label htmlFor="pay-phone">{t('pay.number', { method: methodLabel })}</label>
             <input id="pay-phone" className="input" type="tel" inputMode="tel" value={tel} onChange={(e) => setTel(e.target.value)} aria-invalid={!!phoneErr} aria-describedby="pay-phone-help" />
             <span id="pay-phone-help" className={phoneErr ? 'field-err' : 'muted small'}>
-              {phoneErr ?? 'Vous recevrez une demande de confirmation sur ce téléphone.'}
+              {phoneErr ? t('pay.phone.invalid') : t('pay.phone.help')}
             </span>
           </div>
+          {conflict && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-crit" role="alert">
+              {t('pay.conflict')}
+            </div>
+          )}
           {refused && (
             <div ref={statusRef} tabIndex={-1} className="notice notice-crit" role="alert">
               <b>{t('pay.init.title')}.</b> {t('pay.init.body')}
             </div>
           )}
-          {otherError && !phoneErr && <FieldErrors error={m.error} />}
+          {gate.failed && (
+            <div className="notice notice-warn" role="alert">
+              <b>{t('pay.gate.failed')}.</b> {t('pay.gate.failed.body')}{' '}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={gate.retry}>
+                {t('pay.gate.retry')}
+              </button>
+            </div>
+          )}
+          {ratelimit && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
+              {t('pay.ratelimit')}
+            </div>
+          )}
+          {malformed && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
+              {t('pay.malformed')}
+            </div>
+          )}
+          {retryRule && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
+              {t('pay.retry.body')}
+            </div>
+          )}
+          {otherError && !phoneErr && (
+            <div className="notice notice-crit" role="alert">
+              {t('pay.error.generic')}
+            </div>
+          )}
         </form>
+      ) : frozen.recent ? (
+        <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
+          <p className="notice notice-warn" style={{ width: '100%' }}>
+            <b>{recentTitle(frozen.recent)}</b> {t('pay.recent.at', { time: timeOfDay(frozen.recent.paidAt, timezone) })}
+          </p>
+          <p className="muted">{t('pay.recent.body')}</p>
+          {!frozen.body && <p className="muted">{t('pay.recent.nobody')}</p>}
+          {gate.failed && (
+            <div className="notice notice-warn" role="alert">
+              <b>{t('pay.gate.failed')}.</b> {t('pay.gate.failed.body')}{' '}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={gate.retry}>
+                {t('pay.gate.retry')}
+              </button>
+            </div>
+          )}
+        </div>
+      ) : frozen.unsent ? (
+        <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
+          <p className="notice notice-warn" style={{ width: '100%' }}>
+            <b>{t('pay.unsent.title')}.</b> {t(lastKind === 'ratelimit' ? 'pay.ratelimit' : lastKind === 'retry' ? 'pay.unsent.busy' : lastKind === 'malformed' ? 'pay.malformed' : canRetrySend ? 'pay.unsent.body' : elsewhere ? 'pay.unsent.elsewhere' : 'pay.unsent.nobody')}
+          </p>
+          <p className="muted">
+            {frozenAmount ? t('pay.unsent.plan', { plan: frozen.planName, amount: frozenAmount }) : t('pay.unsent.plan.noamount', { plan: frozen.planName })}
+          </p>
+        </div>
       ) : (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
-          {unknownOutcome && poll.status !== 'confirme' && poll.status !== 'echoue' && (
+          {frozen.existing && !terminal && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              {t('pay.open.body', { plan: frozen.planName })}
+            </p>
+          )}
+          {frozen.unknown && !frozen.existing && !terminal && !review && !tr.timedOut && !tr.notFound && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
               <b>{t('pay.pending.title')}.</b> {t('pay.pending.body')}
             </p>
           )}
-          {waiting && !unknownOutcome && (
+          {waiting && !frozen.unknown && (
             <>
               <div className="pay-phone" aria-hidden="true">
                 <div className="pay-ussd">
-                  Confirmez le paiement de {price?.amount != null ? money(price.amount) : ''}
+                  {t('pay.ussd.confirm', { amount: frozenAmount })}
                   <br />
-                  1. Oui
+                  {t('pay.ussd.yes')}
                   <br />
-                  2. Non
+                  {t('pay.ussd.no')}
                 </div>
               </div>
               <div>
-                <h3 style={{ fontSize: 17, fontWeight: 600 }}>Validez sur votre téléphone</h3>
-                <p className="muted">
-                  Une demande {methodLabel} a été envoyée au {tel}. Saisissez votre code secret pour confirmer.
-                </p>
+                <h3 style={{ fontSize: 17, fontWeight: 600 }}>{t('pay.validate.title')}</h3>
+                <p className="muted">{t('pay.validate.body', { method: frozenMethod, phone: frozen.body?.phone ?? frozen.phoneMasked })}</p>
               </div>
-              <p className="countdown">
-                {poll.status === 'en_attente' ? 'En attente de votre confirmation' : 'Demande envoyée'} · vérification toutes les 5 s · {Math.floor(poll.remaining / 60)}:{String(poll.remaining % 60).padStart(2, '0')}
-              </p>
+              <p className="countdown">{t('pay.countdown.line', { state: t(status === 'en_attente' ? 'pay.countdown.waiting' : 'pay.countdown.sent'), s: everyS, time: mmss })}</p>
             </>
           )}
-          {waiting && unknownOutcome && (
-            <p className="countdown">
-              Vérification toutes les 5 s · {Math.floor(poll.remaining / 60)}:{String(poll.remaining % 60).padStart(2, '0')}
-            </p>
-          )}
-          {poll.status === 'confirme' && (
+          {waiting && frozen.unknown && <p className="countdown">{t('pay.countdown.only', { s: everyS, time: mmss })}</p>}
+          {status === 'confirme' && (
             <p className="notice notice-ok" style={{ width: '100%' }}>
-              <b>{t('pay.confirmed')}</b> Votre formule {PLAN_LABEL[plan?.code ?? '']} est active. Un reçu vous est envoyé par SMS.
+              <b>{t('pay.confirmed')}</b> {t('pay.confirmed.body', { plan: frozen.planName })}
             </p>
           )}
-          {poll.status === 'echoue' && (
-            <p className="notice notice-crit" style={{ width: '100%' }}>
-              <b>Paiement refusé.</b> Le solde est peut-être insuffisant ou la demande a été annulée. Aucun montant n'a été prélevé.
-            </p>
-          )}
-          {poll.timedOut && (
+          {status === 'a_verifier' && (
             <p className="notice notice-warn" style={{ width: '100%' }}>
-              <b>Pas de réponse après 2 minutes.</b> Si vous avez validé, l'activation apparaîtra d'ici quelques minutes. Sinon, relancez le paiement.
+              <b>{t('pay.verify.title')}.</b> {t('pay.verify.body')}
             </p>
           )}
-          {poll.error != null && <ErrorState compact error={poll.error} />}
+          {status === 'remboursement_en_cours' && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              {t('pay.refunding')}
+            </p>
+          )}
+          {status === 'rembourse' && (
+            <p className="notice notice-ok" style={{ width: '100%' }}>
+              {t('pay.refunded')}
+            </p>
+          )}
+          {status === 'echoue' && (
+            <p className="notice notice-crit" style={{ width: '100%' }}>
+              <b>{t('pay.refused.late')}</b> {t('pay.echoue.body')}
+            </p>
+          )}
+          {tr.timedOut && !review && (
+            <p className="notice notice-warn" style={{ width: '100%' }}>
+              <b>{t('pay.timeout.title')}</b> {t('pay.timeout.body')}
+            </p>
+          )}
+          {tr.notFound && (
+            <p className="notice notice-crit" role="alert" style={{ width: '100%' }}>
+              {t('pay.notfound')}
+            </p>
+          )}
+          {tr.pollError != null && <ErrorState compact error={tr.pollError} />}
         </div>
       )}
     </Dialog>
@@ -275,16 +477,47 @@ export default function Subscriptions() {
   usePageMeta('Abonnements', 'Formule, paiement mobile money et quotas');
   const [period, setPeriod] = useState<Period>('monthly');
   const [buying, setBuying] = useState<Plan | null>(null);
-  const sub = useQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription });
+  const [trackOpen, setTrackOpen] = useState(false);
+  const tracker = usePaymentTracker();
+  // la fenetre ouverte par « Voir le paiement » n'a plus rien a montrer quand la tentative disparait (abandon, autre onglet) : jamais un formulaire sans formule
+  useEffect(() => {
+    if (trackOpen && !tracker.attempt) setTrackOpen(false);
+  }, [trackOpen, tracker.attempt]);
+  const dash = useAuth();
+  const accountType = dash.orgId ? 'organisation' : 'user';
+  const accountId = dash.orgId ?? dash.me?.id;
+  const sub = useQuery({
+    queryKey: subscriptionKey(accountType, accountId),
+    queryFn: () => api.currentSubscription({ account_type: accountType, account_id: accountId! }),
+    enabled: !!accountId,
+    refetchOnWindowFocus: false,
+  });
+  /** Payer (et les boutons « Choisir ») seulement quand l'abonnement du payeur est charge et a jour. */
+  const gateReady = sub.isSuccess && !sub.isFetching;
+  const gate: Gate = { ready: gateReady, failed: sub.isError && !sub.isFetching, retry: () => void sub.refetch() };
   const plansQ = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM') });
   const plans = { ...plansQ, data: plansQ.data ? listOf(plansQ.data) : undefined };
   const methods = (!Array.isArray(plansQ.data) && plansQ.data?.payment_methods) || [];
-  const dash = useAuth();
+  const plansCurrency = !Array.isArray(plansQ.data) ? plansQ.data?.currency : undefined;
   const current = sub.data?.plan;
   const currentPlan = plans.data?.find((p) => p.code === current);
 
   return (
     <>
+      {tracker.attempt && !isTerminal(tracker.status) && (
+        <div className="notice notice-warn" role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>
+            {tracker.attempt.recent
+              ? tracker.attempt.recent.plan
+                ? t('pay.banner.recent', { plan: PLAN_LABEL[tracker.attempt.recent.plan] ?? tracker.attempt.recent.plan })
+                : t('pay.banner.recent.noplan')
+              : t(tracker.notFound ? 'pay.banner.notfound' : 'pay.banner', { plan: tracker.attempt.planName })}
+          </span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setTrackOpen(true)}>
+            {t('pay.banner.view')}
+          </button>
+        </div>
+      )}
       <div className="grid-main">
         <Card id="cur" title="Formule actuelle">
           {sub.isLoading ? (
@@ -372,7 +605,7 @@ export default function Subscriptions() {
         ) : (
           <div className="plan-cards">
             {plans.data?.map((p) => {
-              const pr = priceOf(p, p.code, period);
+              const pr = priceOf(p, p.code, period, plansCurrency);
               const isCurrent = p.code === current;
               const rank = (c?: PlanCode) => plans.data?.find((x) => x.code === c)?.rank ?? 0;
               return (
@@ -383,11 +616,14 @@ export default function Subscriptions() {
                   </h3>
                   <div className="plan-price">
                     {pr.amount === null ? (
-                      'Sur devis'
+                      t('price.quote')
+                    ) : pr.amount === undefined ? (
+                      <small>{t('price.unavailable')}</small>
                     ) : (
                       <>
-                        {pr.from && <small>dès </small>}
-                        {num(pr.amount)} <small>FCFA{pr.amount > 0 ? ` / ${period === 'yearly' ? 'an' : 'mois'}` : ''}</small>
+                        {pr.from && <small>{t('price.from')} </small>}
+                        {money(pr.amount, pr.currency)}
+                        {pr.amount > 0 && <small> {t(period === 'yearly' ? 'price.per_year' : 'price.per_month')}</small>}
                       </>
                     )}
                   </div>
@@ -401,7 +637,7 @@ export default function Subscriptions() {
                     </li>
                   </ul>
                   {isCurrent ? (
-                    <button type="button" className="btn btn-ghost" onClick={() => setBuying(p)} disabled={!pr.amount}>
+                    <button type="button" className="btn btn-ghost" onClick={() => setBuying(p)} disabled={!pr.amount || !gateReady}>
                       Renouveler
                     </button>
                   ) : pr.amount === null ? (
@@ -413,7 +649,7 @@ export default function Subscriptions() {
                       {rank(p.code) < rank(current) ? 'Rétrogradation sur demande' : 'Gratuite'}
                     </button>
                   ) : (
-                    <button type="button" className="btn btn-primary" onClick={() => setBuying(p)}>
+                    <button type="button" className="btn btn-primary" onClick={() => setBuying(p)} disabled={!gateReady}>
                       {rank(p.code) > rank(current) ? `Passer à ${p.name ?? PLAN_LABEL[p.code]}` : `Choisir ${p.name ?? PLAN_LABEL[p.code]}`}
                     </button>
                   )}
@@ -426,7 +662,7 @@ export default function Subscriptions() {
           {methods.length > 0 ? t('pay.footnote', { methods: methods.map((x) => x.label).join(', ') }) : t('pay.footnote.none')}
         </p>
       </section>
-      <Checkout plan={buying} period={period} methods={methods} onClose={() => setBuying(null)} />
+      <Checkout open={!!buying || (trackOpen && !!tracker.attempt)} plan={buying} period={period} methods={methods} currency={plansCurrency} timezone={!Array.isArray(plansQ.data) ? plansQ.data?.timezone : undefined} gate={gate} onClose={() => (setBuying(null), setTrackOpen(false))} />
     </>
   );
 }

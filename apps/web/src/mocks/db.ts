@@ -10,7 +10,10 @@ import type {
   Member,
   PackContent,
   PackVersion,
+  AdminPayment,
   Payment,
+  PaymentStatus,
+  ReconciliationReport,
   PaymentMethodOption,
   Plan,
   Reminder,
@@ -412,7 +415,87 @@ export const subscription: Subscription = {
   account_type: 'organisation', account_id: ORG_ID,
 };
 
-export const payments: (Payment & { created: number; phone: string })[] = [];
+export interface MockPayment extends Payment {
+  created: number;
+  phone: string;
+  /** Paiement simule par le suivi eleveur (confirme apres quelques secondes) ; faux pour les donnees d'administration. */
+  sim: boolean;
+  /** Cle d'idempotence du checkout (id envoye par le client) et empreinte de la demande. */
+  idem?: { id: string; key: string };
+  payer_type: 'user' | 'organisation';
+  payer_id: string;
+  connector: string | null;
+  error_code: string | null;
+  poll: AdminPayment['poll'];
+  refund: AdminPayment['refund'];
+}
+
+const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+const seedPay = (id: string, status: PaymentStatus, plan: string, period: string, minor: number, method: string, minutesAgo: number, extra: Partial<MockPayment> = {}): MockPayment => ({
+  id,
+  status,
+  purpose: 'abonnement',
+  plan,
+  period,
+  amount: { amount_minor: minor, currency: 'XAF' },
+  method,
+  provider_ref: `PRV-${id.slice(-4).toUpperCase()}`,
+  paid_at: status === 'confirme' || status === 'remboursement_en_cours' || status === 'rembourse' ? ago(minutesAgo - 1) : null,
+  created_at: ago(minutesAgo),
+  created: Date.now() - minutesAgo * 60_000,
+  phone: '+237690000002',
+  sim: false,
+  payer_type: 'user',
+  payer_id: 'u-690000002',
+  connector: 'agregateur_cm',
+  error_code: null,
+  poll: null,
+  refund: null,
+  ...extra,
+});
+
+export const payments: MockPayment[] = [
+  seedPay('00000000-0000-4000-8000-0000000000a1', 'a_verifier', 'pro', 'mensuel', 2500, 'orange_money', 190, { error_code: 'timeout', poll: { count: 6, last_at: ago(20), next_at: ago(-40), last: 'inconnu' } }),
+  seedPay('00000000-0000-4000-8000-0000000000a2', 'confirme', 'structure', 'annuel', 150000, 'mtn_momo', 1500, { payer_type: 'organisation', payer_id: ORG_ID }),
+  seedPay('00000000-0000-4000-8000-0000000000a3', 'en_attente', 'pro', 'mensuel', 2500, 'mtn_momo', 4, { poll: { count: 1, last_at: ago(1), next_at: ago(-1), last: 'PENDING' } }),
+  seedPay('00000000-0000-4000-8000-0000000000a4', 'echoue', 'pro', 'annuel', 25000, 'orange_money', 3000, { error_code: 'refus_operateur' }),
+  seedPay('00000000-0000-4000-8000-0000000000a5', 'remboursement_en_cours', 'pro', 'mensuel', 2500, 'orange_money', 2900, {
+    refund: { id: '00000000-0000-4000-8000-0000000000b5', status: 'en_attente', reason: 'Double paiement constate par le support', requested_at: ago(30) },
+  }),
+  seedPay('00000000-0000-4000-8000-0000000000a7', 'remboursement_en_cours', 'pro', 'mensuel', 2500, 'mtn_momo', 2800, {
+    refund: { id: '00000000-0000-4000-8000-0000000000b7', status: 'a_verifier', reason: 'Erreur de formule', requested_at: ago(1200) },
+  }),
+  seedPay('00000000-0000-4000-8000-0000000000a6', 'rembourse', 'pro', 'mensuel', 2500, 'mtn_momo', 4400, {
+    refund: { id: '00000000-0000-4000-8000-0000000000b6', status: 'rembourse', reason: 'Erreur de formule', requested_at: ago(4300), done_at: ago(4290), ref: 'RF-8841' },
+  }),
+];
+
+export const reconciliations: ReconciliationReport[] = [
+  {
+    day: '2026-11-11',
+    generated_at: '2026-11-12T01:05:00Z',
+    totals: { payments: 4, confirmes: 2, confirmed_amounts: [{ amount_minor: 152500, currency: 'XAF' }] },
+    confirmes_sans_abonnement: [{ payment_id: '00000000-0000-4000-8000-0000000000a2', payer_type: 'organisation', payer_id: ORG_ID, plan: 'structure' }],
+    abonnements_sans_paiement: [],
+    divergences: [{ connector: 'agregateur_cm', payment_id: '00000000-0000-4000-8000-0000000000a1', provider_ref: 'PRV-00A1', base: 'a_verifier', fournisseur: 'confirme', ecart: 'statut' }],
+    non_verifies: [],
+    erreurs: [],
+    complet: true,
+    sources: [{ connector: 'agregateur_cm', source: 'liste' }],
+  },
+  {
+    day: '2026-11-10',
+    generated_at: '2026-11-11T01:05:00Z',
+    totals: { payments: 1, confirmes: 1, confirmed_amounts: [{ amount_minor: 2500, currency: 'XAF' }] },
+    confirmes_sans_abonnement: [],
+    abonnements_sans_paiement: [],
+    divergences: [],
+    non_verifies: [],
+    erreurs: [],
+    complet: true,
+    sources: [{ connector: 'agregateur_cm', source: 'statut' }],
+  },
+];
 
 /* -------------------------------------------------------------- studio */
 

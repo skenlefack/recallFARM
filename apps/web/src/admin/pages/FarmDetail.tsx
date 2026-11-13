@@ -128,7 +128,7 @@ export default function FarmDetail() {
               {money(kpis.data.margin.margin.amount_minor, kpis.data.margin.margin.currency)}
             </span>
             <span className="kpi-sub">
-              ventes {money(kpis.data.margin.revenue.amount_minor)} · dépenses {money(kpis.data.margin.expenses.amount_minor)}
+              ventes {money(kpis.data.margin.revenue.amount_minor, kpis.data.margin.revenue.currency)} · dépenses {money(kpis.data.margin.expenses.amount_minor, kpis.data.margin.expenses.currency)}
             </span>
           </div>
         )}

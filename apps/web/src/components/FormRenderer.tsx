@@ -7,6 +7,7 @@
  */
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import { evaluate, truthy, type ExprContext } from '../lib/expr';
+import { currencyLabel } from '../lib/format';
 
 export type FieldType =
   | 'text'
@@ -251,7 +252,7 @@ function FieldInput({ f, value, set, label, ctx, inputId, labelId, invalid, desc
       return (
         <div className="fr-unit">
           <input id={inputId} className="fr-input" type="number" min={0} inputMode="numeric" value={value === null || value === undefined ? '' : String(value)} onChange={(e) => set(e.target.value === '' ? null : Number(e.target.value))} {...aria} />
-          <span>{f.currency === 'XAF' || !f.currency ? 'FCFA' : f.currency}</span>
+          {f.currency && <span>{currencyLabel(f.currency)}</span>}
         </div>
       );
     case 'date':

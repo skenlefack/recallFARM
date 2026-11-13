@@ -17,17 +17,19 @@ describe('Home pricing', () => {
     await userEvent.click(within(pricing).getByRole('button', { name: /annuel/i }));
     expect(within(pricing).getByRole('button', { name: /annuel/i })).toHaveAttribute('aria-pressed', 'true');
     expect(within(pricing).getByText(/25.000/)).toBeInTheDocument();
-    expect(within(pricing).getAllByText(/FCFA \/ an/).length).toBeGreaterThan(0);
+    // la devise vient de /plans et est mise en forme par Intl : « 25 000 FCFA » puis « / an »
+    expect(within(pricing).getAllByText(/\/ an/).length).toBeGreaterThan(0);
+    expect(within(pricing).getByText(/25.000.FCFA/)).toBeInTheDocument();
   });
 
-  it('falls back to the static prices when the API is unreachable', async () => {
+  it("n'invente ni tarif ni devise quand l'API est injoignable", async () => {
     setTransport(async () => {
       throw new TypeError('offline');
     });
     renderApp(<Home />);
     const pricing = screen.getByRole('region', { name: /des tarifs/i });
-    await waitFor(() => expect(within(pricing).getByText(/15.000/)).toBeInTheDocument(), { timeout: 4000 });
-    expect(within(pricing).getByText(/2.500/)).toBeInTheDocument();
+    await waitFor(() => expect(within(pricing).getAllByText('Tarif indisponible pour le moment').length).toBe(3), { timeout: 4000 });
+    expect(pricing.textContent).not.toMatch(/FCFA|XAF|\d{3}/);
   });
 });
 

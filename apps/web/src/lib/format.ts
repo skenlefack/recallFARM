@@ -1,5 +1,7 @@
 /** French formatting helpers (narrow no-break space thousands separator, comma decimals). */
 
+import { getLocale } from './i18n';
+
 const NNBSP = '\u202F';
 const NBSP = '\u00A0';
 
@@ -18,12 +20,39 @@ export function asPercent(v: number): number {
   return Math.abs(v) <= 1 ? v * 100 : v;
 }
 
-export function money(amountMinor: number | null | undefined, currency = 'XAF'): string {
-  if (amountMinor === null || amountMinor === undefined) return '—';
-  // XAF/XOF have no minor unit (ISO 4217 exponent 0)
-  const exp = currency === 'XAF' || currency === 'XOF' ? 0 : 2;
-  const label = currency === 'XAF' || currency === 'XOF' ? 'FCFA' : currency;
-  return `${num(amountMinor / 10 ** exp)}${NBSP}${label}`;
+/** Formats Intl en cache par locale et devise (la construction d'un Intl.NumberFormat est couteuse). */
+const currencyFormats = new Map<string, Intl.NumberFormat | null>();
+function currencyFormat(currency: string): Intl.NumberFormat | null {
+  const tag = getLocale() === 'en' ? 'en' : 'fr-FR';
+  const key = `${tag}|${currency.toUpperCase()}`;
+  if (!currencyFormats.has(key)) {
+    try {
+      currencyFormats.set(key, new Intl.NumberFormat(tag, { style: 'currency', currency: currency.toUpperCase() }));
+    } catch {
+      currencyFormats.set(key, null); // code de devise inconnu de l'environnement
+    }
+  }
+  return currencyFormats.get(key) ?? null;
+}
+
+/**
+ * Montant en unite mineure ISO 4217 + devise recue de l'API (jamais de devise par defaut).
+ * L'exposant (0 pour XAF/XOF, 2 pour EUR...) et le symbole viennent d'Intl, pas du code.
+ * Sans devise connue, seul le nombre est affiche : pas d'unite inventee.
+ */
+export function money(amountMinor: number | null | undefined, currency: string | null | undefined): string {
+  if (amountMinor === null || amountMinor === undefined || Number.isNaN(amountMinor)) return '—';
+  const f = currency ? currencyFormat(currency) : null;
+  if (!f) return currency ? `${num(amountMinor)}${NBSP}${currency}` : num(amountMinor);
+  const digits = f.resolvedOptions().maximumFractionDigits ?? 0;
+  return f.format(amountMinor / 10 ** digits);
+}
+
+/** Libelle court d'une devise (symbole Intl, sinon code ISO), pour un champ de saisie. */
+export function currencyLabel(currency: string | null | undefined): string {
+  if (!currency) return '';
+  const f = currencyFormat(currency);
+  return f?.formatToParts(0).find((p) => p.type === 'currency')?.value ?? currency;
 }
 
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
@@ -166,4 +195,16 @@ export const PLAN_LABEL: Record<string, string> = { decouverte: 'Découverte', p
 
 export function pluralize(n: number, one: string, many: string): string {
   return `${num(n)} ${n > 1 ? many : one}`;
+}
+
+/** Heure d'un instant ISO (« 14:32 ») dans le fuseau du pays s'il est connu, sinon celui de l'appareil. */
+export function timeOfDay(iso: string, timeZone?: string): string {
+  const tag = getLocale() === 'en' ? 'en' : 'fr-FR';
+  const d = new Date(iso);
+  try {
+    return new Intl.DateTimeFormat(tag, { hour: '2-digit', minute: '2-digit', ...(timeZone ? { timeZone } : {}) }).format(d);
+  } catch (e) {
+    console.warn('[format] fuseau inconnu, heure de l\'appareil', timeZone, e);
+    return new Intl.DateTimeFormat(tag, { hour: '2-digit', minute: '2-digit' }).format(d);
+  }
 }

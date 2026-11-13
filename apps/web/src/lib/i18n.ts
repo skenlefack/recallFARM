@@ -1,4 +1,6 @@
 /** Mini dictionnaire fr/en (le francais est la langue par defaut ; l'anglais est prepare par cles). */
+import { PAYMENT_EN, PAYMENT_FR } from './i18n-payments';
+
 export type Locale = 'fr' | 'en';
 
 const DICT: Record<Locale, Record<string, string>> = {
@@ -17,6 +19,7 @@ const DICT: Record<Locale, Record<string, string>> = {
     'pay.number': 'Numéro {method}',
     'pay.footnote': 'Paiement par {methods}. Les prix Structure dépendent du nombre d’éleveurs suivis.',
     'pay.footnote.none': 'Les prix Structure dépendent du nombre d’éleveurs suivis.',
+    ...PAYMENT_FR,
   },
   en: {
     'pay.init.title': 'Payment declined',
@@ -33,12 +36,16 @@ const DICT: Record<Locale, Record<string, string>> = {
     'pay.number': '{method} number',
     'pay.footnote': 'Pay with {methods}. Structure prices depend on the number of farmers followed.',
     'pay.footnote.none': 'Structure prices depend on the number of farmers followed.',
+    ...PAYMENT_EN,
   },
 };
 
 let locale: Locale = 'fr';
 export function setLocale(l: Locale): void {
   locale = l;
+}
+export function getLocale(): Locale {
+  return locale;
 }
 
 export function t(key: string, vars?: Record<string, string>): string {

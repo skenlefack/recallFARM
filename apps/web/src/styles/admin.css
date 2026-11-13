@@ -1385,14 +1385,16 @@
     flex-direction: column;
     font-size: 13px;
   }
-  .list-rows > div {
+  .list-rows > div,
+  .list-rows > li {
     display: flex;
     justify-content: space-between;
     gap: 12px;
     padding: 10px 0;
     border-bottom: 1px solid var(--line-2);
   }
-  .list-rows > div:last-child {
+  .list-rows > div:last-child,
+  .list-rows > li:last-child {
     border-bottom: 0;
   }
   .dl {
