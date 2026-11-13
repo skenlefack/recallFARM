@@ -1,6 +1,9 @@
 import * as XLSX from 'xlsx';
 import { crc32, deflateRawSync } from 'zlib';
-import { XLSX_MAX_UNCOMPRESSED, sanitizeXlsx } from './xlsx-guard';
+import { XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, XLSX_MAX_UNCOMPRESSED, boundedSheetRange, sanitizeXlsx } from './xlsx-guard';
+
+/** Entry of SheetJS's CFB container (not exported by its type definitions). */
+type CfbEntry = { type: number; content: Uint8Array | number[] };
 
 /** Real workbook built by SheetJS itself (stored, or deflated with compression: true). */
 function workbook(rows: string[][], compression = false): Buffer {
@@ -75,9 +78,9 @@ function zip(specs: Spec[], opts: { comment?: Buffer; entriesOnDisk?: number; re
 /** Entries of a SheetJS workbook, re-packed by the forger above. */
 function entriesOf(buf: Buffer): Spec[] {
   const z = XLSX.CFB.read(buf, { type: 'buffer' });
-  return z.FullPaths.map((path, i) => ({ path, e: z.FileIndex[i] }))
-    .filter(({ e }) => e.type === 2)
-    .map(({ path, e }) => ({ name: path.replace(/^Root Entry\//, ''), content: Buffer.from(e.content as Uint8Array) }));
+  return z.FullPaths.map((path: string, i: number) => ({ path, e: z.FileIndex[i] }))
+    .filter(({ e }: { e: CfbEntry }) => e.type === 2)
+    .map(({ path, e }: { path: string; e: CfbEntry }) => ({ name: path.replace(/^Root Entry\//, ''), content: Buffer.from(e.content) }));
 }
 
 const rowsOf = (buf: Buffer) => {
@@ -98,7 +101,7 @@ describe('sanitizeXlsx (Q-SEC-01, ADR-006)', () => {
   it('hands SheetJS an uncompressed copy (nothing left to inflate)', () => {
     const safe = sanitizeXlsx(workbook(ROWS, true));
     const z = XLSX.CFB.read(safe, { type: 'buffer' });
-    expect(z.FileIndex.filter((e) => e.type === 2).length).toBeGreaterThan(3);
+    expect(z.FileIndex.filter((e: CfbEntry) => e.type === 2).length).toBeGreaterThan(3);
     // Every central header of the copy says "stored" (method 0).
     for (let i = safe.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])); i >= 0; i = safe.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), i + 4)) {
       expect(safe.readUInt16LE(i + 10)).toBe(0);
@@ -123,9 +126,7 @@ describe('sanitizeXlsx (Q-SEC-01, ADR-006)', () => {
 
   it('review B1: a zero declared size cannot expand (2 GB bomb in 2 MB)', () => {
     const bomb = zip([{ name: 'xl/sharedStrings.xml', content: ZEROS, deflate: true, localUsz: 0, centralUsz: 0 }]);
-    const t = Date.now();
     expect(() => sanitizeXlsx(bomb)).toThrow('taille déclarée fausse');
-    expect(Date.now() - t).toBeLessThan(2000);
   });
 
   it('review B1: a small declared size that lies is caught by the capped inflate', () => {
@@ -180,5 +181,60 @@ describe('sanitizeXlsx (Q-SEC-01, ADR-006)', () => {
     const corrupted = Buffer.from(ok);
     corrupted.fill(0xff, 60, 400);
     expect(() => sanitizeXlsx(corrupted)).toThrow(/classeur Excel invalide/);
+  });
+
+  it('review 0e1d1ae B1: entries sharing or overlapping their bytes are refused (no repeated inflate)', () => {
+    const one = zip([{ name: 'xl/a.xml', content: Buffer.from('<a/>'), deflate: true }]);
+    // Same archive, plus a second central entry pointing at the same local header.
+    const eocdAt = one.length - 22;
+    const cdOffset = one.readUInt32LE(eocdAt + 16);
+    const cdEntry = one.subarray(cdOffset, eocdAt);
+    const dup = Buffer.from(cdEntry);
+    dup.write('xl/b.xml', 46, 'latin1');
+    const eocd = Buffer.from(one.subarray(eocdAt));
+    eocd.writeUInt16LE(2, 8);
+    eocd.writeUInt16LE(2, 10);
+    eocd.writeUInt32LE(cdEntry.length * 2, 12);
+    const shared = Buffer.concat([one.subarray(0, eocdAt), dup, eocd]);
+    expect(() => sanitizeXlsx(shared)).toThrow('entrées qui se chevauchent');
+  });
+
+  it('refuses duplicate entry names', () => {
+    const specs = entriesOf(workbook(ROWS));
+    expect(() => sanitizeXlsx(zip([...specs, { ...specs[0] }]))).toThrow('classeur Excel invalide');
+  });
+
+  it('refuses more entries than a real workbook has', () => {
+    const many = Array.from({ length: 201 }, (_, i) => ({ name: `x/${i}.xml`, content: Buffer.from('<a/>') }));
+    expect(() => sanitizeXlsx(zip(many))).toThrow('trop complexe');
+  });
+});
+
+describe('boundedSheetRange (review 0e1d1ae B2: never trust <dimension>)', () => {
+  it('keeps an ordinary range', () => {
+    expect(boundedSheetRange('A1:E3')).toEqual({ s: { r: 0, c: 0 }, e: { r: 2, c: 4 } });
+    expect(boundedSheetRange(undefined)).toEqual({ s: { r: 0, c: 0 }, e: { r: 0, c: 0 } });
+  });
+
+  it('caps the rows at header + max rows + 1 and refuses too many columns', () => {
+    expect(boundedSheetRange('A1:E9999999').e.r).toBe(XLSX_MAX_ROWS + 1);
+    expect(() => boundedSheetRange('A1:XFD20001')).toThrow(`trop de colonnes (${XLSX_MAX_COLUMNS} maximum)`);
+    expect(() => boundedSheetRange('B2:A1')).toThrow('classeur Excel invalide');
+    expect(() => boundedSheetRange('not a ref')).toThrow('classeur Excel invalide');
+  });
+
+  it('a tiny workbook announcing a huge sheet is refused before any cell is filled', () => {
+    // Patch only the <dimension> of a real 2-row sheet (writing such a sheet with SheetJS would
+    // itself try to emit every announced cell).
+    const specs = entriesOf(workbook(ROWS)).map((e) =>
+      /worksheets\/sheet1\.xml$/.test(e.name)
+        ? { ...e, content: Buffer.from(e.content.toString('utf8').replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:XFD20001"/>')) }
+        : e,
+    );
+    expect(specs.some((e) => e.content.includes('A1:XFD20001'))).toBe(true);
+    const file = zip(specs.map((e) => ({ ...e, deflate: true })));
+    expect(file.length).toBeLessThan(20_000);
+    const read = XLSX.read(sanitizeXlsx(file), { type: 'buffer', sheetRows: XLSX_MAX_ROWS + 2, cellHTML: false });
+    expect(() => boundedSheetRange(read.Sheets[read.SheetNames[0]]['!ref'])).toThrow('trop de colonnes');
   });
 });

@@ -20,7 +20,10 @@ import { crc32, inflateRawSync } from 'zlib';
 export const XLSX_MAX_UNCOMPRESSED = 16 * 1024 * 1024;
 /** Max data rows (header excluded) of an imported workbook. */
 export const XLSX_MAX_ROWS = 20_000;
-const MAX_ENTRIES = 2_000;
+/** A real .xlsx has 10 to 30 entries. */
+const MAX_ENTRIES = 200;
+/** Max columns of the imported sheet (the import uses 5). */
+export const XLSX_MAX_COLUMNS = 64;
 
 const LFH_SIG = 0x04034b50;
 const CDH_SIG = 0x02014b50;
@@ -91,9 +94,11 @@ function readEntries(buf: Buffer, maxUncompressed: number): Entry[] {
   if (count > MAX_ENTRIES) reject('classeur Excel trop complexe');
   if (cdOffset + cdSize !== eocd) reject();
 
-  const out: Entry[] = [];
-  let total = 0;
-  let firstLocal = Number.MAX_SAFE_INTEGER;
+  // Pass 1: read and cross-check every header, without inflating anything.
+  type Item = { name: Buffer; utf8: boolean; method: number; csz: number; usz: number; local: number; dataStart: number };
+  const items: Item[] = [];
+  const names = new Set<string>();
+  let declared = 0;
   let p = cdOffset;
   for (let n = 0; n < count; n++) {
     if (p + 46 > eocd || buf.readUInt32LE(p) !== CDH_SIG) reject();
@@ -109,9 +114,12 @@ function readEntries(buf: Buffer, maxUncompressed: number): Entry[] {
     if (csz === 0xffffffff || usz === 0xffffffff || hasZip64Extra(buf, p + 46 + nameLen, extraLen)) reject(ZIP64);
     if (flags & FLAG_ENCRYPTED) reject();
     if (method !== 0 && method !== 8) reject();
+    const name = Buffer.from(buf.subarray(p + 46, p + 46 + nameLen));
+    const key = name.toString('latin1');
+    if (names.has(key)) reject();
+    names.add(key);
 
     if (local + 30 > cdOffset || buf.readUInt32LE(local) !== LFH_SIG) reject();
-    firstLocal = Math.min(firstLocal, local);
     const lNameLen = buf.readUInt16LE(local + 26);
     const lExtraLen = buf.readUInt16LE(local + 28);
     if (hasZip64Extra(buf, local + 30 + lNameLen, lExtraLen)) reject(ZIP64);
@@ -123,29 +131,39 @@ function readEntries(buf: Buffer, maxUncompressed: number): Entry[] {
     if (!(lcsz === csz && lusz === usz) && !(descriptor && lcsz === 0 && lusz === 0)) reject();
     const dataStart = local + 30 + lNameLen + lExtraLen;
     if (dataStart + csz > cdOffset) reject();
-
-    if (total + usz > maxUncompressed) {
+    declared += usz;
+    if (declared > maxUncompressed) {
       reject(`classeur Excel trop volumineux une fois décompressé (${Math.round(maxUncompressed / 1024 / 1024)} Mo maximum)`);
     }
-    const raw = buf.subarray(dataStart, dataStart + csz);
+    items.push({ name, utf8: (flags & FLAG_UTF8) !== 0, method, csz, usz, local, dataStart });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  if (p !== eocd) reject();
+
+  // Entries must not share or overlap their bytes (else one region is inflated again and again),
+  // and the archive starts with an entry (no data hidden before the first local header).
+  const byOffset = [...items].sort((x, y) => x.local - y.local);
+  if (byOffset[0].local !== 0) reject();
+  for (let i = 1; i < byOffset.length; i++) {
+    if (byOffset[i].local < byOffset[i - 1].dataStart + byOffset[i - 1].csz) reject('classeur Excel invalide (entrées qui se chevauchent)');
+  }
+
+  // Pass 2: really inflate each entry under a hard cap; the real size must equal the declared one.
+  return items.map((it) => {
+    const raw = buf.subarray(it.dataStart, it.dataStart + it.csz);
     let data: Buffer;
-    if (method === 0) {
+    if (it.method === 0) {
       data = Buffer.from(raw);
     } else {
       try {
-        data = inflateRawSync(raw, { maxOutputLength: usz + 1 });
+        data = inflateRawSync(raw, { maxOutputLength: it.usz + 1 });
       } catch {
         reject(BAD_SIZE);
       }
     }
-    if (data.length !== usz) reject(BAD_SIZE);
-    total += usz;
-    out.push({ name: Buffer.from(buf.subarray(p + 46, p + 46 + nameLen)), utf8: (flags & FLAG_UTF8) !== 0, data });
-    p += 46 + nameLen + extraLen + commentLen;
-  }
-  // The archive starts with an entry (no data hidden before the first local header).
-  if (p !== eocd || firstLocal !== 0) reject();
-  return out;
+    if (data.length !== it.usz) reject(BAD_SIZE);
+    return { name: it.name, utf8: it.utf8, data };
+  });
 }
 
 /** Minimal zip writer: stored entries, exact sizes and CRC, no extra fields. */
@@ -194,4 +212,27 @@ function writeStoredZip(entries: Entry[]): Buffer {
   eocd.writeUInt32LE(cd.length, 12);
   eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, cd, eocd]);
+}
+
+/** Column letters (A, B, ..., XFD) to a 0-based index. */
+function colIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+/**
+ * Range to read from the first sheet, bounded: at most XLSX_MAX_COLUMNS columns (else refused)
+ * and XLSX_MAX_ROWS data rows + header + 1 (to detect a file that is too long).
+ * Never trust the sheet's <dimension>: sheet_to_json fills the whole announced range.
+ */
+export function boundedSheetRange(ref: string | undefined): { s: { r: number; c: number }; e: { r: number; c: number } } {
+  const m = /^([A-Z]{1,3})(\d{1,7})(?::([A-Z]{1,3})(\d{1,7}))?$/.exec((ref ?? 'A1').toUpperCase());
+  if (!m) reject();
+  const s = { c: colIndex(m[1]), r: Number(m[2]) - 1 };
+  const e = m[3] ? { c: colIndex(m[3]), r: Number(m[4]) - 1 } : { ...s };
+  if (e.c < s.c || e.r < s.r) reject();
+  if (e.c - s.c + 1 > XLSX_MAX_COLUMNS) reject(`trop de colonnes (${XLSX_MAX_COLUMNS} maximum)`);
+  e.r = Math.min(e.r, s.r + XLSX_MAX_ROWS + 1);
+  return { s, e };
 }

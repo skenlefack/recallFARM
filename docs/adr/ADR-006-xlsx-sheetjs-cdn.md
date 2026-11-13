@@ -21,11 +21,14 @@ figer l'API ou la faire tomber en memoire (serveur partage, `mem_limit` 448 Mo).
   en-tetes locaux, qu'un fichier piege peut falsifier (revue : 2 Mo -> 2 Go de RAM). Le garde :
   zip pur commencant par un en-tete local (pas de repli OLE/HTML/SYLK) ; EOCD unique, trouvee comme
   SheetJS la cherche, disque unique, compteurs coherents ; en-tetes local et central concordants,
-  pas de zip64 ; chaque entree reellement decompressee par zlib natif avec plafond de sortie et
+  pas de zip64 ; au plus 200 entrees, noms uniques, plages d'octets disjointes (pas d'entree lue
+  deux fois) ; chaque entree reellement decompressee par zlib natif avec plafond de sortie et
   taille reelle = taille declaree ; total <= 16 Mo (environ 3 fois un import de 20 000 lignes).
   Le contenu verifie est reecrit en zip NON compresse, que SheetJS lit sans rien decompresser.
   Les archives a descripteur de donnees (Google Sheets, LibreOffice, outils Java) restent acceptees.
-- Lecture bornee a 20 000 lignes (`sheetRows`), `cellHTML: false`.
+- Lecture bornee a 20 000 lignes (`sheetRows`), `cellHTML: false`. La plage de la feuille annoncee
+  par le fichier (`<dimension>`) n'est jamais crue : `boundedSheetRange` refuse plus de 64 colonnes et
+  coupe les lignes avant `sheet_to_json` (un fichier de 8 Ko annoncant A1:XFD20001 tuait le processus).
 - Plancher de version teste (`src/common/security/dependency-floors.spec.ts`, xlsx >= 0.20.2).
 
 ## Consequences
@@ -35,7 +38,10 @@ figer l'API ou la faire tomber en memoire (serveur partage, `mem_limit` 448 Mo).
   de `vendor/` puis `npm install ./vendor/<archive>`.
 - Alternatives ecartees : import CSV seul (une etape de plus pour les gestionnaires), garder 0.18.5
   en risque accepte (CVE atteignables), autre bibliotheque (reecriture et nouvelle surface).
-- Mesures (2026-11-13) : bombe de 2 Mo (2 Go declares a 0 ou a 100 octets) refusee en < 5 ms sans
-  hausse memoire ; classeur reel de 20 000 lignes : 11 ms de controle, 0,4 s de lecture.
-- Risque residuel : le cout d'un classeur honnete de 16 Mo decompresses (environ 1 s de lecture
-  synchrone) ; borne par le role gestionnaire et le throttler. Analyse dans un worker a envisager.
+- Mesures (2026-11-13, contre-revues) : bombe de 2 Mo refusee en < 5 ms ; 2 000 entrees sur les memes
+  octets refusees en 5 ms (13,4 s avant) ; dimension A1:XFD20001 refusee (plantage memoire avant) ;
+  classeur reel de 20 000 lignes : 11 ms de controle, 0,4 s de lecture.
+- Risque residuel : un classeur honnete proche de 16 Mo decompresses bloque la boucle d'evenements
+  environ 2,6 s pour environ 330 Mo de memoire (lecture synchrone : un plafond de concurrence en
+  memoire n'y change rien). Borne par le role gestionnaire et le throttler. Suite : analyse dans un
+  `worker_threads` avec `resourceLimits` et delai.

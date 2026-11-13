@@ -54,7 +54,8 @@ describe('SafeFileInterceptor (limites multipart)', () => {
 
   it('refuse en 422 un trop grand nombre de champs', async () => {
     let req = http().post('/upload');
-    for (let i = 0; i <= SAFE_MULTIPART_LIMITS.fields; i++) req = req.field(`f${i}`, 'x');
+    expect(SAFE_MULTIPART_LIMITS.fields).toBeGreaterThan(0);
+    for (let i = 0; i <= (SAFE_MULTIPART_LIMITS.fields ?? 0); i++) req = req.field(`f${i}`, 'x');
     await req.expect(422);
   });
 

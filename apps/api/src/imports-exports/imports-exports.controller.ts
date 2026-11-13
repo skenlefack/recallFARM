@@ -17,7 +17,7 @@ import { E164, normalisePhone, toCsv } from '../common/text';
 import { config } from '../config';
 import { ExportJob, Farm, ImportJob, Membership, User } from '../database/entities';
 import { filierePackFor } from '../params/engine/resolution';
-import { XLSX_MAX_ROWS, sanitizeXlsx } from './xlsx-guard';
+import { XLSX_MAX_ROWS, boundedSheetRange, sanitizeXlsx } from './xlsx-guard';
 
 export class ImportDto {
   @ApiProperty({ enum: ['farmers'] }) @IsIn(['farmers']) kind: 'farmers';
@@ -60,7 +60,10 @@ export class ImportsExportsController {
         // Header + max rows + 1 extra row to detect a file that is too long.
         const wb = XLSX.read(safe, { type: 'buffer', sheetRows: XLSX_MAX_ROWS + 2, cellHTML: false });
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        // The sheet range comes from the file (<dimension>) and sheet_to_json fills it entirely:
+        // bound it before reading (a 8 KB file can announce 328 million cells).
+        const range = boundedSheetRange(ws?.['!ref']);
+        const raw: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', range });
         if (raw.length < 2) throw new Error('fichier vide');
         if (raw.length > XLSX_MAX_ROWS + 1) throw new Error(`trop de lignes (${XLSX_MAX_ROWS} maximum par import)`);
         const header = raw[0].map((h) => String(h).trim().toLowerCase());
