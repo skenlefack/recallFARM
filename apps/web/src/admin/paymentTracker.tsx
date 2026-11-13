@@ -105,6 +105,11 @@ function parseStored(raw: string, userId: string): Stored | null {
     if (typeof a.id !== 'string' || a.ownerId !== userId || typeof a.planName !== 'string' || typeof a.sentAt !== 'number') return null;
     // marqueur « repeating » perime (onglet ferme en plein envoi) : l'issue est inconnue, jamais de retour a « Garder ma formule » ; Reessayer renvoie le meme id avec confirm_repeat
     const stale = !!a.repeating && Date.now() - a.sentAt >= REPEATING_TTL_MS;
+    // Validated first: an unreadable « recent » must count as « no recent », never as a settled outcome.
+    const recent =
+      !stale && a.recent && typeof a.recent.paidAt === 'string' && !Number.isNaN(Date.parse(a.recent.paidAt)) && typeof a.recent.paymentId === 'string' && isUuid(a.recent.paymentId)
+        ? { paymentId: a.recent.paymentId, plan: a.recent.plan ?? '', paidAt: a.recent.paidAt, skewMs: typeof a.recent.skewMs === 'number' ? a.recent.skewMs : 0 }
+        : null;
     return {
       id: a.id,
       ownerId: a.ownerId,
@@ -116,7 +121,7 @@ function parseStored(raw: string, userId: string): Stored | null {
       amount: a.amount ?? null,
       sentAt: a.sentAt,
       // envoi en vol au rechargement : issue inconnue (un ecran « paiement recent » n'a pas encore d'envoi, ce n'est pas un envoi en vol)
-      unsent: !!a.unsent || (!a.paymentId && !a.recent) || stale,
+      unsent: !!a.unsent || (!a.paymentId && !recent) || stale,
       ...(typeof a.confirmRepeat === 'string' && isUuid(a.confirmRepeat) ? { confirmRepeat: a.confirmRepeat } : {}),
       unknown: !!a.unknown,
       existing: !!a.existing,
@@ -125,7 +130,7 @@ function parseStored(raw: string, userId: string): Stored | null {
       subKnown: !!a.subKnown,
       // « Payer quand meme » en cours d'envoi dans un autre onglet : meme garde (occupe) tant que le marqueur a moins de 60 s
       repeating: !!a.repeating && !stale,
-      recent: !stale && a.recent && typeof a.recent.paidAt === 'string' && typeof a.recent.paymentId === 'string' ? { paymentId: a.recent.paymentId, plan: a.recent.plan ?? '', paidAt: a.recent.paidAt, skewMs: typeof a.recent.skewMs === 'number' ? a.recent.skewMs : 0 } : null,
+      recent,
     };
   } catch (e) {
     warn('lecture', e);

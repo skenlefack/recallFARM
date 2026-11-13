@@ -493,7 +493,7 @@ describe('S-1 et S-5 : Payer quand meme', () => {
     expect(new Set(b.bodies.map((x) => x.id)).size).toBe(1);
   });
 
-  it('S-2 : apres un rechargement, le renvoi part SANS confirm_repeat (non persiste) ; PAY-RECENT du serveur reaffiche l\'ecran', async () => {
+  it('S-2 : ancien stockage sans confirm_repeat : apres un rechargement, le renvoi part sans confirm_repeat ; PAY-RECENT du serveur reaffiche l\'ecran', async () => {
     seed({ unsent: true, sentAt: Date.now() - 10 * 60_000 });
     const b = backend({ checkout: () => recent409(new Date(Date.now() - 2 * 60_000).toISOString()) });
     setTransport(b.transport);
@@ -712,6 +712,32 @@ describe('A1 et A2 : marqueur repeating perime', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies[0]).toMatchObject({ id: ID, confirm_repeat: PID1 });
+  });
+
+  it('stockage altere : un « recent » illisible compte comme issue inconnue (jamais Payer avec un nouvel id)', async () => {
+    seed({ recent: { paymentId: 'pas-un-uuid', plan: 'pro', paidAt: 'pas une date', skewMs: 0 } });
+    const b = backend({ checkout: () => created('pay-9') });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(await screen.findByText(/La demande n’a pas reçu de réponse/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies).toEqual([{ id: ID, ...BODY }]);
+  });
+
+  it('stockage altere : un confirmRepeat qui n est pas un UUID est ecarte a la lecture', async () => {
+    seed({ unsent: true, confirmRepeat: 'pas-un-uuid' });
+    const b = backend({ checkout: () => created('pay-10') });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies).toEqual([{ id: ID, ...BODY }]);
   });
 
   it('A1 : marqueur encore frais (59,5 s) : occupe ; quelques instants apres, l\'etat bascule tout seul en issue inconnue, sans blocage', async () => {

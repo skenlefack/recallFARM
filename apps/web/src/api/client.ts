@@ -91,7 +91,8 @@ async function toError(res: Response): Promise<ApiError> {
   const date = Date.parse(res.headers.get('date') ?? '');
   if (!Number.isNaN(date)) err.serverNow = date;
   const retryAfter = Number(res.headers.get('retry-after'));
-  if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterMs = retryAfter * 1000;
+  // Capped: an absurd value must not lock « Réessayer » for hours (429s do not lead to « Abandonner »).
+  if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterMs = Math.min(retryAfter, 600) * 1000;
   return err;
 }
 
