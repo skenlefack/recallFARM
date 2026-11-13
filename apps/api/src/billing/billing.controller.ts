@@ -1,13 +1,13 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
-import { ApiBearerAuth, ApiConflictResponse, ApiCreatedResponse, ApiExtraModels, ApiHeader, ApiOkResponse, ApiProperty, ApiPropertyOptional, ApiTags, ApiUnprocessableEntityResponse } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiConflictResponse, ApiCreatedResponse, ApiExtraModels, ApiHeader, ApiOkResponse, ApiParam, ApiProperty, ApiPropertyOptional, ApiTags, ApiUnprocessableEntityResponse } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
-import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
 import type { Request } from 'express';
 import { AuthUser, CurrentUser, Public } from '../common/auth';
 import { Errors } from '../common/errors';
 import { config } from '../config';
 import { BillingService } from './billing.service';
-import { BILLING_EXTRA_MODELS, CheckoutConflictView, CheckoutResultView, ErrorView, PaymentView, PlansView } from './billing.views';
+import { BILLING_EXTRA_MODELS, CheckoutConflictView, CheckoutResultView, CurrentSubscriptionView, ErrorView, PaymentView, PlansView } from './billing.views';
 
 export class CheckoutDto {
   @ApiPropertyOptional({
@@ -25,6 +25,12 @@ export class CheckoutDto {
   @Matches(/^[a-z0-9_]{2,30}$/)
   method: string;
   @ApiProperty({ example: '+237690000001' }) @Matches(/^\+[1-9]\d{7,14}$/) phone: string;
+  @ApiPropertyOptional({
+    description: 'true : le payeur confirme vouloir payer encore apres une reponse 409 PAY-RECENT (meme checkout, meme id). Note dans le journal et audit_log',
+  })
+  @IsOptional()
+  @IsBoolean()
+  confirm_repeat?: boolean;
 }
 
 export class WebhookDto {
@@ -63,7 +69,7 @@ export class BillingController {
   @ApiConflictResponse({
     type: CheckoutConflictView,
     description:
-      'PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer.',
+      'PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; renvoyer avec confirm_repeat: true pour payer encore. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer.',
   })
   @ApiUnprocessableEntityResponse({ type: ErrorView, description: 'Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)' })
   @Post('subscriptions/checkout')
@@ -73,6 +79,7 @@ export class BillingController {
   }
 
   @ApiBearerAuth()
+  @ApiOkResponse({ type: CurrentSubscriptionView })
   @Get('subscriptions/current')
   current(@CurrentUser() user: AuthUser, @Query() q: CurrentSubQuery) {
     return this.billing.current(user, q.account_type, q.account_id);
@@ -80,6 +87,7 @@ export class BillingController {
 
   @ApiBearerAuth()
   @ApiOkResponse({ type: PaymentView })
+  @ApiParam({ name: 'id', format: 'uuid' })
   @Get('payments/:id')
   payment(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.billing.getPayment(user, id);

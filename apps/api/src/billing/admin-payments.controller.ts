@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiConflictResponse, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiConflictResponse, ApiExtraModels, ApiForbiddenResponse, ApiOkResponse, ApiOperation, ApiParam, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { AuthUser, CurrentUser, hasPlatformRole } from '../common/auth';
@@ -14,6 +14,10 @@ export class AdminPaymentsQuery {
   @IsOptional()
   @IsIn(STATUSES)
   status?: string;
+  @ApiPropertyOptional({ enum: ['true', 'false'], description: 'true : seulement les paiements a revoir (needs_review)' })
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  needs_review?: 'true' | 'false';
   @ApiPropertyOptional({ minimum: 1, maximum: 200 }) @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) limit?: number;
 }
 
@@ -53,7 +57,7 @@ export class AdminPaymentsController {
   @ApiOkResponse({ type: AdminPaymentListView })
   list(@CurrentUser() user: AuthUser, @Query() q: AdminPaymentsQuery) {
     if (!hasPlatformRole(user, 'ops', 'support')) throw Errors.forbidden();
-    return this.ops.list(q.status, q.limit);
+    return this.ops.list(q.status, q.limit, q.needs_review === undefined ? undefined : q.needs_review === 'true');
   }
 
   @Get('reconciliations')
@@ -76,6 +80,7 @@ export class AdminPaymentsController {
   @Get(':id')
   @ApiOperation({ summary: 'Detail d’un paiement avec son journal d’evenements (date, statut, source)' })
   @ApiOkResponse({ type: AdminPaymentView })
+  @ApiParam({ name: 'id', format: 'uuid' })
   get(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     if (!hasPlatformRole(user, 'ops', 'support')) throw Errors.forbidden();
     return this.ops.get(id);
@@ -85,6 +90,7 @@ export class AdminPaymentsController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Interroge tout de suite le fournisseur sur un paiement en attente ou a verifier' })
   @ApiOkResponse({ type: PaymentCheckView })
+  @ApiParam({ name: 'id', format: 'uuid' })
   check(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     if (!hasPlatformRole(user, 'ops')) throw Errors.forbidden();
     return this.ops.checkNow(id);
@@ -96,6 +102,7 @@ export class AdminPaymentsController {
   @ApiOkResponse({ type: AdminPaymentView })
   @ApiForbiddenResponse({ type: ErrorView, description: 'Reserve a platform_admin (ops et support : 403)' })
   @ApiConflictResponse({ type: ErrorView, description: 'PAY-RESOLVE-STATUS : le paiement n’est pas (ou plus) « a_verifier » ; details.status = statut actuel' })
+  @ApiParam({ name: 'id', format: 'uuid' })
   resolve(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ResolveDto) {
     if (!user.platform_roles.includes('platform_admin')) throw Errors.forbidden();
     const reason = dto.reason.trim();
@@ -107,6 +114,7 @@ export class AdminPaymentsController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Rembourse un paiement confirme (journalise ; une relance ne rembourse jamais deux fois)' })
   @ApiOkResponse({ type: PaymentRefundView })
+  @ApiParam({ name: 'id', format: 'uuid' })
   refund(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RefundDto) {
     if (!hasPlatformRole(user)) throw Errors.forbidden();
     return this.ops.refund(user, id, dto.reason);

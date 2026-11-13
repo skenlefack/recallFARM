@@ -23,12 +23,18 @@ export class PaymentEventView {
   @ApiProperty({ format: 'date-time', description: 'Reception de l’evenement (UTC)' }) at: string;
   @ApiProperty({ example: 'confirme', description: 'Statut annonce par le fournisseur (apres correspondance du connecteur)' }) status: string;
   @ApiProperty({
-    enum: ['webhook', 'statut', 'operateur'],
-    description: 'Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur)',
+    enum: ['webhook', 'statut', 'operateur', 'client'],
+    description:
+      'Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur), client (confirmation explicite du payeur)',
   })
-  source: 'webhook' | 'statut' | 'operateur';
+  source: 'webhook' | 'statut' | 'operateur' | 'client';
   @ApiPropertyOptional({ type: Boolean, description: 'Administration seulement, toujours true quand present : evenement recu mais non applique (jamais montre au payeur)' }) ignored?: true;
-  @ApiPropertyOptional({ enum: ['montant', 'devise', 'connecteur'], description: 'Raison du refus (avec ignored)' }) reason?: string;
+  @ApiPropertyOptional({ enum: ['montant', 'devise'], description: 'Raison du refus (avec ignored)' }) reason?: string;
+  @ApiPropertyOptional({
+    enum: ['repeat_confirmed', 'late_confirm_after_resolve'],
+    description: 'repeat_confirmed : nouveau paiement confirme explicitement malgre un paiement confirme recent (PAY-RECENT) ; late_confirm_after_resolve : confirmation du fournisseur apres une decision « echoue » de l’operateur',
+  })
+  detail?: string;
 }
 
 export class PaymentView {
@@ -77,6 +83,7 @@ export class AdminPaymentView extends PaymentView {
   @ApiProperty({ type: String, nullable: true }) error_code: string | null;
   @NullableRef(PaymentPollView) poll: PaymentPollView | null;
   @NullableRef(RefundView) refund: RefundView | null;
+  @ApiProperty({ description: 'true : a revoir par un operateur (ex. confirmation du fournisseur apres une decision « echoue »)' }) needs_review: boolean;
 }
 
 export class AdminPaymentListView {
@@ -116,10 +123,16 @@ export class ErrorView {
 }
 
 export class PayOpenDetailsView {
-  @ApiProperty({ enum: ['PAY-OPEN', 'PAY-IDEMPOTENCY', 'PAY-RETRY'], description: 'PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer' }) rule: string;
-  @ApiPropertyOptional({ format: 'uuid', description: 'PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer)' }) payment_id?: string;
+  @ApiProperty({
+    enum: ['PAY-OPEN', 'PAY-RECENT', 'PAY-IDEMPOTENCY', 'PAY-RETRY'],
+    description:
+      'PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat: true pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer',
+  })
+  rule: string;
+  @ApiPropertyOptional({ format: 'uuid', description: 'PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer) ; PAY-RECENT : paiement confirme recent' }) payment_id?: string;
   @ApiPropertyOptional({ enum: ['initie', 'en_attente', 'a_verifier'], description: 'PAY-OPEN : statut du paiement ouvert' }) status?: string;
-  @ApiPropertyOptional({ example: 'pro', description: 'PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules)' }) plan?: string;
+  @ApiPropertyOptional({ example: 'pro', description: 'PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules) ; PAY-RECENT : formule payee' }) plan?: string;
+  @ApiPropertyOptional({ format: 'date-time', description: 'PAY-RECENT : date de confirmation du paiement recent (UTC)' }) paid_at?: string;
 }
 
 export class CheckoutConflictDetailView {
@@ -240,5 +253,26 @@ export class ReconciliationListView {
   @ApiProperty({ type: [StoredReconciliationView] }) data: StoredReconciliationView[];
 }
 
+export class SubscriptionRefView {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty({ enum: ['user', 'organisation'] }) account_type: string;
+  @ApiProperty({ format: 'uuid' }) account_id: string;
+}
+
+export class CurrentSubscriptionView {
+  @ApiProperty({ enum: ['user', 'organisation'] }) account_type: string;
+  @ApiProperty({ format: 'uuid' }) account_id: string;
+  @ApiProperty({ example: 'pro' }) plan: string;
+  @ApiProperty({ enum: ['actif', 'grace', 'expire', 'gratuit'] }) status: string;
+  @ApiProperty({ type: String, nullable: true, description: 'mensuel ou annuel' }) period: string | null;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true }) started_at: string | null;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true }) expires_at: string | null;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true }) grace_until: string | null;
+  @NullableRef(MoneyView, 'null : abonnement gratuit, ou devise introuvable dans le pack pays (avertissement journalise)') price: MoneyView | null;
+  @NullableRef(SubscriptionRefView) subscription: SubscriptionRefView | null;
+  @ApiProperty({ type: 'object', additionalProperties: true, description: 'Droits effectifs (formule, fonctions, quotas, source, jeton signe pour une organisation)' })
+  entitlements: Record<string, unknown>;
+}
+
 /** Models referenced only through NullableRef (registered with @ApiExtraModels). */
-export const BILLING_EXTRA_MODELS = [PaymentPollView, RefundView, MoneyView, PlanPricesView];
+export const BILLING_EXTRA_MODELS = [PaymentPollView, RefundView, MoneyView, PlanPricesView, SubscriptionRefView];

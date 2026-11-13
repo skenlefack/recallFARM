@@ -85,6 +85,10 @@
             "example": "orange_money",
             "type": "string"
           },
+          "needs_review": {
+            "description": "true : a revoir par un operateur (ex. confirmation du fournisseur apres une decision « echoue »)",
+            "type": "boolean"
+          },
           "paid_at": {
             "format": "date-time",
             "type": [
@@ -177,7 +181,8 @@
           "connector",
           "error_code",
           "poll",
-          "refund"
+          "refund",
+          "needs_review"
         ],
         "type": "object"
       },
@@ -515,6 +520,10 @@
             ],
             "type": "string"
           },
+          "confirm_repeat": {
+            "description": "true : le payeur confirme vouloir payer encore apres une reponse 409 PAY-RECENT (meme checkout, meme id). Note dans le journal et audit_log",
+            "type": "boolean"
+          },
           "id": {
             "description": "UUID v4 cree par le client (recommande) : un nouvel envoi avec le meme id renvoie le meme paiement, sans second prelevement",
             "format": "uuid",
@@ -837,6 +846,102 @@
           "subject_id",
           "event_type",
           "event_date"
+        ],
+        "type": "object"
+      },
+      "CurrentSubscriptionView": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "account_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "entitlements": {
+            "additionalProperties": true,
+            "description": "Droits effectifs (formule, fonctions, quotas, source, jeton signe pour une organisation)",
+            "type": "object"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grace_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": "string"
+          },
+          "price": {
+            "description": "null : abonnement gratuit, ou devise introuvable dans le pack pays (avertissement journalise)",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MoneyView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "actif",
+              "grace",
+              "expire",
+              "gratuit"
+            ],
+            "type": "string"
+          },
+          "subscription": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionRefView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account_type",
+          "account_id",
+          "plan",
+          "status",
+          "period",
+          "started_at",
+          "expires_at",
+          "grace_until",
+          "price",
+          "subscription",
+          "entitlements"
         ],
         "type": "object"
       },
@@ -1684,20 +1789,26 @@
       },
       "PayOpenDetailsView": {
         "properties": {
+          "paid_at": {
+            "description": "PAY-RECENT : date de confirmation du paiement recent (UTC)",
+            "format": "date-time",
+            "type": "string"
+          },
           "payment_id": {
-            "description": "PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer)",
+            "description": "PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer) ; PAY-RECENT : paiement confirme recent",
             "format": "uuid",
             "type": "string"
           },
           "plan": {
-            "description": "PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules)",
+            "description": "PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules) ; PAY-RECENT : formule payee",
             "example": "pro",
             "type": "string"
           },
           "rule": {
-            "description": "PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer",
+            "description": "PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat: true pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer",
             "enum": [
               "PAY-OPEN",
+              "PAY-RECENT",
               "PAY-IDEMPOTENCY",
               "PAY-RETRY"
             ],
@@ -1838,6 +1949,14 @@
             "format": "date-time",
             "type": "string"
           },
+          "detail": {
+            "description": "repeat_confirmed : nouveau paiement confirme explicitement malgre un paiement confirme recent (PAY-RECENT) ; late_confirm_after_resolve : confirmation du fournisseur apres une decision « echoue » de l’operateur",
+            "enum": [
+              "repeat_confirmed",
+              "late_confirm_after_resolve"
+            ],
+            "type": "string"
+          },
           "ignored": {
             "description": "Administration seulement, toujours true quand present : evenement recu mais non applique (jamais montre au payeur)",
             "type": "boolean"
@@ -1846,17 +1965,17 @@
             "description": "Raison du refus (avec ignored)",
             "enum": [
               "montant",
-              "devise",
-              "connecteur"
+              "devise"
             ],
             "type": "string"
           },
           "source": {
-            "description": "Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur)",
+            "description": "Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur), client (confirmation explicite du payeur)",
             "enum": [
               "webhook",
               "statut",
-              "operateur"
+              "operateur",
+              "client"
             ],
             "type": "string"
           },
@@ -2877,6 +2996,31 @@
         ],
         "type": "object"
       },
+      "SubscriptionRefView": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "account_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_type",
+          "account_id"
+        ],
+        "type": "object"
+      },
       "SubscriptionWithoutPaymentView": {
         "properties": {
           "account_id": {
@@ -3214,6 +3358,19 @@
             }
           },
           {
+            "description": "true : seulement les paiements a revoir (needs_review)",
+            "in": "query",
+            "name": "needs_review",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -3338,6 +3495,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -3374,6 +3532,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -3410,6 +3569,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -3456,6 +3616,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -6818,6 +6979,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -7615,7 +7777,7 @@
                 }
               }
             },
-            "description": "PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer."
+            "description": "PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; renvoyer avec confirm_repeat: true pour payer encore. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer."
           },
           "422": {
             "content": {
@@ -7665,6 +7827,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentSubscriptionView"
+                }
+              }
+            },
             "description": ""
           }
         },
