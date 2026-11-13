@@ -1,5 +1,4 @@
 import { Body, Controller, HttpCode, Param, ParseUUIDPipe, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { parse } from 'csv-parse/sync';
 import { createHash, randomUUID } from 'crypto';
@@ -11,12 +10,14 @@ import { DataSource } from 'typeorm';
 import * as XLSX from 'xlsx';
 import { AccessService } from '../common/access.service';
 import { AuthUser, CurrentUser } from '../common/auth';
+import { SafeFileInterceptor } from '../common/security/multipart';
 import { addDays, todayIn } from '../common/dates';
 import { Errors } from '../common/errors';
 import { E164, normalisePhone, toCsv } from '../common/text';
 import { config } from '../config';
 import { ExportJob, Farm, ImportJob, Membership, User } from '../database/entities';
 import { filierePackFor } from '../params/engine/resolution';
+import { XLSX_MAX_ROWS, boundedSheetRange, sanitizeXlsx } from './xlsx-guard';
 
 export class ImportDto {
   @ApiProperty({ enum: ['farmers'] }) @IsIn(['farmers']) kind: 'farmers';
@@ -45,7 +46,7 @@ export class ImportsExportsController {
   /** POST /imports — CSV of farmers (phone,name,farm_name,region,speculations); validated, then committed separately. */
   @Post('imports')
   @ApiConsumes('multipart/form-data', 'application/json')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  @UseInterceptors(SafeFileInterceptor('file', 5 * 1024 * 1024))
   async create(@CurrentUser() user: AuthUser, @Body() dto: ImportDto, @UploadedFile() file?: { buffer: Buffer }) {
     await this.access.assertOrgManager(user, dto.organisation_id);
     const text = file?.buffer?.toString('utf8') ?? dto.csv;
@@ -54,10 +55,17 @@ export class ImportsExportsController {
     let records: Array<Record<string, string>>;
     try {
       if (isXlsx) {
-        const wb = XLSX.read(file!.buffer, { type: 'buffer' });
+        // Never parse the upload itself: a verified, uncompressed copy (xlsx-guard.ts).
+        const safe = sanitizeXlsx(file!.buffer);
+        // Header + max rows + 1 extra row to detect a file that is too long.
+        const wb = XLSX.read(safe, { type: 'buffer', sheetRows: XLSX_MAX_ROWS + 2, cellHTML: false });
         const ws = wb.Sheets[wb.SheetNames[0]];
-        const raw: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        // The sheet range comes from the file (<dimension>) and sheet_to_json fills it entirely:
+        // bound it before reading (a 8 KB file can announce 328 million cells).
+        const range = boundedSheetRange(ws?.['!ref']);
+        const raw: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', range });
         if (raw.length < 2) throw new Error('fichier vide');
+        if (raw.length > XLSX_MAX_ROWS + 1) throw new Error(`trop de lignes (${XLSX_MAX_ROWS} maximum par import)`);
         const header = raw[0].map((h) => String(h).trim().toLowerCase());
         records = raw.slice(1).filter((r) => r.some((c) => String(c).trim())).map((r) => {
           const obj: Record<string, string> = {};
