@@ -202,6 +202,7 @@ describe('sanitizeXlsx (Q-SEC-01, ADR-006)', () => {
   it('refuses duplicate entry names', () => {
     const specs = entriesOf(workbook(ROWS));
     expect(() => sanitizeXlsx(zip([...specs, { ...specs[0] }]))).toThrow('classeur Excel invalide');
+    expect(() => sanitizeXlsx(zip([...specs, { ...specs[0], name: specs[0].name.toUpperCase() }]))).toThrow('classeur Excel invalide');
   });
 
   it('refuses more entries than a real workbook has', () => {

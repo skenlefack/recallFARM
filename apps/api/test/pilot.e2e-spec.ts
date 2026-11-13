@@ -11,6 +11,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { Client } from 'pg';
 import request from 'supertest';
+import { deflatedZip, workbookEntries } from './xlsx-fixtures';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 const TEST_DB = process.env.TEST_DATABASE_URL || 'postgres://recallfarm:recallfarm@localhost:5432/recallfarm_test';
@@ -344,6 +345,31 @@ describe('regressions from real-stack testing', () => {
   beforeAll(async () => {
     aicha = (await login(DEMO.phones.aicha)).token;
     jeanMarc = (await login(DEMO.phones.jeanMarc)).token;
+  });
+
+  it('Q-SEC-01 ADR-006: xlsx import goes through the guard (nominal, lying <dimension>, shared entries)', async () => {
+    const rows = [['phone', 'name', 'farm_name', 'region', 'speculations'], ['+237690009881', 'Import Xlsx', 'Ferme Xlsx', 'Centre', 'volaille']];
+    const upload = (file: Buffer) =>
+      http.post('/v1/imports').set(auth(aicha)).field('kind', 'farmers').field('organisation_id', DEMO.orgId).attach('file', file, 'eleveurs.xlsx');
+
+    const ok = await upload(deflatedZip(workbookEntries(rows))).expect(201);
+    expect(ok.body.job_id).toEqual(expect.any(String));
+
+    // 8 KB file announcing A1:XFD20001 (328 million cells): refused, the process survives.
+    const lying = workbookEntries(rows).map((e) =>
+      /worksheets\/sheet1\.xml$/.test(e.name)
+        ? { ...e, content: Buffer.from(e.content.toString('utf8').replace(/<dimension ref="[^"]*"\/>/, '<dimension ref="A1:XFD20001"/>')) }
+        : e,
+    );
+    expect(lying.some((e) => e.content.includes('A1:XFD20001'))).toBe(true);
+    const dim = await upload(deflatedZip(lying)).expect(422);
+    expect(JSON.stringify(dim.body)).toContain('trop de colonnes');
+
+    // Every central entry pointing at the same bytes (repeated inflate): refused.
+    const shared = await upload(deflatedZip(workbookEntries(rows), { sharedLocal: true })).expect(422);
+    expect(JSON.stringify(shared.body)).toContain('se chevauchent');
+
+    await http.get('/v1/health').expect(200);
   });
 
   it('GET /organisations/:id/reminders?status=en_retard (timing-only filter) does not 500', async () => {

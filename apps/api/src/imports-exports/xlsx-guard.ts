@@ -115,7 +115,8 @@ function readEntries(buf: Buffer, maxUncompressed: number): Entry[] {
     if (flags & FLAG_ENCRYPTED) reject();
     if (method !== 0 && method !== 8) reject();
     const name = Buffer.from(buf.subarray(p + 46, p + 46 + nameLen));
-    const key = name.toString('latin1');
+    // SheetJS looks entries up case-insensitively.
+    const key = name.toString('latin1').toLowerCase();
     if (names.has(key)) reject();
     names.add(key);
 
