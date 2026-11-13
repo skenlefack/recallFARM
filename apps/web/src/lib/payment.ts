@@ -5,7 +5,7 @@ export type CheckoutOutcome =
   | { kind: 'pending'; paymentId: string } // PAY-PENDING : issue inconnue, NE PAS relancer, suivre
   | { kind: 'conflict' } // PAY-IDEMPOTENCY : la cle a servi a une autre demande
   | { kind: 'open'; paymentId: string; plan?: string } // PAY-OPEN : le compte a deja un paiement ouvert (toutes formules), on le suit
-  | { kind: 'recent'; paymentId: string; plan?: string; paidAt: string } // PAY-RECENT : un paiement de ce payeur a ete confirme il y a quelques minutes ; passer outre = decision explicite
+  | { kind: 'recent'; paymentId: string; plan?: string; paidAt: string; skewMs: number } // PAY-RECENT : un paiement de ce payeur a ete confirme il y a quelques minutes ; passer outre = decision explicite
   | { kind: 'retry' } // PAY-RETRY : un autre paiement de ce payeur vient de se terminer ; la suite se decide apres rechargement de l'abonnement
   | { kind: 'other' };
 
@@ -18,7 +18,9 @@ export function checkoutOutcome(err: unknown): CheckoutOutcome {
     const id = err.details?.payment_id;
     const paidAt = err.details?.paid_at;
     const plan = err.details?.plan;
-    return typeof id === 'string' && id && typeof paidAt === 'string' && !Number.isNaN(Date.parse(paidAt)) ? { kind: 'recent', paymentId: id, paidAt, ...(typeof plan === 'string' && plan ? { plan } : {}) } : { kind: 'other' };
+    // confirm_repeat doit etre un UUID : un payment_id d'une autre forme ne peut pas etre confirme. Traite comme PAY-RETRY (verifier l'abonnement, pas de Payer avant)
+    if (typeof id !== 'string' || !isUuid(id) || typeof paidAt !== 'string' || Number.isNaN(Date.parse(paidAt))) return { kind: 'retry' };
+    return { kind: 'recent', paymentId: id, paidAt, skewMs: err.serverNow ? err.serverNow - Date.now() : 0, ...(typeof plan === 'string' && plan ? { plan } : {}) };
   }
   if (err.code === 'CONFLICT' && err.rule === 'PAY-OPEN') {
     const id = err.details?.payment_id;
@@ -84,3 +86,16 @@ export const PAYMENT_TONE: Record<PayStatus, 'ok' | 'warn' | 'crit' | 'info' | '
   remboursement_en_cours: 'warn',
   rembourse: 'blue',
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isUuid = (v: string): boolean => UUID_RE.test(v);
+
+/** Fenetre PAY-RECENT du serveur (PAYMENT_RECENT_GUARD_MIN, 30 min par defaut ; non exposee par l'API : valeur miroir). */
+export const RECENT_WINDOW_MS = 30 * 60_000;
+
+/** Age du paiement recent, corrige du decalage d'horloge (en-tete Date de la reponse 409) quand il est connu. */
+export function recentAgeMs(r: { paidAt: string; skewMs?: number }, now = Date.now()): number {
+  return now + (r.skewMs ?? 0) - Date.parse(r.paidAt);
+}
+/** Minutes ecoulees, en partie entiere. */
+export const recentMinutes = (r: { paidAt: string; skewMs?: number }, now = Date.now()): number => Math.max(0, Math.floor(recentAgeMs(r, now) / 60_000));

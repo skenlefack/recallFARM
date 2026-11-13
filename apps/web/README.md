@@ -123,6 +123,12 @@ simulation offsets read from `events[].notifications`; inherited labels fetched 
     automatically. « Garder ma formule » sends nothing; « Payer quand même » re-sends the SAME checkout (same id, same body)
     with `confirm_repeat: <details.payment_id>`. A 2nd `PAY-RECENT` with another `payment_id` shows the screen again with
     the new payment.
+    « Payer quand même » is also gated on the subscription being reloaded, and the recent screen stays displayed (busy,
+    « Envoi… ») while it is sent. `confirm_repeat` must be a UUID: a `PAY-RECENT` whose `payment_id` is not one is treated like
+    `PAY-RETRY`. « Il y a N min » is whole minutes, refreshed every minute, corrected by the `Date` header of the 409 when the
+    device clock is off. The screen is dropped (and the subscription reloaded) once the server window is over: 30 min,
+    mirror of the default `PAYMENT_RECENT_GUARD_MIN` (not exposed by the API). `confirm_repeat` lives in memory only: « Réessayer »
+    in the same tab re-sends it, after a reload the re-send goes without it and the server answers `PAY-RECENT` again or replays.
   - **Payer is gated on the subscription**: « Payer » and the plan buttons stay disabled until `GET /subscriptions/current`
     (always called with the active payer's `account_type` / `account_id`: the server would otherwise pick the first
     administered organisation) succeeded and is not refetching. If it fails: « Vérification impossible » + « Réessayer la

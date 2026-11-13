@@ -307,9 +307,12 @@ on('POST', '/subscriptions/checkout', ({ body, user }) => {
   // garde serveur : un compte n'a qu'un abonnement, donc un seul paiement ouvert toutes formules confondues (409 PAY-OPEN avec le paiement existant)
   const open = payments.find((x) => x.sim && x.payer_id === (user?.id ?? '') && ['initie', 'en_attente', 'a_verifier'].includes(x.status));
   if (open) throw new HttpError(409, 'CONFLICT', 'Un paiement est déjà en cours pour ce compte.', undefined, { rule: 'PAY-OPEN', payment_id: open.id, status: open.status, plan: open.plan });
-  // PAY-RECENT : un paiement du compte confirme il y a moins de 10 min exige confirm_repeat = id de ce paiement (meme checkout, meme id)
-  const recent = payments.find((x) => x.sim && x.payer_id === (user?.id ?? '') && x.status === 'confirme' && x.paid_at && Date.now() - Date.parse(x.paid_at) < 10 * 60_000);
-  if (recent && (body as { confirm_repeat?: string }).confirm_repeat !== recent.id) throw new HttpError(409, 'CONFLICT', `Vous avez déjà payé la formule ${recent.plan ?? ''} il y a 1 min. Confirmez pour payer encore.`, undefined, { rule: 'PAY-RECENT', payment_id: recent.id, plan: recent.plan, paid_at: recent.paid_at });
+  // confirm_repeat : un UUID (comme @Matches cote serveur), sinon 422
+  const confirm = (body as { confirm_repeat?: unknown }).confirm_repeat;
+  if (confirm !== undefined && !(typeof confirm === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(confirm))) throw new HttpError(422, 'VALIDATION_ERROR', 'Requête invalide.', { confirm_repeat: 'UUID attendu' });
+  // PAY-RECENT : un paiement du compte confirme il y a moins de 30 min (PAYMENT_RECENT_GUARD_MIN par defaut) exige confirm_repeat = id de ce paiement (meme checkout, meme id)
+  const recent = payments.find((x) => x.sim && x.payer_id === (user?.id ?? '') && x.status === 'confirme' && x.paid_at && Date.now() - Date.parse(x.paid_at) < 30 * 60_000);
+  if (recent && confirm !== recent.id) throw new HttpError(409, 'CONFLICT', `Vous avez déjà payé la formule ${recent.plan ?? ''} il y a 1 min. Confirmez pour payer encore.`, undefined, { rule: 'PAY-RECENT', payment_id: recent.id, plan: recent.plan, paid_at: recent.paid_at });
   const amount = b.period === 'yearly' ? pl.price.yearly : pl.price.monthly;
   const pay: MockPayment = {
     id: uid(),
@@ -342,7 +345,7 @@ on('POST', '/subscriptions/checkout', ({ body, user }) => {
     pay.error_code = 'timeout';
     throw new HttpError(422, 'BUSINESS_RULE', 'Issue du paiement inconnue.', undefined, { rule: 'PAY-PENDING', payment_id: pay.id, status: 'en_attente' });
   }
-  return { payment_id: pay.id, status: 'initie', ussd_push: true, amount: pay.amount };
+  return json(201, { payment_id: pay.id, status: 'initie', ussd_push: true, amount: pay.amount }); // 201 comme le serveur
 });
 on('GET', '/payments/:id', ({ user }, p) => {
   const u = need(user);

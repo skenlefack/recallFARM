@@ -9,15 +9,36 @@ import { renderApp } from '../test/utils';
 import Subscriptions from './pages/Subscriptions';
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const PID1 = '11111111-1111-4111-8111-111111111111';
+const PID2 = '22222222-2222-4222-8222-222222222222';
 const created = (id = 'pay-1') => json(201, { payment_id: id, status: 'initie', ussd_push: true });
 const retry409 = () => json(409, { error: { code: 'CONFLICT', message: 'Message brut du serveur', details: { rule: 'PAY-RETRY' } } });
-const recent409 = (paidAt: string, plan = 'pro', paymentId = 'pay-recent') => json(409, { error: { code: 'CONFLICT', message: 'Vous avez déjà payé la formule pro il y a 3 min. Confirmez pour payer encore.', details: { rule: 'PAY-RECENT', payment_id: paymentId, plan, paid_at: paidAt } } });
+const recent409 = (paidAt: string, plan: string | null = 'pro', paymentId = PID1, headers: Record<string, string> = {}) =>
+  new Response(
+    JSON.stringify({ error: { code: 'CONFLICT', message: 'Vous avez déjà payé la formule pro il y a 3 min. Confirmez pour payer encore.', details: { rule: 'PAY-RECENT', payment_id: paymentId, ...(plan ? { plan } : {}), paid_at: paidAt } } }),
+    { status: 409, headers: { 'Content-Type': 'application/json', ...headers } },
+  );
 const planButtons = () => screen.getAllByRole('button', { name: /^(Passer à|Choisir|Renouveler)/ });
 
+let userId = '';
+let payerId = '';
 async function login() {
   const r = await mockTransport('POST', '/v1/auth/otp/verify', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: '+237690000002', code: '123456' }) });
-  const j = (await r.json()) as { access_token: string; refresh_token: string };
+  const j = (await r.json()) as { access_token: string; refresh_token: string; user: { id: string } };
   session.setTokens(j.access_token, j.refresh_token);
+  userId = j.user.id;
+  const me = (await (await mockTransport('GET', '/v1/me', { headers: { Authorization: `Bearer ${j.access_token}` } })).json()) as { memberships: { organisation_id: string }[] };
+  payerId = me.memberships[0]?.organisation_id ?? userId;
+}
+const storeKey = () => `rf.payment.v1.${userId}.${payerId}`;
+const bodyKey = () => `rf.payment.body.v1.${userId}.${payerId}`;
+const BODY = { account_type: 'organisation', account_id: 'org-1', plan: 'structure', period: 'monthly', method: 'orange_money', phone: '+237690000002' };
+const ID = '5d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e5f';
+function seed(over: Record<string, unknown> = {}) {
+  const a = { id: ID, ownerId: userId, subSnap: null, subKnown: false, recent: null, paymentId: null, plan: 'structure', planName: 'Structure', period: 'monthly', method: 'orange_money', amount: null, sentAt: Date.now(), unsent: false, unknown: false, existing: false, phoneMasked: '••••••02', ...over };
+  localStorage.setItem(storeKey(), JSON.stringify(a));
+  sessionStorage.setItem(bodyKey(), JSON.stringify({ id: ID, body: BODY }));
+  return a;
 }
 
 /** Transport de test : checkout programmable, abonnement programmable (n = numero de l'appel a /subscriptions/current). */
@@ -195,13 +216,13 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies).toHaveLength(2);
     expect(b.bodies[0]).not.toHaveProperty('confirm_repeat');
-    expect(b.bodies[1]).toEqual({ ...b.bodies[0], confirm_repeat: 'pay-recent' });
+    expect(b.bodies[1]).toEqual({ ...b.bodies[0], confirm_repeat: PID1 });
     expect(b.bodies[1].id).toBe(b.bodies[0].id);
   });
 
   it('second PAY-RECENT avec un AUTRE paiement : l\'ecran se reaffiche avec le nouveau paiement, jamais de renvoi automatique, la nouvelle confirmation porte le nouvel id', async () => {
     const b = backend({
-      checkout: (n) => (n === 1 ? recent409(recentAt(), 'pro', 'pay-recent') : n === 2 ? recent409(new Date(Date.now() - 60_000).toISOString(), 'structure', 'pay-recent-2') : created('pay-3')),
+      checkout: (n) => (n === 1 ? recent409(recentAt(), 'pro', PID1) : n === 2 ? recent409(new Date(Date.now() - 60_000).toISOString(), 'structure', PID2) : created('pay-3')),
     });
     setTransport(b.transport);
     renderApp(<Subscriptions />);
@@ -213,11 +234,11 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     expect(await screen.findByText('Vous venez de payer la formule Structure il y a 1 min.')).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 400));
     expect(b.bodies).toHaveLength(2); // pas de 3e envoi automatique
-    expect(b.bodies[1]).toMatchObject({ confirm_repeat: 'pay-recent' });
+    expect(b.bodies[1]).toMatchObject({ confirm_repeat: PID1 });
     await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies).toHaveLength(3);
-    expect(b.bodies[2]).toEqual({ ...b.bodies[0], confirm_repeat: 'pay-recent-2' });
+    expect(b.bodies[2]).toEqual({ ...b.bodies[0], confirm_repeat: PID2 });
     expect(new Set(b.bodies.map((x) => x.id)).size).toBe(1);
   });
 
@@ -237,16 +258,18 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
   });
 
   it('l\'heure s\'affiche dans le fuseau du pays quand l\'API le donne', async () => {
-    const b = backend({ checkout: () => recent409('2026-11-12T10:30:00Z'), plans: (p) => ({ ...p, timezone: 'Asia/Tokyo' }) });
+    const paid = new Date(Date.now() - 2 * 60_000);
+    const inTokyo = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Tokyo' }).format(paid);
+    const b = backend({ checkout: () => recent409(paid.toISOString()), plans: (p) => ({ ...p, timezone: 'Asia/Tokyo' }) });
     setTransport(b.transport);
     renderApp(<Subscriptions />);
     await subLoaded();
     await pay();
-    expect(await screen.findByText(/Paiement confirmé à 19:30\./)).toBeInTheDocument();
+    expect(await screen.findByText(`Paiement confirmé à ${inTokyo}.`)).toBeInTheDocument();
   });
 
   it('fuseau inconnu : heure de l\'appareil, sans planter', async () => {
-    const b = backend({ checkout: () => recent409('2026-11-12T10:30:00Z'), plans: (p) => ({ ...p, timezone: 'Mars/Olympus' }) });
+    const b = backend({ checkout: () => recent409(new Date(Date.now() - 2 * 60_000).toISOString()), plans: (p) => ({ ...p, timezone: 'Mars/Olympus' }) });
     setTransport(b.transport);
     renderApp(<Subscriptions />);
     await subLoaded();
@@ -256,9 +279,11 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
 
   it('checkoutOutcome : forme exigee (payment_id et paid_at valides)', () => {
     const err = (details: Record<string, unknown>) => new ApiError(409, 'CONFLICT', 'x', undefined, details);
-    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: 'p', plan: 'pro', paid_at: '2026-11-12T10:30:00Z' }))).toEqual({ kind: 'recent', paymentId: 'p', plan: 'pro', paidAt: '2026-11-12T10:30:00Z' });
-    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: 'p', paid_at: 'pas une date' })).kind).toBe('other');
-    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('other');
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: PID1, plan: 'pro', paid_at: '2026-11-12T10:30:00Z' }))).toEqual({ kind: 'recent', paymentId: PID1, plan: 'pro', paidAt: '2026-11-12T10:30:00Z', skewMs: 0 });
+    // forme invalide : jamais confirmable, donc traitee comme PAY-RETRY (verifier l'abonnement, pas de Payer avant)
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: 'p', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('retry');
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: PID1, paid_at: 'pas une date' })).kind).toBe('retry');
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('retry');
   });
 
   it('le mock repond comme le serveur : 409 PAY-RECENT, puis accepte confirm_repeat = id du paiement recent', async () => {
@@ -273,8 +298,222 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     const again = await post({ ...body, id: '7d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e62' });
     expect(again.status).toBe(409);
     expect(((await again.json()) as { error: { details: { rule: string } } }).error.details.rule).toBe('PAY-RECENT');
-    // confirm_repeat doit etre l'id du paiement recent : un booleen ou un autre id ne suffit pas
-    expect((await post({ ...body, id: '7d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e62', confirm_repeat: true })).status).toBe(409);
-    expect((await post({ ...body, id: '7d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e62', confirm_repeat: first.payment_id })).status).toBe(200);
+    // confirm_repeat est un UUID (422 sinon, comme @Matches cote serveur) et doit etre celui du paiement recent (409 sinon)
+    expect((await post({ ...body, id: '7d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e62', confirm_repeat: true })).status).toBe(422);
+    expect((await post({ ...body, id: '7d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e62', confirm_repeat: PID2 })).status).toBe(409);
+    expect((await post({ ...body, id: '7d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e62', confirm_repeat: first.payment_id })).status).toBe(201);
   }, 15000);
+});
+
+describe('B-1 (PAY-RECENT) : « Payer quand meme » depend de l\'abonnement recharge', () => {
+  it('PAY-RECENT puis 500 sur /subscriptions/current : « Payer quand meme » desactive, alerte et « Reessayer la verification »', async () => {
+    const b = backend({ checkout: () => recent409(new Date(Date.now() - 3 * 60_000).toISOString()), sub: (n, real) => (n === 1 ? real() : json(500, { error: { code: 'SERVER_ERROR', message: 'panne' } })) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    expect(await screen.findByText(/Vérification impossible/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Payer quand même' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }), { pointerEventsCheck: 0 });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(b.bodies).toHaveLength(1);
+  });
+});
+
+describe('A-1 (PAY-RECENT) : « Garder ma formule » dans un autre onglet', () => {
+  it('evenement vide : l\'ecran se ferme, l\'abonnement est recharge, un toast previent, Payer reste bloque jusqu\'au retour', async () => {
+    let release: () => void = () => undefined;
+    const b = backend({ checkout: () => recent409(new Date(Date.now() - 3 * 60_000).toISOString()), sub: (n, real) => (n <= 2 ? real() : new Promise<Response>((r) => (release = () => void real().then(r)))) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    await waitFor(() => expect(b.subCalls()).toBe(2)); // rechargement declenche par le PAY-RECENT lui-meme
+    localStorage.removeItem(storeKey());
+    window.dispatchEvent(new StorageEvent('storage', { key: storeKey(), newValue: null }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(b.subCalls()).toBe(3));
+    for (const btn of planButtons()) expect(btn).toBeDisabled(); // abonnement en cours de rechargement
+    release();
+    expect(await screen.findByText('Vérifiez votre formule actuelle avant de payer de nouveau.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /Renouveler/ })).toBeEnabled());
+  });
+});
+
+describe('A-2 : confirm_repeat exige un UUID', () => {
+  it('PAY-RECENT avec un payment_id qui n\'est pas un UUID : verification de l\'abonnement, jamais de « Payer quand meme » ni de Payer avant son retour', async () => {
+    let release: () => void = () => undefined;
+    const b = backend({
+      checkout: () => recent409(new Date().toISOString(), 'pro', 'pas-un-uuid'),
+      sub: (n, real) => (n === 1 ? real() : new Promise<Response>((r) => (release = () => void real().then(r)))),
+    });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText('Un autre paiement de ce compte vient de se terminer. Vérifiez votre formule avant de payer de nouveau.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer quand même' })).toBeNull();
+    expect(await screen.findByRole('button', { name: /Vérification de votre formule/ })).toBeDisabled();
+    release();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled());
+  });
+});
+
+describe('A-3 : ecran recent perime, N entier, decalage d\'horloge', () => {
+  it('paiement recent plus vieux que la fenetre du serveur (30 min) : retire a la lecture, abonnement recharge', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: new Date(Date.now() - 31 * 60_000).toISOString(), skewMs: 0 } });
+    const b = backend({});
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Voir le paiement' })).toBeNull());
+    expect(localStorage.getItem(storeKey())).toBeNull();
+    expect(b.subCalls()).toBeGreaterThan(1);
+  });
+
+  it('N en partie entiere : 3 min 54 s -> « il y a 3 min »', async () => {
+    setTransport(backend({ checkout: () => recent409(new Date(Date.now() - 234_000).toISOString()) }).transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText('Vous venez de payer la formule Pro il y a 3 min.')).toBeInTheDocument();
+  });
+
+  it('moins d\'une minute : « a l\'instant »', async () => {
+    setTransport(backend({ checkout: () => recent409(new Date(Date.now() - 20_000).toISOString()) }).transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText('Vous venez de payer la formule Pro à l’instant.')).toBeInTheDocument();
+  });
+
+  it('decalage d\'horloge : l\'en-tete Date de la reponse 409 corrige l\'age (serveur en avance de 10 min -> « il y a 13 min »)', async () => {
+    const paidAt = new Date(Date.now() - 3 * 60_000).toISOString();
+    const serverNow = new Date(Date.now() + 10.5 * 60_000).toUTCString(); // l'en-tete Date perd les millisecondes : marge d'une demi-minute
+    setTransport(backend({ checkout: () => recent409(paidAt, 'pro', PID1, { Date: serverNow }) }).transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText('Vous venez de payer la formule Pro il y a 13 min.')).toBeInTheDocument();
+  });
+});
+
+describe('A-4 et A-5 : banniere et formule absente', () => {
+  it('A-4 : banniere dediee avec la formule du paiement recent', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: new Date(Date.now() - 60_000).toISOString(), skewMs: 0 } });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    expect(await screen.findByText('Un paiement de la formule Pro vient d’être confirmé : choisissez si vous payez encore.')).toBeInTheDocument();
+  });
+
+  it('A-5 : details.plan absent : ni formule reprise de la tentative, ni dans la banniere', async () => {
+    setTransport(backend({ checkout: () => recent409(new Date(Date.now() - 3 * 60_000).toISOString(), null) }).transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText('Vous venez de payer il y a 3 min.')).toBeInTheDocument();
+    expect(screen.queryByText(/formule Structure/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Garder ma formule' }));
+    expect(screen.queryByText(/Un paiement de la formule/)).toBeNull();
+  });
+
+  it('A-5 : banniere sans formule', async () => {
+    seed({ recent: { paymentId: PID1, plan: '', paidAt: new Date(Date.now() - 60_000).toISOString(), skewMs: 0 } });
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    expect(await screen.findByText('Un paiement vient d’être confirmé : choisissez si vous payez encore.')).toBeInTheDocument();
+  });
+});
+
+describe('S-1 et S-5 : Payer quand meme', () => {
+  const recentAt = () => new Date(Date.now() - 3 * 60_000).toISOString();
+
+  it('S-1 : l\'ecran recent reste affiche pendant l\'envoi (occupe, « Envoi… »), sans clignotement', async () => {
+    let release: (r: Response) => void = () => undefined;
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : (new Promise<Response>((r) => (release = r)) as unknown as Response)) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    const busy = await screen.findByRole('button', { name: 'Envoi de la demande…' });
+    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByText(/Vous venez de payer la formule Pro/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Garder ma formule' })).toBeDisabled();
+    release(created('pay-9'));
+    await screen.findByText(/Validez sur votre téléphone/);
+  });
+
+  it('S-5 : double clic sur « Payer quand meme » : un seul POST de plus', async () => {
+    let release: (r: Response) => void = () => undefined;
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : (new Promise<Response>((r) => (release = r)) as unknown as Response)) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    await userEvent.dblClick(screen.getByRole('button', { name: 'Payer quand même' }));
+    await new Promise((r) => setTimeout(r, 100));
+    release(created('pay-2'));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies).toHaveLength(2);
+  });
+
+  it('S-2 : coupure reseau apres « Payer quand meme » : Reessayer renvoie confirm_repeat, meme id, meme corps (meme onglet)', async () => {
+    const b = backend({
+      checkout: (n) => {
+        if (n === 1) return recent409(recentAt());
+        if (n === 2) throw new TypeError('network');
+        return created('pay-3');
+      },
+    });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    expect(await screen.findByText(/La demande n’a pas reçu de réponse/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies).toHaveLength(3);
+    expect(b.bodies[2]).toEqual(b.bodies[1]);
+    expect(b.bodies[2]).toMatchObject({ confirm_repeat: PID1 });
+    expect(new Set(b.bodies.map((x) => x.id)).size).toBe(1);
+  });
+
+  it('S-2 : apres un rechargement, le renvoi part SANS confirm_repeat (non persiste) ; PAY-RECENT du serveur reaffiche l\'ecran', async () => {
+    seed({ unsent: true, sentAt: Date.now() - 10 * 60_000 });
+    const b = backend({ checkout: () => recent409(new Date(Date.now() - 2 * 60_000).toISOString()) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    expect(await screen.findByText(/Vous venez de payer la formule Pro/)).toBeInTheDocument();
+    expect(b.bodies).toHaveLength(1);
+    expect(b.bodies[0]).toEqual({ id: ID, ...BODY });
+    expect(b.bodies[0]).not.toHaveProperty('confirm_repeat');
+  });
+});
+
+describe('S-5 : payeur utilisateur', () => {
+  it('sans organisation : account_type=user et account_id = l\'identifiant exact de l\'utilisateur', async () => {
+    session.clear();
+    const r = await mockTransport('POST', '/v1/auth/otp/verify', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: '+237690000001', code: '123456' }) });
+    const j = (await r.json()) as { access_token: string; refresh_token: string; user: { id: string } };
+    session.setTokens(j.access_token, j.refresh_token);
+    const b = backend({});
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await waitFor(() => expect(b.subUrls.length).toBeGreaterThan(0));
+    for (const u of b.subUrls) {
+      expect(u).toContain('account_type=user');
+      expect(u).toContain(`account_id=${j.user.id}`);
+    }
+  });
 });

@@ -6,7 +6,7 @@ import type { PaymentMethodOption, Plan, PlanCode } from '../../api/types';
 import { Card, Dialog, ErrorState, Pill, Seg, Skeleton } from '../../components/ui';
 import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL, timeOfDay } from '../../lib/format';
 import { t } from '../../lib/i18n';
-import { checkoutOutcome, isTerminal, isUnderReview, methodInitials } from '../../lib/payment';
+import { checkoutOutcome, isTerminal, isUnderReview, methodInitials, recentMinutes } from '../../lib/payment';
 import { priceOf } from '../../lib/plans';
 import { useAuth } from '../auth';
 import { usePageMeta } from '../hooks';
@@ -49,6 +49,14 @@ interface Gate {
   retry: () => void;
 }
 
+/** « Vous venez de payer la formule X il y a N min. » (N en minutes entieres ; formule absente : texte sans formule). */
+function recentTitle(r: { plan: string; paidAt: string; skewMs: number }): string {
+  const n = recentMinutes(r);
+  const plan = r.plan ? (PLAN_LABEL[r.plan] ?? r.plan) : '';
+  const key = `pay.recent.title${plan ? '' : '.noplan'}${n < 1 ? '.now' : ''}`;
+  return t(key, { plan, n: String(n) });
+}
+
 function Checkout({ open, plan, period, methods, currency, timezone, gate, onClose }: { open: boolean; plan: Plan | null; period: Period; methods: PaymentMethodOption[]; currency?: string; timezone?: string; gate: Gate; onClose: () => void }) {
   const { me, orgId } = useAuth();
   const tr = usePaymentTracker();
@@ -60,7 +68,24 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
   const [tel, setTel] = useState(me?.phone ? fmtPhone(me.phone) : '');
 
   // la fenetre ouverte garde une issue definitive a l'ecran jusqu'a sa fermeture
-  const { setViewing, clearError } = tr;
+  const { setViewing, clearError, setGateReady } = tr;
+  useEffect(() => {
+    setGateReady(gate.ready);
+  }, [gate.ready, setGateReady]);
+  // l'ecran « paiement recent » rafraichit « il y a N min » chaque minute
+  const [, minuteTick] = useState(0);
+  const showsRecent = !!attempt?.recent;
+  useEffect(() => {
+    if (!showsRecent) return;
+    const timer = setInterval(() => minuteTick((n) => n + 1), 60_000);
+    return () => clearInterval(timer);
+  }, [showsRecent]);
+  // « Garder ma formule » (ou fin de fenetre) ailleurs : l'ecran n'a plus rien a montrer, on ferme
+  const hadRecent = useRef(false);
+  useEffect(() => {
+    if (hadRecent.current && !attempt && open) onClose();
+    hadRecent.current = !!attempt?.recent;
+  }, [attempt, open, onClose]);
   useEffect(() => {
     setViewing(open);
     return () => setViewing(false);
@@ -151,14 +176,16 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
       </>
     );
   } else if (frozen?.recent) {
+    const busy = !!frozen.repeating || tr.checking || (!gate.ready && !gate.failed);
     footer = (
       <>
-        <button type="button" className="btn btn-ghost" onClick={tr.confirmRepeat} disabled={tr.checking || !frozen.body} aria-busy={tr.checking}>
-          {t('pay.recent.repeat')}
+        <button type="button" className="btn btn-ghost" onClick={tr.confirmRepeat} disabled={busy || !gate.ready || !frozen.body} aria-busy={busy}>
+          {frozen.repeating ? t('pay.sending') : tr.checking || (!gate.ready && !gate.failed) ? t('pay.checking') : t('pay.recent.repeat')}
         </button>
         <button
           type="button"
           className="btn btn-primary"
+          disabled={!!frozen.repeating}
           onClick={() => {
             tr.keepPlan();
             onClose();
@@ -282,11 +309,18 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
       ) : frozen.recent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
           <p className="notice notice-warn" style={{ width: '100%' }}>
-            <b>{t('pay.recent.title', { plan: PLAN_LABEL[frozen.recent.plan] ?? frozen.recent.plan, n: String(Math.max(1, Math.round((Date.now() - Date.parse(frozen.recent.paidAt)) / 60_000))) })}</b>{' '}
-            {t('pay.recent.at', { time: timeOfDay(frozen.recent.paidAt, timezone) })}
+            <b>{recentTitle(frozen.recent)}</b> {t('pay.recent.at', { time: timeOfDay(frozen.recent.paidAt, timezone) })}
           </p>
           <p className="muted">{t('pay.recent.body')}</p>
           {!frozen.body && <p className="muted">{t('pay.recent.nobody')}</p>}
+          {gate.failed && (
+            <div className="notice notice-warn" role="alert">
+              <b>{t('pay.gate.failed')}.</b> {t('pay.gate.failed.body')}{' '}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={gate.retry}>
+                {t('pay.gate.retry')}
+              </button>
+            </div>
+          )}
         </div>
       ) : frozen.unsent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
@@ -385,7 +419,7 @@ export default function Subscriptions() {
   const accountId = dash.orgId ?? dash.me?.id;
   const sub = useQuery({
     queryKey: subscriptionKey(accountType, accountId),
-    queryFn: () => api.currentSubscription({ account_type: accountType, account_id: accountId }),
+    queryFn: () => api.currentSubscription({ account_type: accountType, account_id: accountId! }),
     enabled: !!accountId,
     refetchOnWindowFocus: false,
   });
@@ -403,7 +437,13 @@ export default function Subscriptions() {
     <>
       {tracker.attempt && !isTerminal(tracker.status) && (
         <div className="notice notice-warn" role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <span>{t(tracker.notFound ? 'pay.banner.notfound' : 'pay.banner', { plan: tracker.attempt.planName })}</span>
+          <span>
+            {tracker.attempt.recent
+              ? tracker.attempt.recent.plan
+                ? t('pay.banner.recent', { plan: PLAN_LABEL[tracker.attempt.recent.plan] ?? tracker.attempt.recent.plan })
+                : t('pay.banner.recent.noplan')
+              : t(tracker.notFound ? 'pay.banner.notfound' : 'pay.banner', { plan: tracker.attempt.planName })}
+          </span>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setTrackOpen(true)}>
             {t('pay.banner.view')}
           </button>

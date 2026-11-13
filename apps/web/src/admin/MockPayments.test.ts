@@ -53,7 +53,7 @@ describe('mock : suivi et rejeu du checkout', () => {
     expect(err.code).toBe('CONFLICT');
     expect(err.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: first.payment_id, plan: 'structure', status: 'initie' });
     // un autre compte n'est pas concerne
-    expect((await checkout(await tokenOf('+237690000003'), '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e72', '+237690000011', 'pro')).status).toBe(200);
+    expect((await checkout(await tokenOf('+237690000003'), '9d9f7c1e-3b2a-4c5d-8e6f-0a1b2c3d4e72', '+237690000011', 'pro')).status).toBe(201);
   });
 
   it('PAY-PENDING rejoue tant qu\'il n\'y a pas de reference fournisseur ni de confirmation', async () => {

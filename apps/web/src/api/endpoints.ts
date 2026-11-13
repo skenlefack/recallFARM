@@ -95,7 +95,7 @@ export const api = {
 
   /* subscription */
   /** Le serveur choisit sinon la premiere organisation administree : on envoie toujours le payeur actif. */
-  currentSubscription: (q?: { account_type?: 'user' | 'organisation'; account_id?: string }) => http.get<Subscription | null>('/subscriptions/current', q),
+  currentSubscription: (q: { account_type: 'user' | 'organisation'; account_id: string }) => http.get<Subscription | null>('/subscriptions/current', q),
   /** `body.id` (UUID v4 du client) rend l'appel idempotent (alternative du contrat : en-tete Idempotency-Key). */
   checkout: (body: CheckoutRequest) => http.post<CheckoutResponse>('/subscriptions/checkout', body),
   payment: (id: string) => http.get<Payment>(`/payments/${id}`),

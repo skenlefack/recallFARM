@@ -20,6 +20,8 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+  /** Instant du serveur (en-tete Date de la reponse, ms) : sert a corriger le decalage d'horloge de l'appareil. */
+  serverNow?: number;
   get rule(): string | undefined {
     const r = this.details?.rule;
     return typeof r === 'string' ? r : undefined;
@@ -80,8 +82,13 @@ async function toError(res: Response): Promise<ApiError> {
     /* non-JSON error */
   }
   const e = body?.error;
-  if (e && typeof e.code === 'string') return new ApiError(res.status, e.code, e.message || defaultMessage(res.status), e.fields, e.details);
-  return new ApiError(res.status, res.status >= 500 ? 'SERVER_ERROR' : 'HTTP_' + res.status, defaultMessage(res.status));
+  const err =
+    e && typeof e.code === 'string'
+      ? new ApiError(res.status, e.code, e.message || defaultMessage(res.status), e.fields, e.details)
+      : new ApiError(res.status, res.status >= 500 ? 'SERVER_ERROR' : 'HTTP_' + res.status, defaultMessage(res.status));
+  const date = Date.parse(res.headers.get('date') ?? '');
+  if (!Number.isNaN(date)) err.serverNow = date;
+  return err;
 }
 
 function defaultMessage(status: number): string {
