@@ -86,7 +86,8 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
   409 with the current one; without a recent payment it is ignored. The replay of an id is never PAY-RECENT; PAY-OPEN is checked
   first, both again at each try in the insert transaction under a per-payer advisory lock (`lock_timeout` 5 s, then
   `409 PAY-RETRY`). `confirm_repeat` is compared without case. Checkout has its own limit, `CHECKOUT_THROTTLE_LIMIT` per minute
-  and client (default 10, each request sends a payment prompt; 429 `RATE_LIMITED`).
+  and **authenticated user** (default 10, each request sends a payment prompt; 429 `RATE_LIMITED`, header `Retry-After-checkout`),
+  never per IP: many farmers share a mobile operator NAT (`CheckoutThrottlerGuard`; the global per-IP limit is skipped there).
 - **PAY-OPEN (EF-ABO-01)**: one open subscription payment (`initie`, `en_attente`, `a_verifier`) per payer, **whatever the plan**
   (an account has one subscription). A checkout with another id, key or plan meanwhile answers `409 CONFLICT`
   `details: {rule: 'PAY-OPEN', payment_id, status, plan}` (the client follows that payment); the replay of the same id/key is still a

@@ -7948,7 +7948,7 @@
                 }
               }
             },
-            "description": "RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; reessayer apres la minute en cours"
+            "description": "RATE_LIMITED : trop de demandes de paiement par utilisateur (CHECKOUT_THROTTLE_LIMIT par minute et par utilisateur authentifie, 10 par defaut ; jamais par IP : plusieurs eleveurs partagent le NAT d’un operateur mobile) ; reessayer apres la minute en cours"
           }
         },
         "security": [

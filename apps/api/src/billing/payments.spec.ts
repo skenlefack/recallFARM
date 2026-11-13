@@ -8,6 +8,7 @@ import { loadConfig } from '../config';
 import { Payment } from '../database/entities';
 import { DataSource } from 'typeorm';
 import { BillingService, idFromKey, paymentEvents } from './billing.service';
+import { CheckoutThrottlerGuard } from './checkout-throttler.guard';
 import { nextPollDelayMin, PaymentOpsService } from './payment-ops.service';
 import { ConnectorPaymentProvider, isNetworkError, PaymentProviderError, SimulatorPaymentProvider } from './payment.providers';
 
@@ -431,5 +432,23 @@ describe('config PAYMENT_RECENT_GUARD_MIN (PAY-RECENT)', () => {
       process.env.PAYMENT_RECENT_GUARD_MIN = bad;
       expect(() => loadConfig()).toThrow(/PAYMENT_RECENT_GUARD_MIN invalide/);
     }
+  });
+});
+
+describe('CheckoutThrottlerGuard (S1)', () => {
+  it('counts per authenticated user, falls back on the IP without one, with its own throttler name', async () => {
+    const guard = new CheckoutThrottlerGuard({ throttlers: [] } as never, {} as never, {} as never);
+    const calls: Array<{ tracker: string; name: string; limit: number }> = [];
+    (guard as unknown as { handleRequest: (p: { getTracker: () => Promise<string>; throttler: { name: string }; limit: number }) => Promise<boolean> }).handleRequest = async (p) => {
+      calls.push({ tracker: await p.getTracker(), name: p.throttler.name, limit: p.limit });
+      return true;
+    };
+    const ctx = (req: object) => ({ switchToHttp: () => ({ getRequest: () => req }) }) as never;
+    expect(await guard.canActivate(ctx({ user: { id: 'u1' }, ip: '10.0.0.1' }))).toBe(true);
+    expect(await guard.canActivate(ctx({ ip: '10.0.0.1' }))).toBe(true);
+    expect(calls).toEqual([
+      { tracker: 'user:u1', name: 'checkout', limit: 10 },
+      { tracker: 'ip:10.0.0.1', name: 'checkout', limit: 10 },
+    ]);
   });
 });

@@ -1201,18 +1201,24 @@ describe('declarative connectors', () => {
   });
 
   // Last on purpose: once over its limit, the checkout route is blocked for the rest of the minute.
-  it('S1: subscriptions/checkout has its own limit (CHECKOUT_THROTTLE_LIMIT per minute), 429 RATE_LIMITED', async () => {
+  it('S1: subscriptions/checkout has its own limit per user, not per IP (shared operator NAT), 429 RATE_LIMITED', async () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { reloadConfig } = require('../src/config');
-    const m = await login('+237690000001');
+    // Two users who have not paid in this minute, behind the same IP (supertest: 127.0.0.1).
+    const a = await login('+237690000004');
+    const b = await login('+237690000009');
     process.env.CHECKOUT_THROTTLE_LIMIT = '1';
     reloadConfig();
     try {
-      const send = () => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}` }).send(body({ account_id: m.id, plan: 'inconnue' }));
-      await send();
-      const limited = await send().expect(429);
+      const send = (u: { token: string; id: string }) => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${u.token}` }).send(body({ account_id: u.id }));
+      await send(a).expect(201);
+      // Same IP, another user: still their first checkout.
+      await send(b).expect(201);
+      // The same user again within the minute: limited.
+      const limited = await send(a).expect(429);
       expect(limited.body.error).toMatchObject({ code: 'RATE_LIMITED' });
       expect(check(limited.body, response('/v1/subscriptions/checkout', 'post', '429'))).toEqual([]);
+      expect(limited.headers['retry-after-checkout']).toBeDefined();
       // The general limit of the other routes is untouched.
       await http.get('/v1/plans').expect(200);
     } finally {
