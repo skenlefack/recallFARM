@@ -287,6 +287,8 @@ export interface PaymentMethodOption {
 export interface PlansResponse extends Page<Plan> {
   country?: string;
   currency?: string;
+  /** Fuseau du pays (IANA) s'il est expose par l'API ; sinon l'heure s'affiche dans le fuseau de l'appareil. */
+  timezone?: string;
   payment_methods?: PaymentMethodOption[];
 }
 
@@ -299,6 +301,8 @@ export interface CheckoutRequest {
   period: 'monthly' | 'yearly';
   method: PaymentMethod;
   phone: string;
+  /** UUID du paiement recent (details.payment_id du 409 PAY-RECENT) que le payeur accepte de doubler : meme checkout, meme id. Jamais envoye automatiquement. */
+  confirm_repeat?: UUID;
 }
 
 export interface CheckoutResponse {

@@ -117,6 +117,17 @@ simulation offsets read from `events[].notifications`; inherited labels fetched 
     the screen says so with that plan and follows it, the announcement names `details.plan`.
   - `409 PAY-RETRY`: another payment of this payer just finished. Never a plain refusal: the screen shows a dedicated text, the
     subscription is reloaded and « Payer » stays disabled until it is back (same check as after an abandon).
+  - `409 PAY-RECENT` (`details: { payment_id, plan, paid_at }`): a payment of this payer was confirmed a few minutes ago. A
+    dedicated screen says « Vous venez de payer la formule X il y a N min » with the time (country time zone when the API
+    exposes `timezone` in `/plans`, otherwise the device's), the subscription is reloaded, nothing is ever re-sent
+    automatically. « Garder ma formule » sends nothing; « Payer quand même » re-sends the SAME checkout (same id, same body)
+    with `confirm_repeat: <details.payment_id>`. A 2nd `PAY-RECENT` with another `payment_id` shows the screen again with
+    the new payment.
+  - **Payer is gated on the subscription**: « Payer » and the plan buttons stay disabled until `GET /subscriptions/current`
+    (always called with the active payer's `account_type` / `account_id`: the server would otherwise pick the first
+    administered organisation) succeeded and is not refetching. If it fails: « Vérification impossible » + « Réessayer la
+    vérification », never an enabled « Payer ». The result of a post-abandon / `PAY-RETRY` check is attached to the account, the
+    payer and a generation counter: it is ignored (no toast) after a sign-out, an expiry or a switch.
   - `unsent` (network, 5xx, timeout): no new checkout for any plan; only « Réessayer » (same id, same body; each retry refreshes
     `sentAt` so other tabs see an active send). « Abandonner » after 3 failed retries, or when the body is gone (another tab) and
     the last send is older than 2 min (before that: « peut-être en cours d'envoi dans un autre onglet »).

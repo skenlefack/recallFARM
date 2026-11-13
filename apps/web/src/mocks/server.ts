@@ -307,6 +307,9 @@ on('POST', '/subscriptions/checkout', ({ body, user }) => {
   // garde serveur : un compte n'a qu'un abonnement, donc un seul paiement ouvert toutes formules confondues (409 PAY-OPEN avec le paiement existant)
   const open = payments.find((x) => x.sim && x.payer_id === (user?.id ?? '') && ['initie', 'en_attente', 'a_verifier'].includes(x.status));
   if (open) throw new HttpError(409, 'CONFLICT', 'Un paiement est déjà en cours pour ce compte.', undefined, { rule: 'PAY-OPEN', payment_id: open.id, status: open.status, plan: open.plan });
+  // PAY-RECENT : un paiement du compte confirme il y a moins de 10 min exige confirm_repeat = id de ce paiement (meme checkout, meme id)
+  const recent = payments.find((x) => x.sim && x.payer_id === (user?.id ?? '') && x.status === 'confirme' && x.paid_at && Date.now() - Date.parse(x.paid_at) < 10 * 60_000);
+  if (recent && (body as { confirm_repeat?: string }).confirm_repeat !== recent.id) throw new HttpError(409, 'CONFLICT', `Vous avez déjà payé la formule ${recent.plan ?? ''} il y a 1 min. Confirmez pour payer encore.`, undefined, { rule: 'PAY-RECENT', payment_id: recent.id, plan: recent.plan, paid_at: recent.paid_at });
   const amount = b.period === 'yearly' ? pl.price.yearly : pl.price.monthly;
   const pay: MockPayment = {
     id: uid(),
@@ -355,6 +358,7 @@ on('GET', '/payments/:id', ({ user }, p) => {
     else if (age > 6000) pay.status = pay.phone.endsWith('99') ? 'echoue' : 'confirme';
     else if (age > 1500) pay.status = 'en_attente';
     if (pay.status === 'confirme') {
+      pay.paid_at ??= new Date().toISOString();
       subscription.plan = plans.find((x) => x.price && x.price.monthly?.amount_minor === pay.amount?.amount_minor)?.code ?? subscription.plan;
     }
   }

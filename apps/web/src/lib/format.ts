@@ -196,3 +196,15 @@ export const PLAN_LABEL: Record<string, string> = { decouverte: 'Découverte', p
 export function pluralize(n: number, one: string, many: string): string {
   return `${num(n)} ${n > 1 ? many : one}`;
 }
+
+/** Heure d'un instant ISO (« 14:32 ») dans le fuseau du pays s'il est connu, sinon celui de l'appareil. */
+export function timeOfDay(iso: string, timeZone?: string): string {
+  const tag = getLocale() === 'en' ? 'en' : 'fr-FR';
+  const d = new Date(iso);
+  try {
+    return new Intl.DateTimeFormat(tag, { hour: '2-digit', minute: '2-digit', ...(timeZone ? { timeZone } : {}) }).format(d);
+  } catch (e) {
+    console.warn('[format] fuseau inconnu, heure de l\'appareil', timeZone, e);
+    return new Intl.DateTimeFormat(tag, { hour: '2-digit', minute: '2-digit' }).format(d);
+  }
+}

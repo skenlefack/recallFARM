@@ -141,7 +141,7 @@ describe('A1 : rechargement et navigation', () => {
     const raw = localStorage.getItem(storeKey())!;
     const saved = JSON.parse(raw) as Record<string, unknown>;
     expect(saved).toMatchObject({ paymentId: 'pay-1', ownerId: userId, plan: 'structure', planName: 'Structure', period: 'monthly', unsent: false, existing: false });
-    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'sentAt', 'subKnown', 'subSnap', 'unknown', 'unsent']);
+    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'recent', 'sentAt', 'subKnown', 'subSnap', 'unknown', 'unsent']);
     expect(raw).not.toContain('690000002');
     expect(raw).not.toContain('account_id');
     expect(saved.phoneMasked).toBe('••••••02');
@@ -668,7 +668,7 @@ describe('B-A : 409 PAY-RETRY', () => {
   };
 
   it('texte dedie (jamais le texte brut du serveur), abonnement recharge, Payer bloque jusqu\'a son retour', async () => {
-    let release: (r: Response) => void = () => undefined;
+    let release: () => void = () => undefined;
     let subCalls = 0;
     const b = backend({ checkout: () => retry409() });
     setTransport(async (m, u, i) => {
@@ -690,7 +690,7 @@ describe('B-A : 409 PAY-RETRY', () => {
     const busy = await screen.findByRole('button', { name: 'Vérification de votre formule…' });
     expect(busy).toBeDisabled();
     expect(b.bodies).toHaveLength(1);
-    release(new Response());
+    release();
     expect(await screen.findByText('Vérifiez votre formule actuelle avant de payer de nouveau.')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled());
     expect(subCalls).toBeGreaterThan(1);

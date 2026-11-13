@@ -94,7 +94,8 @@ export const api = {
   resolveAlert: (id: string, body: { cause: string; action: string }) => http.post<Alert>(`/alerts/${id}/resolve`, body),
 
   /* subscription */
-  currentSubscription: () => http.get<Subscription | null>('/subscriptions/current'),
+  /** Le serveur choisit sinon la premiere organisation administree : on envoie toujours le payeur actif. */
+  currentSubscription: (q?: { account_type?: 'user' | 'organisation'; account_id?: string }) => http.get<Subscription | null>('/subscriptions/current', q),
   /** `body.id` (UUID v4 du client) rend l'appel idempotent (alternative du contrat : en-tete Idempotency-Key). */
   checkout: (body: CheckoutRequest) => http.post<CheckoutResponse>('/subscriptions/checkout', body),
   payment: (id: string) => http.get<Payment>(`/payments/${id}`),
@@ -137,3 +138,6 @@ export const api = {
   simulateProtocol: (body: { version_id: string; protocol_code: string; birth_or_start_date: string }) =>
     http.post<ProtocolSimulation>('/studio/simulate-protocol', body),
 };
+
+/** Cle de la requete de l'abonnement d'un payeur (organisation active, sinon utilisateur). */
+export const subscriptionKey = (accountType: 'user' | 'organisation' | undefined, accountId: string | undefined) => ['subscription', accountType, accountId] as const;

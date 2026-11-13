@@ -5,6 +5,7 @@ export type CheckoutOutcome =
   | { kind: 'pending'; paymentId: string } // PAY-PENDING : issue inconnue, NE PAS relancer, suivre
   | { kind: 'conflict' } // PAY-IDEMPOTENCY : la cle a servi a une autre demande
   | { kind: 'open'; paymentId: string; plan?: string } // PAY-OPEN : le compte a deja un paiement ouvert (toutes formules), on le suit
+  | { kind: 'recent'; paymentId: string; plan?: string; paidAt: string } // PAY-RECENT : un paiement de ce payeur a ete confirme il y a quelques minutes ; passer outre = decision explicite
   | { kind: 'retry' } // PAY-RETRY : un autre paiement de ce payeur vient de se terminer ; la suite se decide apres rechargement de l'abonnement
   | { kind: 'other' };
 
@@ -13,6 +14,12 @@ export function checkoutOutcome(err: unknown): CheckoutOutcome {
   if (!(err instanceof ApiError)) return { kind: 'other' };
   if (err.code === 'CONFLICT' && err.rule === 'PAY-IDEMPOTENCY') return { kind: 'conflict' };
   if (err.code === 'CONFLICT' && err.rule === 'PAY-RETRY') return { kind: 'retry' };
+  if (err.code === 'CONFLICT' && err.rule === 'PAY-RECENT') {
+    const id = err.details?.payment_id;
+    const paidAt = err.details?.paid_at;
+    const plan = err.details?.plan;
+    return typeof id === 'string' && id && typeof paidAt === 'string' && !Number.isNaN(Date.parse(paidAt)) ? { kind: 'recent', paymentId: id, paidAt, ...(typeof plan === 'string' && plan ? { plan } : {}) } : { kind: 'other' };
+  }
   if (err.code === 'CONFLICT' && err.rule === 'PAY-OPEN') {
     const id = err.details?.payment_id;
     const plan = err.details?.plan;

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
-import { api, listOf } from '../../api/endpoints';
+import { api, listOf, subscriptionKey } from '../../api/endpoints';
 import type { PaymentMethodOption, Plan, PlanCode } from '../../api/types';
 import { Card, Dialog, ErrorState, Pill, Seg, Skeleton } from '../../components/ui';
-import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL } from '../../lib/format';
+import { dateShort, money, num, phone as fmtPhone, PLAN_LABEL, timeOfDay } from '../../lib/format';
 import { t } from '../../lib/i18n';
 import { checkoutOutcome, isTerminal, isUnderReview, methodInitials } from '../../lib/payment';
 import { priceOf } from '../../lib/plans';
@@ -42,7 +42,14 @@ const FEATURE_LABEL: Record<string, string> = {
   api: 'API et marque blanche',
 };
 
-function Checkout({ open, plan, period, methods, currency, onClose }: { open: boolean; plan: Plan | null; period: Period; methods: PaymentMethodOption[]; currency?: string; onClose: () => void }) {
+/** Abonnement du payeur : tant qu'il n'est pas (re)charge avec succes, on ne propose jamais de payer. */
+interface Gate {
+  ready: boolean;
+  failed: boolean;
+  retry: () => void;
+}
+
+function Checkout({ open, plan, period, methods, currency, timezone, gate, onClose }: { open: boolean; plan: Plan | null; period: Period; methods: PaymentMethodOption[]; currency?: string; timezone?: string; gate: Gate; onClose: () => void }) {
   const { me, orgId } = useAuth();
   const tr = usePaymentTracker();
   const { attempt, status } = tr;
@@ -64,7 +71,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
 
   const price = plan ? priceOf(plan, plan.code, period, currency) : null;
   /** Pas de paiement connu : formulaire (y compris pendant l'envoi). */
-  const formMode = !attempt || (!attempt.paymentId && !attempt.unsent);
+  const formMode = !attempt || (!attempt.paymentId && !attempt.unsent && !attempt.recent);
   const submitError = formMode ? tr.submitError : null;
   const outcome = submitError ? checkoutOutcome(submitError).kind : null;
   const refused = outcome === 'refused';
@@ -75,7 +82,7 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (tr.submitting || !method || !plan) return;
+    if (tr.submitting || tr.checking || !gate.ready || !method || !plan) return;
     tr.submit(
       {
         account_type: orgId ? 'organisation' : 'user',
@@ -115,10 +122,10 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
   const mmss = `${Math.floor(tr.remaining / 60)}:${String(tr.remaining % 60).padStart(2, '0')}`;
   const everyS = String(Math.round(pollTiming.intervalMs / 1000));
 
-  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}|${frozen?.tries ?? 0}|${tr.submitError ? 'e' : ''}|${elsewhere}`;
+  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}|${frozen?.tries ?? 0}|${tr.submitError ? 'e' : ''}|${elsewhere}|${retryRule}|${!!frozen?.recent}`;
   useEffect(() => {
-    if (refused || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
-  }, [outcomeKey, refused, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
+    if (refused || retryRule || frozen?.recent || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
+  }, [outcomeKey, refused, retryRule, frozen?.recent, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
 
   const abandonAndClose = () => {
     tr.abandon();
@@ -138,8 +145,26 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
         <button type="button" className="btn btn-ghost" onClick={onClose}>
           {t('pay.cancel')}
         </button>
-        <button type="submit" form="checkout-form" className="btn btn-primary" disabled={tr.submitting || tr.checking || !method} aria-busy={tr.submitting || tr.checking}>
-          {tr.submitting ? t('pay.sending') : tr.checking ? t('pay.checking') : t('pay.pay')}
+        <button type="submit" form="checkout-form" className="btn btn-primary" disabled={tr.submitting || tr.checking || !gate.ready || !method} aria-busy={tr.submitting || tr.checking}>
+          {tr.submitting ? t('pay.sending') : tr.checking || (!gate.ready && !gate.failed) ? t('pay.checking') : t('pay.pay')}
+        </button>
+      </>
+    );
+  } else if (frozen?.recent) {
+    footer = (
+      <>
+        <button type="button" className="btn btn-ghost" onClick={tr.confirmRepeat} disabled={tr.checking || !frozen.body} aria-busy={tr.checking}>
+          {t('pay.recent.repeat')}
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => {
+            tr.keepPlan();
+            onClose();
+          }}
+        >
+          {t('pay.recent.keep')}
         </button>
       </>
     );
@@ -235,6 +260,14 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
               <b>{t('pay.init.title')}.</b> {t('pay.init.body')}
             </div>
           )}
+          {gate.failed && (
+            <div className="notice notice-warn" role="alert">
+              <b>{t('pay.gate.failed')}.</b> {t('pay.gate.failed.body')}{' '}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={gate.retry}>
+                {t('pay.gate.retry')}
+              </button>
+            </div>
+          )}
           {retryRule && (
             <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
               {t('pay.retry.body')}
@@ -246,6 +279,15 @@ function Checkout({ open, plan, period, methods, currency, onClose }: { open: bo
             </div>
           )}
         </form>
+      ) : frozen.recent ? (
+        <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
+          <p className="notice notice-warn" style={{ width: '100%' }}>
+            <b>{t('pay.recent.title', { plan: PLAN_LABEL[frozen.recent.plan] ?? frozen.recent.plan, n: String(Math.max(1, Math.round((Date.now() - Date.parse(frozen.recent.paidAt)) / 60_000))) })}</b>{' '}
+            {t('pay.recent.at', { time: timeOfDay(frozen.recent.paidAt, timezone) })}
+          </p>
+          <p className="muted">{t('pay.recent.body')}</p>
+          {!frozen.body && <p className="muted">{t('pay.recent.nobody')}</p>}
+        </div>
       ) : frozen.unsent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
           <p className="notice notice-warn" style={{ width: '100%' }}>
@@ -338,12 +380,22 @@ export default function Subscriptions() {
   useEffect(() => {
     if (trackOpen && !tracker.attempt) setTrackOpen(false);
   }, [trackOpen, tracker.attempt]);
-  const sub = useQuery({ queryKey: ['subscription'], queryFn: api.currentSubscription });
+  const dash = useAuth();
+  const accountType = dash.orgId ? 'organisation' : 'user';
+  const accountId = dash.orgId ?? dash.me?.id;
+  const sub = useQuery({
+    queryKey: subscriptionKey(accountType, accountId),
+    queryFn: () => api.currentSubscription({ account_type: accountType, account_id: accountId }),
+    enabled: !!accountId,
+    refetchOnWindowFocus: false,
+  });
+  /** Payer (et les boutons « Choisir ») seulement quand l'abonnement du payeur est charge et a jour. */
+  const gateReady = sub.isSuccess && !sub.isFetching;
+  const gate: Gate = { ready: gateReady, failed: sub.isError && !sub.isFetching, retry: () => void sub.refetch() };
   const plansQ = useQuery({ queryKey: ['plans', 'CM'], queryFn: () => api.plans('CM') });
   const plans = { ...plansQ, data: plansQ.data ? listOf(plansQ.data) : undefined };
   const methods = (!Array.isArray(plansQ.data) && plansQ.data?.payment_methods) || [];
   const plansCurrency = !Array.isArray(plansQ.data) ? plansQ.data?.currency : undefined;
-  const dash = useAuth();
   const current = sub.data?.plan;
   const currentPlan = plans.data?.find((p) => p.code === current);
 
@@ -476,7 +528,7 @@ export default function Subscriptions() {
                     </li>
                   </ul>
                   {isCurrent ? (
-                    <button type="button" className="btn btn-ghost" onClick={() => setBuying(p)} disabled={!pr.amount}>
+                    <button type="button" className="btn btn-ghost" onClick={() => setBuying(p)} disabled={!pr.amount || !gateReady}>
                       Renouveler
                     </button>
                   ) : pr.amount === null ? (
@@ -488,7 +540,7 @@ export default function Subscriptions() {
                       {rank(p.code) < rank(current) ? 'Rétrogradation sur demande' : 'Gratuite'}
                     </button>
                   ) : (
-                    <button type="button" className="btn btn-primary" onClick={() => setBuying(p)}>
+                    <button type="button" className="btn btn-primary" onClick={() => setBuying(p)} disabled={!gateReady}>
                       {rank(p.code) > rank(current) ? `Passer à ${p.name ?? PLAN_LABEL[p.code]}` : `Choisir ${p.name ?? PLAN_LABEL[p.code]}`}
                     </button>
                   )}
@@ -501,7 +553,7 @@ export default function Subscriptions() {
           {methods.length > 0 ? t('pay.footnote', { methods: methods.map((x) => x.label).join(', ') }) : t('pay.footnote.none')}
         </p>
       </section>
-      <Checkout open={!!buying || (trackOpen && !!tracker.attempt)} plan={buying} period={period} methods={methods} currency={plansCurrency} onClose={() => (setBuying(null), setTrackOpen(false))} />
+      <Checkout open={!!buying || (trackOpen && !!tracker.attempt)} plan={buying} period={period} methods={methods} currency={plansCurrency} timezone={!Array.isArray(plansQ.data) ? plansQ.data?.timezone : undefined} gate={gate} onClose={() => (setBuying(null), setTrackOpen(false))} />
     </>
   );
 }
