@@ -286,10 +286,10 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
   it('checkoutOutcome : forme exigee (payment_id et paid_at valides)', () => {
     const err = (details: Record<string, unknown>) => new ApiError(409, 'CONFLICT', 'x', undefined, details);
     expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: PID1, plan: 'pro', paid_at: '2026-11-12T10:30:00Z' }))).toEqual({ kind: 'recent', paymentId: PID1, plan: 'pro', paidAt: '2026-11-12T10:30:00Z', skewMs: 0 });
-    // forme invalide : jamais confirmable, donc traitee comme PAY-RETRY (verifier l'abonnement, pas de Payer avant)
-    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: 'p', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('retry');
-    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: PID1, paid_at: 'pas une date' })).kind).toBe('retry');
-    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('retry');
+    // forme invalide : jamais confirmable, etat distinct de PAY-RETRY (verifier l'abonnement, pas de Payer avant)
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: 'p', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('malformed');
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', payment_id: PID1, paid_at: 'pas une date' })).kind).toBe('malformed');
+    expect(checkoutOutcome(err({ rule: 'PAY-RECENT', paid_at: '2026-11-12T10:30:00Z' })).kind).toBe('malformed');
   });
 
   it('le mock repond comme le serveur : 409 PAY-RECENT, puis accepte confirm_repeat = id du paiement recent', async () => {
@@ -359,7 +359,8 @@ describe('A-2 : confirm_repeat exige un UUID', () => {
     renderApp(<Subscriptions />);
     await subLoaded();
     await pay();
-    expect(await screen.findByText('Un autre paiement de ce compte vient de se terminer. Vérifiez votre formule avant de payer de nouveau.')).toBeInTheDocument();
+    expect(await screen.findByText('Réponse inattendue du serveur. Vérifiez votre formule avant de payer de nouveau.')).toBeInTheDocument();
+    expect(screen.queryByText(/vient de se terminer/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Payer quand même' })).toBeNull();
     expect(await screen.findByRole('button', { name: /Vérification de votre formule/ })).toBeDisabled();
     release();
@@ -524,14 +525,15 @@ describe('S-5 : payeur utilisateur', () => {
   });
 });
 
-const tooMany = () => json(429, { error: { code: 'RATE_LIMITED', message: 'Trop de requetes' } });
+const tooMany = (retryAfter?: string) => new Response(JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'Trop de requetes' } }), { status: 429, headers: { 'Content-Type': 'application/json', ...(retryAfter ? { 'Retry-After': retryAfter } : {}) } });
 const initRefused = () => json(422, { error: { code: 'BUSINESS_RULE', message: 'refus brut', details: { rule: 'PAY-INIT', payment_id: 'p-x' } } });
 const RATE = 'Trop de demandes, patientez une minute.';
+const BUSY = 'Un autre paiement de ce compte est en cours de traitement. Réessayez dans un instant.';
 const storedId = () => JSON.parse(localStorage.getItem(storeKey())!).id as string;
 
 describe('B-NEW-1 : « pas traite maintenant » n\'est jamais une issue tranchee', () => {
   it('429 puis PAY-RETRY sur « Reessayer » : meme id conserve, jamais de Payer, message dedie', async () => {
-    const b = backend({ checkout: (n) => (n === 1 ? tooMany() : retry409()) });
+    const b = backend({ checkout: (n) => (n === 1 ? tooMany('1') : retry409()) });
     setTransport(b.transport);
     seed({ unsent: true, sentAt: Date.now() - 10 * 60_000 });
     renderApp(<Subscriptions />);
@@ -541,9 +543,15 @@ describe('B-NEW-1 : « pas traite maintenant » n\'est jamais une issue tranchee
     expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
     expect(storedId()).toBe(ID);
-    await userEvent.click(await screen.findByRole('button', { name: 'Réessayer' }));
+    // « Reessayer » attend la fin du delai (Retry-After : 1 s)
+    expect(screen.getByRole('button', { name: 'Réessayer' })).toBeDisabled();
+    const again = await screen.findByRole('button', { name: 'Réessayer' });
+    await waitFor(() => expect(again).toBeEnabled(), { timeout: 3000 });
+    await userEvent.click(again);
     await waitFor(() => expect(b.bodies).toHaveLength(2));
-    expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
+    // A3 : PAY-RETRY a son propre texte (et non « Trop de demandes »)
+    expect(await screen.findByText(new RegExp(BUSY))).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(RATE))).toBeNull();
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
     expect(storedId()).toBe(ID);
     expect(new Set(b.bodies.map((x) => x.id))).toEqual(new Set([ID]));
@@ -590,7 +598,7 @@ describe('A-NEW-1 : un echec de « Payer quand meme » ne ferme pas la fenetre e
   });
 
   it('429 sur « Payer quand meme » : issue inconnue, meme id, « Reessayer » renvoie confirm_repeat, jamais de Payer', async () => {
-    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : n === 2 ? tooMany() : created('pay-5')) });
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : n === 2 ? tooMany('1') : created('pay-5')) });
     setTransport(b.transport);
     renderApp(<Subscriptions />);
     await subLoaded();
@@ -601,7 +609,9 @@ describe('A-NEW-1 : un echec de « Payer quand meme » ne ferme pas la fenetre e
     expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
     expect(storedId()).toBe(id);
-    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    const again = screen.getByRole('button', { name: 'Réessayer' });
+    await waitFor(() => expect(again).toBeEnabled(), { timeout: 3000 });
+    await userEvent.click(again);
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies[2]).toMatchObject({ id, confirm_repeat: PID1 });
     expect(b.bodies[2]).toEqual(b.bodies[1]);
@@ -616,7 +626,7 @@ describe('A-NEW-1 : un echec de « Payer quand meme » ne ferme pas la fenetre e
     await screen.findByText(/Vous venez de payer la formule Pro/);
     const id = storedId();
     await userEvent.click(await armed('Payer quand même'));
-    expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
+    expect(await screen.findByText(new RegExp(BUSY))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
     expect(storedId()).toBe(id);
   });
@@ -658,20 +668,82 @@ describe('S-b : « Payer quand meme » en cours dans un autre onglet', () => {
     await screen.findByText(/Validez sur votre téléphone/);
   });
 
-  it('un autre onglet voit l\'envoi en cours : « Payer quand meme » desactive ; un marqueur perime (onglet ferme) est ignore', async () => {
-    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 }, repeating: true, sentAt: Date.now() });
+  it('un autre onglet voit l\'envoi en cours : « Payer quand meme » occupe et desactive', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 }, repeating: true, confirmRepeat: PID1, sentAt: Date.now() });
     setTransport(backend({}).transport);
-    const first = renderApp(<Subscriptions />);
+    renderApp(<Subscriptions />);
     await subLoaded();
     await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
     await new Promise((r) => setTimeout(r, 700));
     expect(screen.getByRole('button', { name: 'Envoi de la demande…' })).toBeDisabled();
-    first.unmount();
-    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 }, repeating: true, sentAt: Date.now() - 5 * 60_000 });
+  });
+});
+
+describe('A1 et A2 : marqueur repeating perime', () => {
+  const recentAt = () => new Date(Date.now() - 3 * 60_000).toISOString();
+  const staleSeed = (ageMs: number) => seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 }, repeating: true, confirmRepeat: PID1, sentAt: Date.now() - ageMs });
+
+  it('A2 : rechargement apres plus de 60 s : issue inconnue (jamais « Garder ma formule »), Reessayer renvoie le meme id avec confirm_repeat', async () => {
+    staleSeed(5 * 60_000);
+    const b = backend({ checkout: () => created('pay-8') });
+    setTransport(b.transport);
     renderApp(<Subscriptions />);
     await subLoaded();
     await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
-    await armed('Payer quand même');
+    expect(screen.queryByRole('button', { name: 'Garder ma formule' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Payer quand même' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    await userEvent.click(await screen.findByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies).toEqual([{ id: ID, ...BODY, confirm_repeat: PID1 }]);
+  });
+
+  it('A2 : un autre onglet qui lit un marqueur perime voit la meme chose', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 } });
+    const b = backend({ checkout: () => created('pay-8') });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    window.dispatchEvent(new StorageEvent('storage', { key: storeKey(), newValue: JSON.stringify(staleSeed(5 * 60_000)) }));
+    expect(await screen.findByText(/La demande n’a pas reçu de réponse/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Garder ma formule' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies[0]).toMatchObject({ id: ID, confirm_repeat: PID1 });
+  });
+
+  it('A1 : marqueur encore frais (59,5 s) : occupe ; quelques instants apres, l\'etat bascule tout seul en issue inconnue, sans blocage', async () => {
+    staleSeed(59_500);
+    setTransport(backend({}).transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(screen.getByRole('button', { name: 'Envoi de la demande…' })).toBeDisabled();
+    expect(await screen.findByText(/La demande n’a pas reçu de réponse/, undefined, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Réessayer' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Garder ma formule' })).toBeNull();
+  });
+});
+
+describe('S2 : un 429 ne compte pas vers « Abandonner » et retarde « Reessayer »', () => {
+  it('trois 429 de suite : toujours pas d\'Abandonner ; « Reessayer » desactive pendant le delai Retry-After', async () => {
+    const b = backend({ checkout: () => tooMany('1') });
+    setTransport(b.transport);
+    seed({ unsent: true, sentAt: Date.now() - 10 * 60_000 });
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    for (let i = 0; i < 3; i++) {
+      const btn = await screen.findByRole('button', { name: 'Réessayer' });
+      await waitFor(() => expect(btn).toBeEnabled(), { timeout: 3000 });
+      await userEvent.click(btn);
+      await waitFor(() => expect(b.bodies).toHaveLength(i + 1));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Réessayer' })).toBeDisabled());
+    }
+    expect(screen.queryByRole('button', { name: 'Abandonner' })).toBeNull();
+    expect(storedId()).toBe(ID);
   });
 });
 

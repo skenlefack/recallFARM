@@ -49,7 +49,6 @@ interface Gate {
   retry: () => void;
 }
 
-/** « Vous venez de payer la formule X il y a N min. » (N en minutes entieres ; formule absente : texte sans formule). */
 /** Message d'un echec d'envoi (jamais le texte du serveur). */
 function failureText(err: unknown): string {
   const kind = err ? checkoutOutcome(err).kind : 'other';
@@ -59,6 +58,7 @@ function failureText(err: unknown): string {
   return t('pay.error.generic');
 }
 
+/** « Vous venez de payer la formule X il y a N min. » (N en minutes entieres ; formule absente : texte sans formule). */
 function recentTitle(r: { plan: string; paidAt: string; skewMs: number }): string {
   const n = recentMinutes(r);
   const plan = r.plan ? (PLAN_LABEL[r.plan] ?? r.plan) : '';
@@ -107,6 +107,8 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
     }
     hadRecent.current = !!attempt?.recent;
     wasOpen.current = open;
+    // Volontairement limite a [attempt, open] : l'effet decide d'une TRANSITION (ecran recent -> plus de tentative) ; plan, toast et tr y sont
+    // lus a l'instant de la transition, les mettre en dependances le rejouerait a chaque rendu.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt, open]);
   // les deux boutons de l'ecran recent ne s'activent qu'apres 500 ms : un double clic sur « Payer quand meme » ne tombe jamais sur « Garder ma formule »
@@ -136,10 +138,12 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
   const phoneErr = submitError instanceof ApiError ? submitError.fields?.phone : undefined;
   const retryRule = outcome === 'retry';
   const ratelimit = outcome === 'ratelimit';
-  const otherError = !!submitError && !refused && !conflict && !retryRule && !ratelimit;
+  const malformed = outcome === 'malformed';
+  const otherError = !!submitError && !refused && !conflict && !retryRule && !ratelimit && !malformed;
   /** Dernier envoi d'une tentative d'issue inconnue : 429 ou PAY-RETRY = « pas traite maintenant », la meme requete reste a refaire. */
   const lastKind = tr.submitError ? checkoutOutcome(tr.submitError).kind : null;
-  const notNow = lastKind === 'ratelimit' || lastKind === 'retry';
+  const notNow = lastKind === 'ratelimit' || lastKind === 'retry' || lastKind === 'malformed';
+
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -162,6 +166,15 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
 
   // textes du paiement suivi : ceux de la tentative figee, jamais la formule regardee ensuite
   const frozen = attempt;
+  // « Reessayer » attend la fin du delai d'un 429 (Retry-After, sinon 60 s)
+  const waitUntil = frozen?.retryNotBefore ?? 0;
+  const [, retryTick] = useState(0);
+  useEffect(() => {
+    if (!waitUntil || waitUntil <= Date.now()) return;
+    const timer = setTimeout(() => retryTick((n) => n + 1), waitUntil - Date.now() + 20);
+    return () => clearTimeout(timer);
+  }, [waitUntil]);
+  const retryWaiting = waitUntil > Date.now();
   const frozenAmount = frozen?.amount ? money(frozen.amount.amount_minor, frozen.amount.currency) : '';
   const frozenMethod = methods.find((x) => x.code === frozen?.method)?.label ?? frozen?.method ?? '';
   /** Reessayer exige le corps complet (memoire ou sessionStorage) ; apres 3 essais sans reponse, ou corps perdu : Abandonner. Un paiement deja confirme n'est PAS couvert par PAY-OPEN : l'abandon recharge l'abonnement et demande de le verifier. */
@@ -183,10 +196,10 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
   const mmss = `${Math.floor(tr.remaining / 60)}:${String(tr.remaining % 60).padStart(2, '0')}`;
   const everyS = String(Math.round(pollTiming.intervalMs / 1000));
 
-  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}|${frozen?.tries ?? 0}|${tr.submitError ? 'e' : ''}|${elsewhere}|${retryRule}|${ratelimit}|${notNow}|${!!frozen?.recent}`;
+  const outcomeKey = `${frozen?.paymentId ?? ''}|${status ?? ''}|${tr.timedOut}|${refused}|${tr.notFound}|${!!frozen?.unsent}|${!!frozen?.existing}|${frozen?.tries ?? 0}|${tr.submitError ? 'e' : ''}|${elsewhere}|${retryRule}|${ratelimit}|${malformed}|${notNow}|${!!frozen?.recent}`;
   useEffect(() => {
-    if (refused || retryRule || ratelimit || frozen?.recent || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
-  }, [outcomeKey, refused, retryRule, ratelimit, frozen?.recent, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
+    if (refused || retryRule || ratelimit || malformed || frozen?.recent || frozen?.unsent || frozen?.existing || (tracking && (terminal || review || tr.timedOut || tr.notFound))) statusRef.current?.focus();
+  }, [outcomeKey, refused, retryRule, ratelimit, malformed, frozen?.recent, frozen?.unsent, frozen?.existing, tracking, terminal, review, tr.timedOut, tr.notFound]);
 
   const abandonAndClose = () => {
     tr.abandon();
@@ -253,7 +266,7 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
           </button>
         )}
         {canRetrySend && (
-          <button type="button" className="btn btn-primary" onClick={retrySend} disabled={tr.submitting} aria-busy={tr.submitting}>
+          <button type="button" className="btn btn-primary" onClick={retrySend} disabled={tr.submitting || retryWaiting} aria-busy={tr.submitting}>
             {tr.submitting ? t('pay.sending') : t('pay.retry')}
           </button>
         )}
@@ -346,6 +359,11 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
               {t('pay.ratelimit')}
             </div>
           )}
+          {malformed && (
+            <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
+              {t('pay.malformed')}
+            </div>
+          )}
           {retryRule && (
             <div ref={statusRef} tabIndex={-1} className="notice notice-warn" role="alert">
               {t('pay.retry.body')}
@@ -376,7 +394,7 @@ function Checkout({ open, plan, period, methods, currency, timezone, gate, onClo
       ) : frozen.unsent ? (
         <div className="pay-wait" aria-live="polite" ref={statusRef} tabIndex={-1}>
           <p className="notice notice-warn" style={{ width: '100%' }}>
-            <b>{t('pay.unsent.title')}.</b> {t(notNow ? 'pay.ratelimit' : canRetrySend ? 'pay.unsent.body' : elsewhere ? 'pay.unsent.elsewhere' : 'pay.unsent.nobody')}
+            <b>{t('pay.unsent.title')}.</b> {t(lastKind === 'ratelimit' ? 'pay.ratelimit' : lastKind === 'retry' ? 'pay.unsent.busy' : lastKind === 'malformed' ? 'pay.malformed' : canRetrySend ? 'pay.unsent.body' : elsewhere ? 'pay.unsent.elsewhere' : 'pay.unsent.nobody')}
           </p>
           <p className="muted">
             {frozenAmount ? t('pay.unsent.plan', { plan: frozen.planName, amount: frozenAmount }) : t('pay.unsent.plan.noamount', { plan: frozen.planName })}

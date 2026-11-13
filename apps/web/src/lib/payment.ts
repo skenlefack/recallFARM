@@ -7,6 +7,7 @@ export type CheckoutOutcome =
   | { kind: 'open'; paymentId: string; plan?: string } // PAY-OPEN : le compte a deja un paiement ouvert (toutes formules), on le suit
   | { kind: 'recent'; paymentId: string; plan?: string; paidAt: string; skewMs: number } // PAY-RECENT : un paiement de ce payeur a ete confirme il y a quelques minutes ; passer outre = decision explicite
   | { kind: 'ratelimit' } // 429 : « pas traite maintenant », jamais une issue tranchee
+  | { kind: 'malformed' } // PAY-RECENT mal forme (pas de UUID, date illisible) : ne peut pas etre confirme, la suite se decide apres rechargement de l'abonnement
   | { kind: 'retry' } // PAY-RETRY : un autre paiement de ce payeur vient de se terminer ; la suite se decide apres rechargement de l'abonnement
   | { kind: 'other' };
 
@@ -20,8 +21,8 @@ export function checkoutOutcome(err: unknown): CheckoutOutcome {
     const id = err.details?.payment_id;
     const paidAt = err.details?.paid_at;
     const plan = err.details?.plan;
-    // confirm_repeat doit etre un UUID : un payment_id d'une autre forme ne peut pas etre confirme. Traite comme PAY-RETRY (verifier l'abonnement, pas de Payer avant)
-    if (typeof id !== 'string' || !isUuid(id) || typeof paidAt !== 'string' || Number.isNaN(Date.parse(paidAt))) return { kind: 'retry' };
+    // confirm_repeat doit etre un UUID : un payment_id d'une autre forme ne peut pas etre confirme. Etat distinct (verifier l'abonnement, pas de Payer avant)
+    if (typeof id !== 'string' || !isUuid(id) || typeof paidAt !== 'string' || Number.isNaN(Date.parse(paidAt))) return { kind: 'malformed' };
     return { kind: 'recent', paymentId: id, paidAt, skewMs: err.serverNow ? err.serverNow - Date.now() : 0, ...(typeof plan === 'string' && plan ? { plan } : {}) };
   }
   if (err.code === 'CONFLICT' && err.rule === 'PAY-OPEN') {

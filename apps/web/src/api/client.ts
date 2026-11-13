@@ -22,6 +22,8 @@ export class ApiError extends Error {
   }
   /** Instant du serveur (en-tete Date de la reponse, ms) : sert a corriger le decalage d'horloge de l'appareil. */
   serverNow?: number;
+  /** En-tete Retry-After de la reponse (ms), s'il est lisible en secondes. */
+  retryAfterMs?: number;
   get rule(): string | undefined {
     const r = this.details?.rule;
     return typeof r === 'string' ? r : undefined;
@@ -88,6 +90,8 @@ async function toError(res: Response): Promise<ApiError> {
       : new ApiError(res.status, res.status >= 500 ? 'SERVER_ERROR' : 'HTTP_' + res.status, defaultMessage(res.status));
   const date = Date.parse(res.headers.get('date') ?? '');
   if (!Number.isNaN(date)) err.serverNow = date;
+  const retryAfter = Number(res.headers.get('retry-after'));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterMs = retryAfter * 1000;
   return err;
 }
 

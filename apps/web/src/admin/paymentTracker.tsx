@@ -7,7 +7,7 @@ import type { CheckoutResponse, Money, PaymentStatus, PlanCode, Subscription } f
 import { useToast } from '../components/ui';
 import { PLAN_LABEL } from '../lib/format';
 import { t } from '../lib/i18n';
-import { checkoutOutcome, isDefinitiveRejection, isTerminal, isUnderReview, newPaymentId, recentAgeMs, RECENT_WINDOW_MS } from '../lib/payment';
+import { checkoutOutcome, isDefinitiveRejection, isUuid, isTerminal, isUnderReview, newPaymentId, recentAgeMs, RECENT_WINDOW_MS } from '../lib/payment';
 import { useAuth } from './auth';
 
 /**
@@ -63,6 +63,8 @@ export interface Attempt {
   recent: { paymentId: string; /** Vide si le serveur ne la donne pas : jamais deduite de la formule choisie. */ plan: string; paidAt: string; /** Decalage serveur - appareil (ms) mesure a la reponse. */ skewMs: number } | null;
   /** « Payer quand meme » en cours d'envoi : l'ecran recent reste affiche (occupe), sans clignotement (memoire seulement). */
   repeating?: boolean;
+  /** 429 : « Reessayer » reste desactive jusqu'a cet instant (Retry-After, sinon 60 s) ; memoire seulement. */
+  retryNotBefore?: number;
   /** « Payer quand meme » choisi : le meme checkout repart avec confirm_repeat = id du paiement recent vu (memoire seulement). */
   confirmRepeat?: string;
   /** Instant de l'envoi (ms) : le temps ecoule se calcule depuis lui, meme apres un rechargement. */
@@ -77,8 +79,11 @@ export interface Attempt {
   existing: boolean;
 }
 
+/** Duree apres laquelle un marqueur « Payer quand meme en cours » est tenu pour perime. */
+const REPEATING_TTL_MS = 60_000;
+
 /** Ce que contient localStorage : aucune donnee personnelle (telephone masque, pas de numero de compte). */
-type Stored = Pick<Attempt, 'repeating' | 'recent' | 'subSnap' | 'subKnown' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
+type Stored = Pick<Attempt, 'confirmRepeat' | 'repeating' | 'recent' | 'subSnap' | 'subKnown' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
 
 const PREFIX = 'rf.payment.';
 const storageKey = (userId: string, payerId: string) => `${PREFIX}v1.${userId}.${payerId}`;
@@ -98,6 +103,8 @@ function parseStored(raw: string, userId: string): Stored | null {
   try {
     const a = JSON.parse(raw) as Partial<Stored>;
     if (typeof a.id !== 'string' || a.ownerId !== userId || typeof a.planName !== 'string' || typeof a.sentAt !== 'number') return null;
+    // marqueur « repeating » perime (onglet ferme en plein envoi) : l'issue est inconnue, jamais de retour a « Garder ma formule » ; Reessayer renvoie le meme id avec confirm_repeat
+    const stale = !!a.repeating && Date.now() - a.sentAt >= REPEATING_TTL_MS;
     return {
       id: a.id,
       ownerId: a.ownerId,
@@ -108,15 +115,17 @@ function parseStored(raw: string, userId: string): Stored | null {
       method: a.method ?? '',
       amount: a.amount ?? null,
       sentAt: a.sentAt,
-      unsent: !!a.unsent || !a.paymentId, // envoi en vol au rechargement : issue inconnue
+      // envoi en vol au rechargement : issue inconnue (un ecran « paiement recent » n'a pas encore d'envoi, ce n'est pas un envoi en vol)
+      unsent: !!a.unsent || (!a.paymentId && !a.recent) || stale,
+      ...(typeof a.confirmRepeat === 'string' && isUuid(a.confirmRepeat) ? { confirmRepeat: a.confirmRepeat } : {}),
       unknown: !!a.unknown,
       existing: !!a.existing,
       phoneMasked: a.phoneMasked ?? '••••',
       subSnap: a.subSnap ?? null,
       subKnown: !!a.subKnown,
-      // « Payer quand meme » en cours d'envoi dans un autre onglet : meme garde ici ; un marqueur plus vieux que 60 s est tenu pour perime (onglet ferme)
-      repeating: !!a.repeating && Date.now() - a.sentAt < 60_000,
-      recent: a.recent && typeof a.recent.paidAt === 'string' && typeof a.recent.paymentId === 'string' ? { paymentId: a.recent.paymentId, plan: a.recent.plan ?? '', paidAt: a.recent.paidAt, skewMs: typeof a.recent.skewMs === 'number' ? a.recent.skewMs : 0 } : null,
+      // « Payer quand meme » en cours d'envoi dans un autre onglet : meme garde (occupe) tant que le marqueur a moins de 60 s
+      repeating: !!a.repeating && !stale,
+      recent: !stale && a.recent && typeof a.recent.paidAt === 'string' && typeof a.recent.paymentId === 'string' ? { paymentId: a.recent.paymentId, plan: a.recent.plan ?? '', paidAt: a.recent.paidAt, skewMs: typeof a.recent.skewMs === 'number' ? a.recent.skewMs : 0 } : null,
     };
   } catch (e) {
     warn('lecture', e);
@@ -176,6 +185,7 @@ function writeAttempt(userId: string, payerId: string, a: Attempt | null): void 
       subSnap: a.subSnap,
       subKnown: a.subKnown,
       repeating: !!a.repeating,
+      ...(a.confirmRepeat ? { confirmRepeat: a.confirmRepeat } : {}),
       recent: a.recent,
     };
     localStorage.setItem(storageKey(userId, payerId), JSON.stringify(stored));
@@ -360,6 +370,8 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
 
   /** Deconnexion, expiration, changement de compte ou de payeur : plus de verification en cours. */
   const resetChecks = useCallback(() => {
+    endRef.current = null;
+    endErrRef.current = null;
     genRef.current += 1;
     checkingRef.current = 0;
     setChecks(0);
@@ -372,8 +384,17 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       const o = checkoutOutcome(err);
       // Regle : un refus « pas traite maintenant » (429, PAY-RETRY, 5xx, reseau) n'est jamais une issue tranchee. Quand le premier envoi
       // (ou « Payer quand meme ») a pu partir, la meme requete est toujours d'issue inconnue : on garde l'id, jamais de Payer.
-      if ((o.kind === 'ratelimit' || o.kind === 'retry') && (a.unsent || a.confirmRepeat)) {
-        settle(a, { ...a, unsent: true, recent: null, repeating: false, tries: a.unsent ? a.tries + 1 : 0 });
+      if ((o.kind === 'ratelimit' || o.kind === 'retry' || o.kind === 'malformed') && (a.unsent || a.confirmRepeat)) {
+        const limited = o.kind === 'ratelimit';
+        settle(a, {
+          ...a,
+          unsent: true,
+          recent: null,
+          repeating: false,
+          // un 429 n'est pas un echec de l'envoi : il ne compte pas vers « Abandonner » ; « Reessayer » attend le delai (Retry-After, sinon 60 s)
+          tries: a.unsent && !limited ? a.tries + 1 : a.unsent ? a.tries : 0,
+          retryNotBefore: limited ? Date.now() + (err instanceof ApiError && err.retryAfterMs ? err.retryAfterMs : 60_000) : undefined,
+        });
         return;
       }
       if (o.kind === 'pending') settle(a, { ...a, paymentId: o.paymentId, unsent: false, unknown: true, recent: null, repeating: false });
@@ -399,7 +420,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         settle(a, { ...a, recent: { paymentId: o.paymentId, plan: o.plan ?? '', paidAt: o.paidAt, skewMs: o.skewMs }, repeating: false, unsent: false, confirmRepeat: undefined });
         gateReadyRef.current = false; // l'abonnement se recharge : pas de « Payer quand meme » avant son retour
         qc.invalidateQueries({ queryKey: ['subscription'] });
-      } else if (o.kind === 'retry') {
+      } else if (o.kind === 'retry' || o.kind === 'malformed') {
         // un autre paiement de ce payeur vient de se terminer : jamais un nouveau Payer sur la foi d'un simple refus, on verifie l'abonnement d'abord
         settle(a, null);
         checkAfterAbandon(a);
@@ -428,6 +449,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       session.subscribe((reason) => {
         if (reason === 'logout' || reason === 'expired') {
           resetChecks();
+          endRef.current = null;
           purgePaymentStorage();
           attemptRef.current = null;
           setAttemptState(null);
@@ -515,6 +537,8 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         existing: false,
       };
       sendingRef.current = true;
+      endRef.current = null;
+      endErrRef.current = null;
       reset();
       update(a); // persiste avant l'envoi : un rechargement en plein vol retrouve la meme cle
       mutate(a);
@@ -610,6 +634,24 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     }, Math.max(0, RECENT_WINDOW_MS - recentAgeMs(r)));
     return () => clearTimeout(timer);
   }, [recentKey, keepPlan]);
+
+  // marqueur « repeating » venu d'ailleurs (autre onglet, rechargement) : au bout de 60 s il est perime, l'issue est inconnue -> « Reessayer » (meme id + confirm_repeat)
+  const repeatingKey = attempt?.repeating ? `${attempt.id}|${attempt.sentAt}` : '';
+  useEffect(() => {
+    const a = attemptRef.current;
+    if (!a?.repeating) return;
+    const timer = setTimeout(
+      () => {
+        const c = attemptRef.current;
+        if (!c || c.id !== a.id || !c.repeating || sendingRef.current) return; // envoi de cet onglet : sa reponse conclura
+        const next: Attempt = { ...c, repeating: false, recent: null, unsent: true };
+        attemptRef.current = next;
+        setAttemptState(next); // sans reecriture : l'auteur du marqueur reste l'autre onglet
+      },
+      Math.max(0, a.sentAt + REPEATING_TTL_MS - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [repeatingKey]);
 
   // issue definitive : on ne garde plus rien en stockage ; annonce une seule fois
   useEffect(() => {
