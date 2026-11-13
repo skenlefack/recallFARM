@@ -86,7 +86,7 @@
             "type": "string"
           },
           "needs_review": {
-            "description": "true : a revoir par un operateur (ex. confirmation du fournisseur apres une decision « echoue »)",
+            "description": "true : a revoir par un operateur (confirmation du fournisseur apres une decision « echoue »). Repasse a false au remboursement termine ou par POST /admin/payments/:id/reviewed",
             "type": "boolean"
           },
           "paid_at": {
@@ -521,8 +521,9 @@
             "type": "string"
           },
           "confirm_repeat": {
-            "description": "true : le payeur confirme vouloir payer encore apres une reponse 409 PAY-RECENT (meme checkout, meme id). Note dans le journal et audit_log",
-            "type": "boolean"
+            "description": "Apres une reponse 409 PAY-RECENT : details.payment_id recu, pour confirmer payer encore en connaissance de ce paiement (meme checkout, meme id). Accepte seulement s’il designe le paiement confirme le plus recent du payeur dans la fenetre (sinon nouveau 409 PAY-RECENT) ; ignore s’il n’y a pas de paiement recent. Note dans le journal et audit_log",
+            "format": "uuid",
+            "type": "string"
           },
           "id": {
             "description": "UUID v4 cree par le client (recommande) : un nouvel envoi avec le meme id renvoie le meme paiement, sans second prelevement",
@@ -1805,7 +1806,7 @@
             "type": "string"
           },
           "rule": {
-            "description": "PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat: true pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer",
+            "description": "PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat = details.payment_id pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer",
             "enum": [
               "PAY-OPEN",
               "PAY-RECENT",
@@ -2746,6 +2747,20 @@
         ],
         "type": "object"
       },
+      "ReviewedDto": {
+        "properties": {
+          "reason": {
+            "example": "Payeur contacte : un seul debit, rien a rembourser",
+            "maxLength": 300,
+            "minLength": 5,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
       "RollbackDto": {
         "properties": {
           "reason": {
@@ -3669,6 +3684,73 @@
           }
         ],
         "summary": "Tranche un paiement « a_verifier » sans issue du fournisseur (administrateur plateforme ; journalise dans audit_log)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}/reviewed": {
+      "post": {
+        "operationId": "AdminPayments_reviewed",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewedDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "Reserve a platform_admin (ops et support : 403)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "PAY-REVIEW-STATUS : le paiement n’est pas a revoir (needs_review faux)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Marque revu un paiement « needs_review » (administrateur plateforme ; motif journalise dans audit_log)",
         "tags": [
           "billing"
         ]
@@ -7777,7 +7859,7 @@
                 }
               }
             },
-            "description": "PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; renvoyer avec confirm_repeat: true pour payer encore. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer."
+            "description": "PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer."
           },
           "422": {
             "content": {

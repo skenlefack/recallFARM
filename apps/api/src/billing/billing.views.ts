@@ -83,7 +83,11 @@ export class AdminPaymentView extends PaymentView {
   @ApiProperty({ type: String, nullable: true }) error_code: string | null;
   @NullableRef(PaymentPollView) poll: PaymentPollView | null;
   @NullableRef(RefundView) refund: RefundView | null;
-  @ApiProperty({ description: 'true : a revoir par un operateur (ex. confirmation du fournisseur apres une decision « echoue »)' }) needs_review: boolean;
+  @ApiProperty({
+    description:
+      'true : a revoir par un operateur (confirmation du fournisseur apres une decision « echoue »). Repasse a false au remboursement termine ou par POST /admin/payments/:id/reviewed',
+  })
+  needs_review: boolean;
 }
 
 export class AdminPaymentListView {
@@ -126,7 +130,7 @@ export class PayOpenDetailsView {
   @ApiProperty({
     enum: ['PAY-OPEN', 'PAY-RECENT', 'PAY-IDEMPOTENCY', 'PAY-RETRY'],
     description:
-      'PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat: true pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer',
+      'PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat = details.payment_id pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer',
   })
   rule: string;
   @ApiPropertyOptional({ format: 'uuid', description: 'PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer) ; PAY-RECENT : paiement confirme recent' }) payment_id?: string;

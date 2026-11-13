@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiConflictResponse, ApiCreatedResponse, ApiExtraModels, ApiHeader, ApiOkResponse, ApiParam, ApiProperty, ApiPropertyOptional, ApiTags, ApiUnprocessableEntityResponse } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
 import type { Request } from 'express';
 import { AuthUser, CurrentUser, Public } from '../common/auth';
 import { Errors } from '../common/errors';
@@ -26,11 +26,13 @@ export class CheckoutDto {
   method: string;
   @ApiProperty({ example: '+237690000001' }) @Matches(/^\+[1-9]\d{7,14}$/) phone: string;
   @ApiPropertyOptional({
-    description: 'true : le payeur confirme vouloir payer encore apres une reponse 409 PAY-RECENT (meme checkout, meme id). Note dans le journal et audit_log',
+    format: 'uuid',
+    description:
+      'Apres une reponse 409 PAY-RECENT : details.payment_id recu, pour confirmer payer encore en connaissance de ce paiement (meme checkout, meme id). Accepte seulement s’il designe le paiement confirme le plus recent du payeur dans la fenetre (sinon nouveau 409 PAY-RECENT) ; ignore s’il n’y a pas de paiement recent. Note dans le journal et audit_log',
   })
   @IsOptional()
-  @IsBoolean()
-  confirm_repeat?: boolean;
+  @Matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, { message: 'details.payment_id du 409 PAY-RECENT (UUID)' })
+  confirm_repeat?: string;
 }
 
 export class WebhookDto {
@@ -69,7 +71,7 @@ export class BillingController {
   @ApiConflictResponse({
     type: CheckoutConflictView,
     description:
-      'PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; renvoyer avec confirm_repeat: true pour payer encore. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer.',
+      'PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer.',
   })
   @ApiUnprocessableEntityResponse({ type: ErrorView, description: 'Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)' })
   @Post('subscriptions/checkout')

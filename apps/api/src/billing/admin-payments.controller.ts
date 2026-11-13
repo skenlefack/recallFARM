@@ -25,6 +25,10 @@ export class RefundDto {
   @ApiProperty({ example: 'Double paiement constate par le support', minLength: 5, maxLength: 300 }) @IsString() @MinLength(5) @MaxLength(300) reason: string;
 }
 
+export class ReviewedDto {
+  @ApiProperty({ example: 'Payeur contacte : un seul debit, rien a rembourser', minLength: 5, maxLength: 300 }) @IsString() @MinLength(5) @MaxLength(300) reason: string;
+}
+
 export class ResolveDto {
   @ApiProperty({ enum: ['confirme', 'echoue'], description: 'confirme : active l’abonnement ; echoue : libere le payeur (PAY-OPEN)' })
   @IsIn(['confirme', 'echoue'])
@@ -108,6 +112,20 @@ export class AdminPaymentsController {
     const reason = dto.reason.trim();
     if (reason.length < 5) throw Errors.validation({ reason: 'au moins 5 caracteres hors espaces' });
     return this.ops.resolve(user, id, dto.outcome, reason);
+  }
+
+  @Post(':id/reviewed')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Marque revu un paiement « needs_review » (administrateur plateforme ; motif journalise dans audit_log)' })
+  @ApiOkResponse({ type: AdminPaymentView })
+  @ApiForbiddenResponse({ type: ErrorView, description: 'Reserve a platform_admin (ops et support : 403)' })
+  @ApiConflictResponse({ type: ErrorView, description: 'PAY-REVIEW-STATUS : le paiement n’est pas a revoir (needs_review faux)' })
+  @ApiParam({ name: 'id', format: 'uuid' })
+  reviewed(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewedDto) {
+    if (!user.platform_roles.includes('platform_admin')) throw Errors.forbidden();
+    const reason = dto.reason.trim();
+    if (reason.length < 5) throw Errors.validation({ reason: 'au moins 5 caracteres hors espaces' });
+    return this.ops.reviewed(user, id, reason);
   }
 
   @Post(':id/refund')
