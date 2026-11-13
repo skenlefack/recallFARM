@@ -659,6 +659,68 @@
         ],
         "type": "object"
       },
+      "ConnectorSummaryListView": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorSummaryView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ConnectorSummaryView": {
+        "properties": {
+          "channels": {
+            "items": {
+              "enum": [
+                "sms",
+                "whatsapp",
+                "ussd",
+                "payment"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "foreign_payment_events": {
+            "description": "Evenements de paiement envoyes par ce connecteur pour un paiement d’un autre connecteur, refuses sans ecriture (depuis le demarrage de l’instance)",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "label": {
+            "example": "Agregateur Cameroun",
+            "type": "string"
+          },
+          "name": {
+            "example": "agregateur_cm",
+            "type": "string"
+          },
+          "routed_for": {
+            "description": "Canaux et moyens de paiement routes vers ce connecteur",
+            "example": [
+              "sms",
+              "payment:orange_money"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "channels",
+          "routed_for",
+          "foreign_payment_events"
+        ],
+        "type": "object"
+      },
       "ConnectorTestSmsDto": {
         "properties": {
           "phone": {
@@ -3215,6 +3277,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorSummaryListView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -7859,7 +7928,7 @@
                 }
               }
             },
-            "description": "PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer."
+            "description": "PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, ou un autre checkout du meme payeur est en cours (attente du verrou > 5 s) : reessayer."
           },
           "422": {
             "content": {
@@ -7870,6 +7939,16 @@
               }
             },
             "description": "Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; details.retry_after_s"
           }
         },
         "security": [

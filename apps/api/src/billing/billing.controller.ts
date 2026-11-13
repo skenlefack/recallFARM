@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
-import { ApiBearerAuth, ApiConflictResponse, ApiCreatedResponse, ApiExtraModels, ApiHeader, ApiOkResponse, ApiParam, ApiProperty, ApiPropertyOptional, ApiTags, ApiUnprocessableEntityResponse } from '@nestjs/swagger';
-import { SkipThrottle } from '@nestjs/throttler';
+import { ApiBearerAuth, ApiConflictResponse, ApiCreatedResponse, ApiExtraModels, ApiHeader, ApiOkResponse, ApiParam, ApiProperty, ApiTooManyRequestsResponse, ApiPropertyOptional, ApiTags, ApiUnprocessableEntityResponse } from '@nestjs/swagger';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
 import type { Request } from 'express';
 import { AuthUser, CurrentUser, Public } from '../common/auth';
@@ -71,9 +71,12 @@ export class BillingController {
   @ApiConflictResponse({
     type: CheckoutConflictView,
     description:
-      'PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer.',
+      'PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, ou un autre checkout du meme payeur est en cours (attente du verrou > 5 s) : reessayer.',
   })
   @ApiUnprocessableEntityResponse({ type: ErrorView, description: 'Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)' })
+  @ApiTooManyRequestsResponse({ type: ErrorView, description: 'RATE_LIMITED : trop de demandes de paiement (CHECKOUT_THROTTLE_LIMIT par minute, 10 par defaut) ; details.retry_after_s' })
+  // A payment prompt per request: its own limit, much lower than the general one.
+  @Throttle({ default: { limit: () => config().checkoutThrottleLimit, ttl: () => 60_000 } })
   @Post('subscriptions/checkout')
   checkout(@CurrentUser() user: AuthUser, @Body() dto: CheckoutDto, @Headers('idempotency-key') key?: string) {
     if (key !== undefined && !/^[\x21-\x7e]{1,100}$/.test(key)) throw Errors.validation({ 'Idempotency-Key': '1 a 100 caracteres visibles' });
