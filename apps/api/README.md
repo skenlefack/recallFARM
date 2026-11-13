@@ -73,8 +73,16 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
   (capped exponential backoff, then `a_verifier`), refunds (`POST /v1/admin/payments/:id/refund`, `audit_log`), daily
   reconciliation (`/v1/admin/payments/reconciliations`). Checkout is idempotent (`id` from the client or `Idempotency-Key`).
   `GET /v1/payments/:id` and `GET /v1/admin/payments/:id` return `events` (journal: `at`, `status`, `source`
-  webhook|statut|operateur, written by the API when the event is recorded; never the raw aggregator body). Events refused
-  (other amount, other currency, other connector) are kept with `ignored: true, reason`; the payer view leaves them out.
+  webhook|statut|operateur|client, written by the API when the event is recorded; never the raw aggregator body). Events refused
+  (other amount, other currency) are kept with `ignored: true, reason`; the payer view leaves them out. An event sent by another
+  connector than the payment's is never written on the payment (warning log + per-connector counter
+  `BillingService.foreignEventCounts()`, reset at restart), and an aggregator reference is only looked up among the payments of
+  the connector that sends it.
+- **PAY-RECENT** (PO decision 2026-11-13): a subscription checkout less than `PAYMENT_RECENT_GUARD_MIN` minutes (default 30,
+  0 = off, 0..1440 checked at start-up) after a confirmed subscription payment of the same payer answers `409 CONFLICT`
+  `details: {rule: 'PAY-RECENT', payment_id, plan, paid_at}`. The client asks the payer and sends the same checkout (same id) with
+  `confirm_repeat: true`: accepted, journaled (`events` source `client`, detail `repeat_confirmed`; `audit_log`
+  `checkout_repeat_confirmed`). The replay of an id is never PAY-RECENT; PAY-OPEN is checked first.
 - **PAY-OPEN (EF-ABO-01)**: one open subscription payment (`initie`, `en_attente`, `a_verifier`) per payer, **whatever the plan**
   (an account has one subscription). A checkout with another id, key or plan meanwhile answers `409 CONFLICT`
   `details: {rule: 'PAY-OPEN', payment_id, status, plan}` (the client follows that payment); the replay of the same id/key is still a
@@ -92,7 +100,9 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
     `confirme` activates the subscription; `echoue` frees the payer. Only from `a_verifier` (409 `PAY-RESOLVE-STATUS` otherwise);
     the decision and its reason are in `audit_log` (`resolve_confirme` / `resolve_echoue`, actor) and the journal (`operateur`).
     If money arrives later on a payment decided `echoue`, the aggregator's confirmation still activates it (a confirmation always
-    wins); refund through `/refund` if needed.
+    wins) and flags it `needs_review` (`audit_log` `late_confirm_after_resolve`, event detail `late_confirm_after_resolve`).
+    List: `GET /v1/admin/payments?needs_review=true`; check with the payer, refund through `/refund` if they paid twice.
+    The flag is not cleared by the API (no endpoint yet).
 - **Currency**: always the country pack's (`pays.<CC>.json` → `currency`, or the `plan_price` currency). Without one, `GET /plans`
   answers `422 PAY-CURRENCY`; `/subscriptions/current` gives `price: null` (warning in the log) for a subscription stored without
   currency.
