@@ -224,6 +224,26 @@ export class PaymentOpsService {
     return this.get(id);
   }
 
+  /**
+   * A payment flagged needs_review has been looked at by a platform administrator (m2): the flag is
+   * cleared under the row lock, with the reason in audit_log. 409 PAY-REVIEW-STATUS when not flagged.
+   */
+  async reviewed(user: AuthUser, id: string, reason: string) {
+    await this.ds.transaction(async (m) => {
+      const p = await m.getRepository(Payment).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!p) throw Errors.notFound('Paiement');
+      if ((p.raw as { needs_review?: unknown } | null)?.needs_review !== true) {
+        throw Errors.conflict('Ce paiement n’est pas à revoir.', { rule: 'PAY-REVIEW-STATUS', needs_review: false });
+      }
+      await m.query(`UPDATE payments SET raw = raw || $2::jsonb, updated_at = now() WHERE id = $1`, [
+        id,
+        JSON.stringify({ needs_review: false, reviewed: { by: user.id, at: new Date().toISOString() } }),
+      ]);
+      await this.audit(id, 'reviewed', user, { reason }, m);
+    });
+    return this.get(id);
+  }
+
   private adminView(p: Payment) {
     const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string; needs_review?: unknown };
     return {
@@ -330,8 +350,12 @@ export class PaymentOpsService {
   }
 
   private async finishRefund(id: string, status: string, refundPatch: Record<string, unknown>, user: AuthUser | null) {
+    // A completed refund settles a payment flagged for review (m2).
     await this.ds.query(
-      `UPDATE payments SET status = $2, raw = jsonb_set(raw, '{refund}', COALESCE(raw->'refund', '{}'::jsonb) || $3::jsonb), updated_at = now()
+      `UPDATE payments SET status = $2,
+              raw = jsonb_set(raw, '{refund}', COALESCE(raw->'refund', '{}'::jsonb) || $3::jsonb)
+                    || CASE WHEN $2 = 'rembourse' AND raw ? 'needs_review' THEN '{"needs_review": false}'::jsonb ELSE '{}'::jsonb END,
+              updated_at = now()
         WHERE id = $1 AND status = 'remboursement_en_cours'`,
       [id, status, JSON.stringify(refundPatch)],
     );

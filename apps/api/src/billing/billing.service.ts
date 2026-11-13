@@ -21,8 +21,8 @@ export interface CheckoutInput {
   id?: string;
   /** Alternative to `id` (header Idempotency-Key): the payment id is derived from (user, key). */
   idempotency_key?: string;
-  /** The payer confirms paying again after 409 PAY-RECENT. */
-  confirm_repeat?: boolean;
+  /** After 409 PAY-RECENT: details.payment_id, the recent payment the payer saw and confirms paying again. */
+  confirm_repeat?: string;
 }
 
 /** Statuses after which nothing can change the money flow without an operator (refund in progress or done). */
@@ -236,29 +236,19 @@ export class BillingService implements OnApplicationBootstrap {
     const id = input.id ?? keyId ?? randomUUID();
     const known = await repo.findOne({ where: { id } });
     if (known) return this.replayCheckout(user, known, input, plan.code);
-    // PAY-RECENT (PO decision 2026-11-13): a subscription payment confirmed a few minutes ago is often a
-    // second tap or a second device; paying again needs the payer's explicit confirmation. PAY-OPEN first.
-    let repeatOf: Payment | null = null;
-    const guardMin = config().paymentRecentGuardMin;
-    if (guardMin > 0) {
-      const open = await this.openPayment(input.account_type, input.account_id);
-      if (open) throw this.payOpen(open);
-      const recent = await this.recentPayment(input.account_type, input.account_id, guardMin);
-      if (recent && !input.confirm_repeat) {
-        const minutes = Math.max(1, Math.round((Date.now() - recent.paid_at!.getTime()) / 60_000));
-        throw Errors.conflict(`Vous avez déjà payé la formule ${recent.plan ?? ''} il y a ${minutes} min. Confirmez pour payer encore.`, {
-          rule: 'PAY-RECENT',
-          payment_id: recent.id,
-          plan: recent.plan,
-          paid_at: recent.paid_at!.toISOString(),
-        });
-      }
-      repeatOf = recent;
-    }
-    // Created, or answered without creating: the primary key and the partial unique index
-    // payments_open_payer_uq decide, so two simultaneous checkouts with different ids give one payment.
+    // PAY-OPEN, then PAY-RECENT (PO decision 2026-11-13), checked at each try in the insert transaction under
+    // a per-payer lock: concurrent checkouts of a payer are decided one after the other. The partial unique
+    // index payments_open_payer_uq stays the last guard (two simultaneous checkouts give one payment).
+    const labelOf = (code: string | null) => catalog.plans.find((p) => p.code === code)?.label ?? code ?? '';
     for (let attempt = 0; ; attempt++) {
-      const inserted = await this.ds.transaction(async (m) => {
+      const outcome = await this.ds.transaction(async (m): Promise<{ same?: Payment; created?: boolean }> => {
+        await m.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`checkout:${input.account_type}:${input.account_id}`]);
+        // Same id created by a concurrent request a moment ago: answered like a replay.
+        const same = await m.getRepository(Payment).findOne({ where: { id } });
+        if (same) return { same };
+        const open = await this.openPayment(m, input.account_type, input.account_id);
+        if (open) throw this.payOpen(open);
+        const repeatOf = await this.recentGuard(m, input, labelOf);
         const r = await m
           .createQueryBuilder()
           .insert()
@@ -284,17 +274,15 @@ export class BillingService implements OnApplicationBootstrap {
         const created = r.raw.length > 0;
         // The payer's confirmation is journaled with the payment, in the same transaction.
         if (created && repeatOf) {
-          await this.audit(m, id, 'checkout_repeat_confirmed', user, { recent_payment_id: repeatOf.id, plan: repeatOf.plan, paid_at: repeatOf.paid_at, new_plan: plan.code });
+          const role = input.account_type === 'organisation' ? 'gestionnaire_org' : input.account_id === user.id ? 'payeur' : user.platform_roles.join(',') || 'payeur';
+          await this.audit(m, id, 'checkout_repeat_confirmed', user, { recent_payment_id: repeatOf.id, plan: repeatOf.plan, paid_at: repeatOf.paid_at, new_plan: plan.code }, role);
         }
-        return created;
+        return { created };
       });
-      if (inserted) break;
-      // Same id created by a concurrent request a moment ago: answered like a replay.
-      const same = await repo.findOne({ where: { id } });
-      if (same) return this.replayCheckout(user, same, input, plan.code);
-      // Another subscription payment of this payer is still open (any plan: one subscription per
-      // account): never a second debit (EF-ABO-01).
-      const open = await this.openPayment(input.account_type, input.account_id);
+      if (outcome.same) return this.replayCheckout(user, outcome.same, input, plan.code);
+      if (outcome.created) break;
+      // Insert ignored by the index: another subscription payment of this payer is open (EF-ABO-01).
+      const open = await this.openPayment(this.ds, input.account_type, input.account_id);
       if (open) throw this.payOpen(open);
       // The open payment ended between the insert and the read: tried again, then a clean 409.
       if (attempt >= MAX_INSERT_ATTEMPTS - 1) {
@@ -352,24 +340,40 @@ export class BillingService implements OnApplicationBootstrap {
     });
   }
 
-  /** Subscription payment of a payer confirmed less than `minutes` ago (database clock). */
-  private recentPayment(payerType: string, payerId: string, minutes: number): Promise<Payment | null> {
-    return this.ds
-      .getRepository(Payment)
-      .createQueryBuilder('p')
-      .where(`p.payer_type = :payerType AND p.payer_id = :payerId AND p.purpose = 'abonnement' AND p.status = 'confirme'`, { payerType, payerId })
-      .andWhere('p.paid_at > now() - make_interval(mins => :minutes)', { minutes })
-      .orderBy('p.paid_at', 'DESC')
-      .getOne();
+  /**
+   * PAY-RECENT: the most recent subscription payment of the payer confirmed within the window (database
+   * clock). Paying again needs `confirm_repeat` = that payment's id, i.e. the payment shown to the payer;
+   * a confirmation of an older payment gets a new 409 with the current one. Without a recent payment,
+   * `confirm_repeat` is ignored. Returns the payment the new one repeats, or null.
+   */
+  private async recentGuard(m: EntityManager, input: CheckoutInput, labelOf: (code: string | null) => string) {
+    const minutes = config().paymentRecentGuardMin;
+    if (minutes <= 0) return null;
+    const rows: Array<{ id: string; plan: string | null; paid_at: Date; ago_min: number }> = await m.query(
+      `SELECT id, plan, paid_at, floor(extract(epoch FROM now() - paid_at) / 60)::int AS ago_min FROM payments
+        WHERE payer_type = $1 AND payer_id = $2 AND purpose = 'abonnement' AND status = 'confirme'
+          AND paid_at > now() - make_interval(mins => $3)
+        ORDER BY paid_at DESC LIMIT 1`,
+      [input.account_type, input.account_id, minutes],
+    );
+    const recent = rows[0];
+    if (!recent) return null;
+    if (input.confirm_repeat === recent.id) return recent;
+    throw Errors.conflict(`Vous avez déjà payé la formule ${labelOf(recent.plan)} il y a ${Math.max(1, recent.ago_min)} min. Confirmez pour payer encore.`, {
+      rule: 'PAY-RECENT',
+      payment_id: recent.id,
+      plan: recent.plan,
+      paid_at: new Date(recent.paid_at).toISOString(),
+    });
   }
 
   /** Journal entry in audit_log; `user` null = the system. */
-  private async audit(m: EntityManager, paymentId: string, action: string, user: AuthUser | null, diff: Record<string, unknown>): Promise<void> {
+  private async audit(m: EntityManager, paymentId: string, action: string, user: AuthUser | null, diff: Record<string, unknown>, role?: string): Promise<void> {
     await m.query(`INSERT INTO audit_log (entity, entity_id, action, actor_id, actor_role, diff) VALUES ('payments', $1, $2, $3, $4, $5)`, [
       paymentId,
       action,
       user?.id ?? null,
-      user ? user.platform_roles.join(',') : 'systeme',
+      role ?? (user ? user.platform_roles.join(',') : 'systeme'),
       JSON.stringify(diff),
     ]);
   }
@@ -382,8 +386,8 @@ export class BillingService implements OnApplicationBootstrap {
   }
 
   /** Open subscription payment of a payer, whatever the plan (at most one: partial unique index). */
-  private openPayment(payerType: string, payerId: string): Promise<Payment | null> {
-    return this.ds
+  private openPayment(m: EntityManager | DataSource, payerType: string, payerId: string): Promise<Payment | null> {
+    return m
       .getRepository(Payment)
       .createQueryBuilder('p')
       .where('p.payer_type = :payerType AND p.payer_id = :payerId AND p.purpose = :purpose AND p.status IN (:...open)', {

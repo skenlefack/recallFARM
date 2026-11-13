@@ -252,7 +252,9 @@ export class ConnectorsController {
   @Get('admin/connectors')
   list(@CurrentUser() user: AuthUser) {
     if (!hasPlatformRole(user, 'ops')) throw Errors.forbidden();
-    return { data: this.registry.summary() };
+    // Payment events refused because another connector sent them (since start-up, BillingService).
+    const foreign = this.billing.foreignEventCounts();
+    return { data: this.registry.summary().map((c) => ({ ...c, foreign_payment_events: foreign[c.name] ?? 0 })) };
   }
 
   /** Sends a test SMS through one connector, to check a new aggregator before routing traffic to it. */

@@ -334,7 +334,8 @@ describe('BillingService.checkout: PAY-RETRY (m6)', () => {
     qb.execute = jest.fn().mockResolvedValue({ raw: [] });
     qb.getOne = jest.fn().mockResolvedValue(null);
     const repo = { findOne: jest.fn().mockResolvedValue(null), createQueryBuilder: jest.fn(() => qb) };
-    const ds = { getRepository: jest.fn(() => repo), transaction: jest.fn(async (fn: (m: unknown) => unknown) => fn({ createQueryBuilder: () => qb, query: jest.fn() })) };
+    const m = { createQueryBuilder: () => qb, getRepository: () => repo, query: jest.fn().mockResolvedValue([]) };
+    const ds = { getRepository: jest.fn(() => repo), transaction: jest.fn(async (fn: (x: unknown) => unknown) => fn(m)) };
     const params = {
       publishedPacks: jest.fn().mockResolvedValue([{ level: 'pays', doc: { level: 'pays', country: 'CM', currency: 'XAF' } }]),
       resolveBase: jest.fn().mockResolvedValue({
@@ -353,6 +354,9 @@ describe('BillingService.checkout: PAY-RETRY (m6)', () => {
       s.checkout(user, { account_type: 'user', account_id: user.id, plan: 'pro', period: 'monthly', method: 'orange_money', phone: '+237690000001' }),
     ).rejects.toMatchObject({ code: 'CONFLICT', extra: { details: { rule: 'PAY-RETRY' } } });
     expect(qb.execute).toHaveBeenCalledTimes(3);
+    // Each try is decided under the payer's lock, with PAY-OPEN and PAY-RECENT checked again (m1).
+    expect(m.query.mock.calls.filter((c) => /pg_advisory_xact_lock/.test(c[0]))).toHaveLength(3);
+    expect(m.query.mock.calls.filter((c) => /status = 'confirme'/.test(c[0]))).toHaveLength(3);
     expect(provider.initiate).not.toHaveBeenCalled();
   });
 });

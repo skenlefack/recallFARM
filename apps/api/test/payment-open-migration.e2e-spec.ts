@@ -108,11 +108,13 @@ describe('EF-ABO-01 PAY-OPEN: migration and contract', () => {
     // PAY-RECENT: documented with the payment, the plan and the date; confirm_repeat in the request.
     expect(details.properties?.rule.enum).toContain('PAY-RECENT');
     expect(details.properties?.paid_at).toMatchObject({ format: 'date-time' });
-    expect(OPENAPI.components.schemas.CheckoutDto.properties?.confirm_repeat).toMatchObject({ type: 'boolean' });
+    expect(OPENAPI.components.schemas.CheckoutDto.properties?.confirm_repeat).toMatchObject({ type: 'string', format: 'uuid' });
+    expect(Object.keys(OPENAPI.paths['/v1/admin/payments/{id}/reviewed'].post.responses).sort()).toEqual(['200', '403', '409']);
+    expect(OPENAPI.components.schemas.ReviewedDto.required).toEqual(['reason']);
     expect(OPENAPI.components.schemas.AdminPaymentView.required).toContain('needs_review');
     // {id} of the payment routes are documented as UUIDs; /subscriptions/current has a schema (price nullable).
     const paths = OPENAPI.paths as unknown as Record<string, Record<string, { parameters?: Array<{ name: string; in: string; schema?: { format?: string } }> }>>;
-    for (const [path, method] of [['/v1/payments/{id}', 'get'], ['/v1/admin/payments/{id}', 'get'], ['/v1/admin/payments/{id}/check', 'post'], ['/v1/admin/payments/{id}/resolve', 'post'], ['/v1/admin/payments/{id}/refund', 'post']]) {
+    for (const [path, method] of [['/v1/payments/{id}', 'get'], ['/v1/admin/payments/{id}', 'get'], ['/v1/admin/payments/{id}/check', 'post'], ['/v1/admin/payments/{id}/resolve', 'post'], ['/v1/admin/payments/{id}/reviewed', 'post'], ['/v1/admin/payments/{id}/refund', 'post']]) {
       expect(paths[path][method].parameters?.find((x) => x.name === 'id' && x.in === 'path')?.schema?.format).toBe('uuid');
     }
     expect(response('/v1/subscriptions/current', 'get', '200')).toEqual({ $ref: '#/components/schemas/CurrentSubscriptionView' });
