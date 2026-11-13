@@ -4,7 +4,7 @@
  * Runs against TEST_DATABASE_URL (schema reset + migrations + seed).
  */
 import { createHmac } from 'crypto';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, readFileSync } from 'fs';
 import { createServer, IncomingMessage, Server } from 'http';
 import { AddressInfo } from 'net';
 import { tmpdir } from 'os';
@@ -12,6 +12,7 @@ import { join } from 'path';
 import { Client } from 'pg';
 import request from 'supertest';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { check, response } from './openapi-contract';
 
 const TEST_DB = process.env.TEST_DATABASE_URL || 'postgres://recallfarm:recallfarm@localhost:5432/recallfarm_test';
 
@@ -159,6 +160,10 @@ beforeAll(async () => {
     OTP_DEV_ECHO: 'false',
     SCHEDULER_ENABLED: 'false',
     THROTTLE_LIMIT: '100000',
+    // PAY-RECENT is off here (tests pay several times in a row); its own test turns it on.
+    PAYMENT_RECENT_GUARD_MIN: '0',
+    // The dedicated checkout limit (10/min by default) is raised here; its own test lowers it.
+    CHECKOUT_THROTTLE_LIMIT: '100000',
     PAYMENT_WEBHOOK_SECRET: 'e2e-webhook-secret',
     KEYS_DIR: mkdtempSync(join(tmpdir(), 'rf-keys-')),
     EXPORTS_DIR: mkdtempSync(join(tmpdir(), 'rf-exports-')),
@@ -195,6 +200,12 @@ afterAll(async () => {
 });
 
 describe('declarative connectors', () => {
+  // PAY-OPEN (EF-ABO-01): one open subscription payment per payer. Each test starts without a payment left
+  // open by the previous one (as if the aggregator had reported it failed).
+  beforeEach(async () => {
+    await db.query(`UPDATE payments SET status = 'echoue' WHERE status IN ('initie', 'en_attente', 'a_verifier')`);
+  });
+
   it('sends OTP SMS through the described aggregator with its auth and body format', async () => {
     const before = received.length;
     await http.post('/v1/auth/otp/request').send({ phone: '+237690000005' }).expect(200);
@@ -313,20 +324,36 @@ describe('declarative connectors', () => {
     expect(await status(m.token, id)).toBe('confirme');
   });
 
-  it('refuses a confirmation with another amount, or from another connector, and keeps the webhook for audit', async () => {
+  it('refuses a confirmation with another amount (journaled) or from another connector (nothing written, counted)', async () => {
     const m = await login('+237690000001');
     const co = await checkout(m.token, m.id).expect(201);
     await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co.body.payment_id, status: 'SUCCESS', amount: 100 }).expect(200);
     expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const billing = app.get(require('../src/billing/billing.service').BillingService);
+    const foreignBefore = (billing.foreignEventCounts().otheragg as number | undefined) ?? 0;
     await http
       .post('/v1/connectors/otheragg/payment')
       .set({ 'x-callback-token': 'other-secret' })
       .send({ reference: co.body.payment_id, status: 'SUCCESS' })
       .expect(404);
+    expect(billing.foreignEventCounts().otheragg).toBe(foreignBefore + 1);
     expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
     const raw = await db.query(`SELECT raw FROM payments WHERE id = $1`, [co.body.payment_id]);
     expect(raw.rows[0].raw.connector).toBe('fakeagg');
-    expect(raw.rows[0].raw.events).toEqual([expect.objectContaining({ status: 'confirme', body: expect.objectContaining({ amount: 100 }) })]);
+    // Only the refused amount is journaled: another connector cannot write on the payment (no flooding).
+    expect(raw.rows[0].raw.events).toEqual([
+      expect.objectContaining({ status: 'confirme', source: 'webhook', ignored: true, reason: 'montant', body: expect.objectContaining({ amount: 100 }) }),
+    ]);
+    // Exposed to the administration with the connectors (m7).
+    const admin = await login('+237690000009');
+    const connectors = await http.get('/v1/admin/connectors').set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(connectors.body.data.find((c: { name: string }) => c.name === 'otheragg')).toMatchObject({ foreign_payment_events: foreignBefore + 1 });
+    expect(connectors.body.data.find((c: { name: string }) => c.name === 'fakeagg')).toMatchObject({ foreign_payment_events: 0 });
+    // Its own aggregator reference is not looked up among fakeagg's payments either.
+    await http.post('/v1/connectors/otheragg/payment').set({ 'x-callback-token': 'other-secret' }).send({ reference: co.body.provider_ref, status: 'SUCCESS' }).expect(404);
+    expect(await status(m.token, co.body.payment_id)).toBe('en_attente');
+    expect((await db.query(`SELECT jsonb_array_length(raw->'events') AS n FROM payments WHERE id = $1`, [co.body.payment_id])).rows[0].n).toBe(1);
   });
 
   it('two simultaneous confirmations extend the subscription only once', async () => {
@@ -346,11 +373,13 @@ describe('declarative connectors', () => {
     const admin = await login('+237690000009');
     const list = await http.get('/v1/admin/connectors').set({ authorization: `Bearer ${admin.token}` }).expect(200);
     expect(list.body.data).toEqual([
-      { name: 'fakeagg', label: 'Agregateur de test', channels: ['sms', 'whatsapp', 'ussd', 'payment'], routed_for: ['sms', 'ussd', 'payment:orange_money'] },
-      { name: 'otheragg', label: 'otheragg', channels: ['sms', 'payment'], routed_for: [] },
-      { name: 'lastagg', label: 'lastagg', channels: ['ussd'], routed_for: [] },
+      { name: 'fakeagg', label: 'Agregateur de test', channels: ['sms', 'whatsapp', 'ussd', 'payment'], routed_for: ['sms', 'ussd', 'payment:orange_money'], foreign_payment_events: 0 },
+      // One payment event from otheragg was refused in the previous test (another connector's payment).
+      { name: 'otheragg', label: 'otheragg', channels: ['sms', 'payment'], routed_for: [], foreign_payment_events: expect.any(Number) },
+      { name: 'lastagg', label: 'lastagg', channels: ['ussd'], routed_for: [], foreign_payment_events: 0 },
     ]);
     expect(JSON.stringify(list.body)).not.toMatch(/agg-token|cb-secret|other-secret|last-secret|127\.0\.0\.1/);
+    expect(check(list.body, response('/v1/admin/connectors', 'get', '200'))).toEqual([]);
     const t = await http.post('/v1/admin/connectors/fakeagg/test-sms').set({ authorization: `Bearer ${admin.token}` }).send({ phone: '+237690000002' }).expect(200);
     expect(t.body).toMatchObject({ connector: 'fakeagg', channel: 'sms', status: 'envoye', provider_ref: expect.stringMatching(/^MSG-/), cost_minor: 20, currency: 'XAF' });
     const farmer = await login('+237690000001');
@@ -548,11 +577,413 @@ describe('declarative connectors', () => {
     const b = await send('tap-1').expect(201);
     expect(b.body.payment_id).toBe(a.body.payment_id);
     expect(collects() - before).toBe(1);
+    // The first payment fails at the aggregator: a new key may then pay again (PAY-OPEN otherwise).
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: a.body.payment_id, status: 'FAILED' }).expect(200);
     queued['/v1/payments/collect'] = [{ status: 400, body: { error: 'solde' } }];
     const refused = await send('tap-2').expect(422);
     const replay = await send('tap-2').expect(422);
     expect(replay.body.error.details).toMatchObject({ rule: 'PAY-INIT', payment_id: refused.body.error.details.payment_id, replayed: true });
     await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${m.token}`, 'idempotency-key': 'a b' }).send(body({ account_id: m.id })).expect(422);
+  });
+
+  /* ---------- PAY-OPEN: no second debit while a subscription payment of the same payer is open (EF-ABO-01) ---------- */
+
+  const paymentsOf = async (payerId: string) =>
+    (await db.query(`SELECT id, status FROM payments WHERE payer_id = $1 AND purpose = 'abonnement' ORDER BY created_at`, [payerId])).rows as Array<{ id: string; status: string }>;
+
+  it('EF-ABO-01 PAY-OPEN: a 2nd checkout with another id or another plan while "en_attente" gets 409 with the open payment; allowed again after "echoue"', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const first = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000001', account_id: m.id })).expect(201);
+    expect(await status(m.token, first.body.payment_id)).toBe('en_attente');
+    const before = collects();
+    const second = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000002', account_id: m.id, period: 'yearly' })).expect(409);
+    expect(second.body).toEqual({
+      error: {
+        code: 'CONFLICT',
+        message: expect.stringMatching(/déjà en cours/),
+        details: { rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'en_attente', plan: 'pro' },
+      },
+    });
+    expect(check(second.body, response('/v1/subscriptions/checkout', 'post', '409'))).toEqual([]);
+    // Same with an Idempotency-Key, and while the payment is "a_verifier": the aggregator is not called.
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [first.body.payment_id]);
+    const keyed = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'autre-onglet' }).send(body({ account_id: m.id })).expect(409);
+    expect(keyed.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'a_verifier', plan: 'pro' });
+    expect(collects()).toBe(before);
+    expect((await paymentsOf(m.id)).filter((p) => ['initie', 'en_attente', 'a_verifier'].includes(p.status))).toHaveLength(1);
+    // Another plan is refused as well: one subscription per account, two prompts validated would debit twice.
+    const other = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, plan: 'structure' })).expect(409);
+    expect(other.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'a_verifier', plan: 'pro' });
+    expect(collects()).toBe(before);
+    // The open payment fails at the aggregator: a new checkout is accepted.
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: first.body.payment_id, status: 'FAILED' }).expect(200);
+    expect(await status(m.token, first.body.payment_id)).toBe('echoue');
+    const again = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id: 'a1b2c3d4-0001-4000-8000-000000000002', account_id: m.id })).expect(201);
+    expect(again.body).toMatchObject({ payment_id: 'a1b2c3d4-0001-4000-8000-000000000002', status: 'initie' });
+    expect(again.body.replayed).toBeUndefined();
+  });
+
+  it('EF-ABO-01 PAY-OPEN: the replay of the same id or Idempotency-Key still answers as a replay, not 409', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const id = 'a1b2c3d4-0002-4000-8000-000000000001';
+    const first = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201);
+    const replay = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201);
+    expect(replay.body).toMatchObject({ payment_id: id, status: 'initie', replayed: true, provider_ref: first.body.provider_ref });
+    expect(check(replay.body, response('/v1/subscriptions/checkout', 'post', '201'))).toEqual([]);
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [id]);
+    expect((await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id })).expect(201)).body).toMatchObject({ payment_id: id, replayed: true });
+    // Idempotency-Key: the key of the open payment replays it; it is the only open one.
+    await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [id]);
+    const keyed = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-open' }).send(body({ account_id: m.id })).expect(201);
+    const keyedAgain = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-open' }).send(body({ account_id: m.id })).expect(201);
+    expect(keyedAgain.body).toMatchObject({ payment_id: keyed.body.payment_id, replayed: true });
+    // A pending payment left by an initiation timeout replays PAY-PENDING (422), never PAY-OPEN.
+    await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [keyed.body.payment_id]);
+    queued['/v1/payments/collect'] = [{ status: 503, body: {} }];
+    const pending = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-timeout' }).send(body({ account_id: m.id })).expect(422);
+    expect(pending.body.error.details.rule).toBe('PAY-PENDING');
+    const pendingAgain = await http.post('/v1/subscriptions/checkout').set({ ...auth, 'idempotency-key': 'tap-timeout' }).send(body({ account_id: m.id })).expect(422);
+    expect(pendingAgain.body.error.details).toMatchObject({ rule: 'PAY-PENDING', payment_id: pending.body.error.details.payment_id, replayed: true });
+  });
+
+  it('EF-ABO-01: id and Idempotency-Key that do not designate the same payment are refused (422)', async () => {
+    const m = await login('+237690000001');
+    const before = collects();
+    const r = await http
+      .post('/v1/subscriptions/checkout')
+      .set({ authorization: `Bearer ${m.token}`, 'idempotency-key': 'tap-mixte' })
+      .send(body({ id: 'a1b2c3d4-0004-4000-8000-000000000001', account_id: m.id }))
+      .expect(422);
+    expect(r.body.error).toMatchObject({ code: 'VALIDATION_ERROR', fields: { 'Idempotency-Key': expect.stringMatching(/incompatible/) } });
+    expect(collects()).toBe(before);
+    expect((await db.query(`SELECT count(*)::int AS n FROM payments WHERE id = 'a1b2c3d4-0004-4000-8000-000000000001'`)).rows[0].n).toBe(0);
+  });
+
+  it('EF-ABO-01 PAY-OPEN: an organisation payer, two managers: the second gets 409 with the first one\'s payment', async () => {
+    const aicha = await login('+237690000002');
+    const paul = await login('+237690000005');
+    const org = (await db.query(`SELECT organisation_id FROM memberships WHERE user_id = $1 AND role = 'admin'`, [aicha.id])).rows[0].organisation_id as string;
+    await db.query(`UPDATE memberships SET role = 'admin' WHERE user_id = $1 AND organisation_id = $2`, [paul.id, org]);
+    try {
+      const orgBody = body({ account_type: 'organisation', account_id: org, plan: 'structure', phone: '+237690000002' });
+      const first = await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${aicha.token}` }).send(orgBody).expect(201);
+      const second = await http
+        .post('/v1/subscriptions/checkout')
+        .set({ authorization: `Bearer ${paul.token}` })
+        .send({ ...orgBody, phone: '+237690000005' })
+        .expect(409);
+      expect(second.body.error.details).toEqual({ rule: 'PAY-OPEN', payment_id: first.body.payment_id, status: 'en_attente', plan: 'structure' });
+      // The organisation's open payment does not block the managers' own accounts.
+      await http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${paul.token}` }).send(body({ account_id: paul.id, phone: '+237690000005' })).expect(201);
+    } finally {
+      await db.query(`UPDATE memberships SET role = 'agent' WHERE user_id = $1 AND organisation_id = $2`, [paul.id, org]);
+    }
+  });
+
+  it('EF-ABO-01 PAY-OPEN: two simultaneous checkouts with different ids create one payment and one USSD prompt', async () => {
+    const m = await login('+237690000001');
+    const auth = { authorization: `Bearer ${m.token}` };
+    const before = collects();
+    const ids = Array.from({ length: 4 }, (_, i) => `a1b2c3d4-0003-4000-8000-00000000000${i + 1}`);
+    const results = await Promise.all(ids.map((id) => http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id }))));
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409, 409, 409]);
+    const created = results.find((r) => r.status === 201)!.body.payment_id;
+    results.filter((r) => r.status === 409).forEach((r) => expect(r.body.error.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: created }));
+    expect(collects() - before).toBe(1);
+    const rows = await db.query(`SELECT id FROM payments WHERE id = ANY($1)`, [ids]);
+    expect(rows.rows.map((r) => r.id)).toEqual([created]);
+  });
+
+  it('Q-WEB-03: GET /payments/:id and /admin/payments/:id give the provider journal (date, status, source) without raw bodies', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const co = await checkout(m.token, m.id).expect(201);
+    const id = co.body.payment_id;
+    // A webhook carrying personal data, then a status query.
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'PENDING', msisdn: '237690000001', name: 'Marthe' }).expect(200);
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 100, msisdn: '237690000001', name: 'Marthe' }).expect(200);
+    queued[`/v1/payments/by-reference/${id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
+    await http.post(`/v1/admin/payments/${id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    const mine = await http.get(`/v1/payments/${id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+    expect(mine.body.status).toBe('confirme');
+    // The webhook with another amount was refused: the payer never sees it as an acquired status.
+    expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'confirme', source: 'statut' }]);
+    expect(JSON.stringify(mine.body)).not.toMatch(/Marthe|237690000001|msisdn|body/);
+    expect(check(mine.body, response('/v1/payments/{id}', 'get', '200'))).toEqual([]);
+    const adm = await http.get(`/v1/admin/payments/${id}`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(adm.body).toMatchObject({ id, payer_id: m.id, connector: 'fakeagg' });
+    expect(adm.body.events).toEqual([
+      { at: expect.any(String), status: 'confirme', source: 'webhook', ignored: true, reason: 'montant' },
+      { at: expect.any(String), status: 'confirme', source: 'statut' },
+    ]);
+    expect(JSON.stringify(adm.body)).not.toMatch(/Marthe|msisdn/);
+    expect(check(adm.body, response('/v1/admin/payments/{id}', 'get', '200'))).toEqual([]);
+    await http.get(`/v1/admin/payments/${id}`).set({ authorization: `Bearer ${m.token}` }).expect(403);
+    await http.get('/v1/admin/payments/0e0e0e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e').set({ authorization: `Bearer ${admin.token}` }).expect(404);
+    const list = await http.get('/v1/admin/payments').set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(check(list.body, response('/v1/admin/payments', 'get', '200'))).toEqual([]);
+  });
+
+  it('EF-ABO-01 resolve: platform_admin settles an "a_verifier" payment with a reason; audit_log and journal; rights and status checked', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const staff = await login('+237690000003');
+    const resolve = (id: string, token: string, b: Record<string, unknown>) => http.post(`/v1/admin/payments/${id}/resolve`).set({ authorization: `Bearer ${token}` }).send(b);
+    const co = await checkout(m.token, m.id).expect(201);
+    const id = co.body.payment_id as string;
+    // Only from "a_verifier": an "en_attente" payment gets 409 with its status.
+    const early = await resolve(id, admin.token, { outcome: 'confirme', reason: 'Releve de l agregateur' }).expect(409);
+    expect(early.body.error.details).toEqual({ rule: 'PAY-RESOLVE-STATUS', status: 'en_attente' });
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [id]);
+    // Rights: platform_admin only (ops, support and the farmer get 403).
+    for (const roles of ['{ops}', '{support}', '{ops,support}']) {
+      await db.query(`UPDATE users SET platform_roles = $2 WHERE id = $1`, [staff.id, roles]);
+      await resolve(id, staff.token, { outcome: 'confirme', reason: 'Releve de l agregateur' }).expect(403);
+    }
+    await db.query(`UPDATE users SET platform_roles = '{param_author}' WHERE id = $1`, [staff.id]);
+    await resolve(id, m.token, { outcome: 'confirme', reason: 'Releve de l agregateur' }).expect(403);
+    await resolve(id, admin.token, { outcome: 'confirme', reason: '  ab  ' }).expect(422);
+    await resolve(id, admin.token, { outcome: 'rembourse', reason: 'Releve de l agregateur' }).expect(422);
+    expect(await status(m.token, id)).toBe('a_verifier');
+    // "confirme": the subscription is extended by the payment.
+    const before = (await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id])).rows[0].expires_at as Date;
+    const ok = await resolve(id, admin.token, { outcome: 'confirme', reason: 'Releve Orange Money : debit constate' }).expect(200);
+    expect(ok.body).toMatchObject({ id, status: 'confirme' });
+    expect(ok.body.events.at(-1)).toEqual({ at: expect.any(String), status: 'confirme', source: 'operateur' });
+    expect(check(ok.body, response('/v1/admin/payments/{id}/resolve', 'post', '200'))).toEqual([]);
+    const sub = (await db.query(`SELECT s.expires_at, p.subscription_id = s.id AS linked FROM subscriptions s JOIN payments p ON p.id = $2 WHERE s.account_type = 'user' AND s.account_id = $1`, [m.id, id])).rows[0];
+    expect(sub.linked).toBe(true);
+    expect(new Date(sub.expires_at).getTime()).toBeGreaterThan(new Date(before).getTime());
+    const audit = await db.query(`SELECT action, actor_id, actor_role, diff FROM audit_log WHERE entity = 'payments' AND entity_id = $1 ORDER BY id`, [id]);
+    expect(audit.rows).toEqual([{ action: 'resolve_confirme', actor_id: admin.id, actor_role: 'platform_admin', diff: { outcome: 'confirme', reason: 'Releve Orange Money : debit constate', from_status: 'a_verifier' } }]);
+    // A late provider confirmation of a payment decided "confirme" changes nothing (no second extension).
+    const aauth = { authorization: `Bearer ${admin.token}` };
+    const decided = (await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id])).rows[0].expires_at as Date;
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    expect((await db.query(`SELECT expires_at FROM subscriptions WHERE account_type = 'user' AND account_id = $1`, [m.id])).rows[0].expires_at).toEqual(decided);
+    expect((await http.get(`/v1/admin/payments/${id}`).set(aauth).expect(200)).body.needs_review).toBe(false);
+    // Already settled: 409, nothing journaled twice.
+    await resolve(id, admin.token, { outcome: 'echoue', reason: 'Deuxieme decision' }).expect(409);
+    expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [id])).rows[0].n).toBe(1);
+    // "echoue" frees PAY-OPEN: the payer can pay again.
+    const co2 = await checkout(m.token, m.id).expect(201);
+    await db.query(`UPDATE payments SET status = 'a_verifier' WHERE id = $1`, [co2.body.payment_id]);
+    expect((await checkout(m.token, m.id).expect(409)).body.error.details.payment_id).toBe(co2.body.payment_id);
+    const ko = await resolve(co2.body.payment_id, admin.token, { outcome: 'echoue', reason: 'Aucun debit sur le releve' }).expect(200);
+    expect(ko.body.status).toBe('echoue');
+    const mine = await http.get(`/v1/payments/${co2.body.payment_id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+    expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'echoue', source: 'operateur' }]);
+    expect(JSON.stringify(mine.body)).not.toMatch(/releve/i);
+    // The money arrives after all: activated (a confirmation always wins), flagged for review, audited.
+    await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: co2.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+    const late = await http.get(`/v1/admin/payments/${co2.body.payment_id}`).set(aauth).expect(200);
+    expect(late.body).toMatchObject({ status: 'confirme', needs_review: true });
+    expect(late.body.events.at(-1)).toEqual({ at: expect.any(String), status: 'confirme', source: 'webhook', detail: 'late_confirm_after_resolve' });
+    const review = await http.get('/v1/admin/payments?needs_review=true').set(aauth).expect(200);
+    expect(review.body.data.map((p: { id: string }) => p.id)).toEqual([co2.body.payment_id]);
+    expect(check(review.body, response('/v1/admin/payments', 'get', '200'))).toEqual([]);
+    const notReview = await http.get('/v1/admin/payments?needs_review=false&limit=200').set(aauth).expect(200);
+    expect(notReview.body.data.some((p: { id: string }) => p.id === co2.body.payment_id)).toBe(false);
+    await http.get('/v1/admin/payments?needs_review=oui').set(aauth).expect(422);
+    const lateAudit = await db.query(`SELECT action, actor_id, actor_role FROM audit_log WHERE entity_id = $1 ORDER BY id`, [co2.body.payment_id]);
+    expect(lateAudit.rows.map((r) => [r.action, r.actor_id, r.actor_role])).toEqual([
+      ['resolve_echoue', admin.id, 'platform_admin'],
+      ['late_confirm_after_resolve', null, 'systeme'],
+    ]);
+    // Reviewed by a platform administrator, with a reason: flag cleared, journaled (m2).
+    const reviewed = (token: string, b: Record<string, unknown>) => http.post(`/v1/admin/payments/${co2.body.payment_id}/reviewed`).set({ authorization: `Bearer ${token}` }).send(b);
+    await db.query(`UPDATE users SET platform_roles = '{ops,support}' WHERE id = $1`, [staff.id]);
+    await reviewed(staff.token, { reason: 'Payeur contacte, un seul debit' }).expect(403);
+    await db.query(`UPDATE users SET platform_roles = '{param_author}' WHERE id = $1`, [staff.id]);
+    await reviewed(m.token, { reason: 'Payeur contacte, un seul debit' }).expect(403);
+    await reviewed(admin.token, { reason: '   ab ' }).expect(422);
+    const done = await reviewed(admin.token, { reason: 'Payeur contacte, un seul debit' }).expect(200);
+    expect(done.body).toMatchObject({ id: co2.body.payment_id, status: 'confirme', needs_review: false });
+    expect(check(done.body, response('/v1/admin/payments/{id}/reviewed', 'post', '200'))).toEqual([]);
+    const again = await reviewed(admin.token, { reason: 'Deuxieme revue' }).expect(409);
+    expect(again.body.error.details).toEqual({ rule: 'PAY-REVIEW-STATUS', needs_review: false });
+    const reviewAudit = await db.query(`SELECT actor_id, actor_role, diff FROM audit_log WHERE entity_id = $1 AND action = 'reviewed'`, [co2.body.payment_id]);
+    expect(reviewAudit.rows).toEqual([{ actor_id: admin.id, actor_role: 'platform_admin', diff: { reason: 'Payeur contacte, un seul debit' } }]);
+    // A completed refund clears the flag as well.
+    await db.query(`UPDATE payments SET raw = raw || '{"needs_review": true}'::jsonb WHERE id = $1`, [co2.body.payment_id]);
+    queued['/v1/refunds'] = [{ status: 200, body: { state: 'DONE', refund_id: 'RF-LATE' } }];
+    const refunded = await http.post(`/v1/admin/payments/${co2.body.payment_id}/refund`).set(aauth).send({ reason: 'Paye deux fois' }).expect(200);
+    expect(refunded.body).toMatchObject({ status: 'rembourse' });
+    expect((await http.get(`/v1/admin/payments/${co2.body.payment_id}`).set(aauth).expect(200)).body.needs_review).toBe(false);
+    await checkout(m.token, m.id).expect(201);
+  });
+
+  it('PAY-RECENT (PO 2026-11-13): a subscription payment confirmed < 30 min ago needs confirm_repeat; replay, PAY-OPEN and other payers unaffected', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    process.env.PAYMENT_RECENT_GUARD_MIN = '30';
+    reloadConfig();
+    try {
+      const m = await login('+237690000001');
+      const other = await login('+237690000005');
+      // Start from payments confirmed long ago (earlier tests confirm some a moment ago).
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE payer_id = $1 AND paid_at > now() - interval '2 hours'`, [m.id]);
+      const auth = { authorization: `Bearer ${m.token}` };
+      const paid = await checkout(m.token, m.id).expect(201);
+      await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: paid.body.payment_id, status: 'SUCCESS', amount: 2500 }).expect(200);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '5 minutes' WHERE id = $1`, [paid.body.payment_id]);
+      const paidAt = (await db.query(`SELECT paid_at FROM payments WHERE id = $1`, [paid.body.payment_id])).rows[0].paid_at as Date;
+      const id = 'a1b2c3d4-0005-4000-8000-000000000001';
+      const before = collects();
+      // 5 minutes after: refused, with the plan and the date to show.
+      const recent = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure' })).expect(409);
+      const proLabel = (await http.get('/v1/plans').expect(200)).body.plans.find((p: { code: string }) => p.code === 'pro').label as string;
+      expect(recent.body.error).toEqual({
+        code: 'CONFLICT',
+        message: `Vous avez déjà payé la formule ${proLabel} il y a 5 min. Confirmez pour payer encore.`,
+        details: { rule: 'PAY-RECENT', payment_id: paid.body.payment_id, plan: 'pro', paid_at: paidAt.toISOString() },
+      });
+      expect(check(recent.body, response('/v1/subscriptions/checkout', 'post', '409'))).toEqual([]);
+      expect(collects()).toBe(before);
+      // Another payer is not concerned.
+      await checkout(other.token, other.id).expect(201);
+      // A boolean is not a confirmation of a given payment.
+      await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure', confirm_repeat: true })).expect(422);
+      // Same checkout, confirmed with the payment shown: accepted, journaled.
+      const repeat = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure', confirm_repeat: paid.body.payment_id })).expect(201);
+      expect(repeat.body).toMatchObject({ payment_id: id, status: 'initie' });
+      const mine = await http.get(`/v1/payments/${id}`).set(auth).expect(200);
+      expect(mine.body.events).toEqual([{ at: expect.any(String), status: 'initie', source: 'client', detail: 'repeat_confirmed' }]);
+      expect(check(mine.body, response('/v1/payments/{id}', 'get', '200'))).toEqual([]);
+      const audit = await db.query(`SELECT action, actor_id, actor_role, diff FROM audit_log WHERE entity_id = $1`, [id]);
+      expect(audit.rows).toEqual([{ action: 'checkout_repeat_confirmed', actor_id: m.id, actor_role: 'payeur', diff: expect.objectContaining({ recent_payment_id: paid.body.payment_id, plan: 'pro', new_plan: 'structure' }) }]);
+      // The replay of the same id is a replay, never PAY-RECENT (with or without confirm_repeat).
+      expect((await http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, plan: 'structure' })).expect(201)).body).toMatchObject({ payment_id: id, replayed: true });
+      // PAY-OPEN comes first while that payment is open, even with confirm_repeat.
+      const open = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, confirm_repeat: paid.body.payment_id })).expect(409);
+      expect(open.body.error.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: id });
+      // 31 minutes after the confirmation: accepted without confirmation.
+      await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [id]);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '31 minutes' WHERE id = $1`, [paid.body.payment_id]);
+      const later = await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id })).expect(201);
+      expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [later.body.payment_id])).rows[0].n).toBe(0);
+      await http.post('/v1/subscriptions/checkout').set(auth).send(body({ account_id: m.id, confirm_repeat: 'oui' })).expect(422);
+    } finally {
+      process.env.PAYMENT_RECENT_GUARD_MIN = '0';
+      reloadConfig();
+    }
+  });
+
+  it('PAY-RECENT: confirm_repeat is bound to the payment shown; stale, unsolicited and simultaneous confirmations', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    process.env.PAYMENT_RECENT_GUARD_MIN = '30';
+    reloadConfig();
+    try {
+      const m = await login('+237690000001');
+      const auth = { authorization: `Bearer ${m.token}` };
+      const send = (id: string, extra: Record<string, unknown> = {}) => http.post('/v1/subscriptions/checkout').set(auth).send(body({ id, account_id: m.id, ...extra }));
+      const confirm = (pid: string) => http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: pid, status: 'SUCCESS', amount: 2500 }).expect(200);
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE payer_id = $1 AND paid_at > now() - interval '2 hours'`, [m.id]);
+      // Unsolicited confirm_repeat (no recent payment): an ordinary payment, nothing journaled as a repeat.
+      const p1 = await send('a1b2c3d4-0006-4000-8000-000000000001', { confirm_repeat: 'a1b2c3d4-0006-4000-8000-0000000000ff' }).expect(201);
+      expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE entity_id = $1`, [p1.body.payment_id])).rows[0].n).toBe(0);
+      expect((await http.get(`/v1/payments/${p1.body.payment_id}`).set(auth).expect(200)).body.events).toEqual([]);
+      await confirm(p1.body.payment_id);
+      // The payer sees P1 in a 409...
+      const seen = await send('a1b2c3d4-0006-4000-8000-000000000002').expect(409);
+      expect(seen.body.error.details).toMatchObject({ rule: 'PAY-RECENT', payment_id: p1.body.payment_id });
+      // ...meanwhile P2 is paid (another device) and confirmed.
+      // Written in capitals by the client: the same UUID (m-b).
+      const p2 = await send('a1b2c3d4-0006-4000-8000-000000000003', { confirm_repeat: (p1.body.payment_id as string).toUpperCase() }).expect(201);
+      await confirm(p2.body.payment_id);
+      // The stale confirmation of P1 does not cover P2: new 409 with P2.
+      const stale = await send('a1b2c3d4-0006-4000-8000-000000000002', { confirm_repeat: p1.body.payment_id }).expect(409);
+      expect(stale.body.error.details).toMatchObject({ rule: 'PAY-RECENT', payment_id: p2.body.payment_id });
+      expect((await db.query(`SELECT count(*)::int AS n FROM payments WHERE id = 'a1b2c3d4-0006-4000-8000-000000000002'`)).rows[0].n).toBe(0);
+      // Two simultaneous confirmations of P2 with different ids: one payment, one prompt.
+      const before = collects();
+      const ids = ['a1b2c3d4-0006-4000-8000-000000000004', 'a1b2c3d4-0006-4000-8000-000000000005'];
+      const results = await Promise.all(ids.map((id) => send(id, { confirm_repeat: p2.body.payment_id })));
+      expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+      const created = results.find((r) => r.status === 201)!.body.payment_id;
+      expect(results.find((r) => r.status === 409)!.body.error.details).toMatchObject({ rule: 'PAY-OPEN', payment_id: created });
+      expect(collects() - before).toBe(1);
+      expect((await db.query(`SELECT id FROM payments WHERE id = ANY($1)`, [ids])).rows.map((r) => r.id)).toEqual([created]);
+      expect((await db.query(`SELECT count(*)::int AS n FROM audit_log WHERE action = 'checkout_repeat_confirmed' AND entity_id = ANY($1)`, [ids])).rows[0].n).toBe(1);
+    } finally {
+      process.env.PAYMENT_RECENT_GUARD_MIN = '0';
+      reloadConfig();
+    }
+  });
+
+  it('PAY-RECENT audit role: support paying for an organisation is recorded as support, its manager as gestionnaire_org (m-a)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    process.env.PAYMENT_RECENT_GUARD_MIN = '30';
+    reloadConfig();
+    const aicha = await login('+237690000002');
+    const staff = await login('+237690000003');
+    const org = (await db.query(`SELECT organisation_id FROM memberships WHERE user_id = $1 AND role = 'admin'`, [aicha.id])).rows[0].organisation_id as string;
+    await db.query(`UPDATE users SET platform_roles = '{support}' WHERE id = $1`, [staff.id]);
+    try {
+      await db.query(`UPDATE payments SET paid_at = now() - interval '2 hours' WHERE payer_id = $1 AND paid_at > now() - interval '2 hours'`, [org]);
+      const orgBody = (extra: Record<string, unknown>) => body({ account_type: 'organisation', account_id: org, plan: 'structure', phone: '+237690000002', ...extra });
+      const pay = (token: string, extra: Record<string, unknown>) => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${token}` }).send(orgBody(extra));
+      const first = await pay(aicha.token, {}).expect(201);
+      await http.post('/v1/connectors/fakeagg/payment').set(CB).send({ reference: first.body.payment_id, status: 'SUCCESS', amount: 15000 }).expect(200);
+      expect(await status(aicha.token, first.body.payment_id)).toBe('confirme');
+      // Support (no membership of the organisation) pays again for it.
+      const refused = await pay(staff.token, {}).expect(409);
+      expect(refused.body.error.details).toMatchObject({ rule: 'PAY-RECENT', payment_id: first.body.payment_id });
+      const bySupport = await pay(staff.token, { confirm_repeat: first.body.payment_id }).expect(201);
+      const role = async (pid: string) => (await db.query(`SELECT actor_id, actor_role FROM audit_log WHERE entity_id = $1 AND action = 'checkout_repeat_confirmed'`, [pid])).rows[0];
+      expect(await role(bySupport.body.payment_id)).toEqual({ actor_id: staff.id, actor_role: 'support' });
+      // The organisation's manager.
+      await db.query(`UPDATE payments SET status = 'echoue' WHERE id = $1`, [bySupport.body.payment_id]);
+      const byManager = await pay(aicha.token, { confirm_repeat: first.body.payment_id }).expect(201);
+      expect(await role(byManager.body.payment_id)).toEqual({ actor_id: aicha.id, actor_role: 'gestionnaire_org' });
+    } finally {
+      await db.query(`UPDATE users SET platform_roles = '{param_author}' WHERE id = $1`, [staff.id]);
+      process.env.PAYMENT_RECENT_GUARD_MIN = '0';
+      reloadConfig();
+    }
+  });
+
+  it('S2: a platform account asking for another user\'s subscription gets that user\'s, not its own', async () => {
+    const m = await login('+237690000001');
+    const admin = await login('+237690000009');
+    const mine = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+    const asked = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
+    expect(asked.body).toMatchObject({ account_type: 'user', account_id: m.id, plan: mine.body.plan, expires_at: mine.body.expires_at, subscription: mine.body.subscription });
+    expect(check(asked.body, response('/v1/subscriptions/current', 'get', '200'))).toEqual([]);
+    // Without a platform role, someone else's subscription stays refused.
+    const other = await login('+237690000005');
+    await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${other.token}` }).expect(403);
+  });
+
+  it('currency comes from the country pack: GET /plans (PAY-CURRENCY without one), /subscriptions/current (price null without one)', async () => {
+    const plans = await http.get('/v1/plans?country=CM').expect(200);
+    const pack = JSON.parse(readFileSync(join(process.env.PACKS_DIR || join(__dirname, '../../../packages/params/packs'), 'pays.CM.json'), 'utf8')) as { currency: string };
+    expect(plans.body.currency).toBe(pack.currency);
+    expect(new Set(plans.body.plans.map((p: { prices: { monthly: { currency: string } } }) => p.prices.monthly.currency))).toEqual(new Set([pack.currency]));
+    expect(check(plans.body, response('/v1/plans', 'get', '200'))).toEqual([]);
+    const none = await http.get('/v1/plans?country=ZZ').expect(422);
+    expect(none.body.error.details).toEqual({ rule: 'PAY-CURRENCY', country: 'ZZ' });
+    expect(check(none.body, response('/v1/plans', 'get', '422'))).toEqual([]);
+    // A subscription recorded without its currency shows the currency of the account's country pack.
+    const m = await login('+237690000001');
+    await db.query(`UPDATE subscriptions SET currency = NULL WHERE account_type = 'user' AND account_id = $1`, [m.id]);
+    try {
+      const cur = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+      expect(cur.body.price).toEqual({ amount_minor: expect.any(Number), currency: pack.currency });
+      expect(check(cur.body, response('/v1/subscriptions/current', 'get', '200'))).toEqual([]);
+      await db.query(`UPDATE users SET country = 'ZZ' WHERE id = $1`, [m.id]);
+      // No currency for the country: no price, the rest of the answer is still given.
+      const unknown = await http.get(`/v1/subscriptions/current?account_type=user&account_id=${m.id}`).set({ authorization: `Bearer ${m.token}` }).expect(200);
+      expect(unknown.body).toMatchObject({ plan: cur.body.plan, price: null });
+      expect(check(unknown.body, response('/v1/subscriptions/current', 'get', '200'))).toEqual([]);
+    } finally {
+      await db.query(`UPDATE users SET country = 'CM' WHERE id = $1`, [m.id]);
+      await db.query(`UPDATE subscriptions SET currency = $2 WHERE account_type = 'user' AND account_id = $1`, [m.id, pack.currency]);
+    }
   });
 
   it('only routed payment methods are offered (m12) and the global webhook is closed with connectors (m13)', async () => {
@@ -612,6 +1043,7 @@ describe('declarative connectors', () => {
     queued[`/v1/payments/by-reference/${co.body.payment_id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 2500 } }];
     const r = await http.post(`/v1/admin/payments/${co.body.payment_id}/check`).set({ authorization: `Bearer ${admin.token}` }).expect(200);
     expect(r.body).toMatchObject({ id: co.body.payment_id, status: 'confirme', checked: true, outcome: 'confirmed' });
+    expect(check(r.body, response('/v1/admin/payments/{id}/check', 'post', '200'))).toEqual([]);
     // A status with another amount is refused like a webhook.
     const co2 = await checkout(m.token, m.id).expect(201);
     queued[`/v1/payments/by-reference/${co2.body.payment_id}`] = [{ status: 200, body: { state: 'SUCCESS', amount: 1 } }];
@@ -635,6 +1067,7 @@ describe('declarative connectors', () => {
     expect(await status(m.token, id)).toBe('remboursement_en_cours');
     const done = await http.post(`/v1/admin/payments/${id}/refund`).set(aauth).send({ reason: 'Erreur de formule' }).expect(200);
     expect(done.body).toMatchObject({ id, status: 'rembourse', refund: expect.objectContaining({ status: 'rembourse', http_status: 409, reason: 'Erreur de formule' }) });
+    expect(check(done.body, response('/v1/admin/payments/{id}/refund', 'post', '200'))).toEqual([]);
     const calls = received.filter((r) => r.path === '/v1/refunds');
     expect(calls.slice(-2).map((c) => c.body.key)).toEqual([done.body.refund.id, done.body.refund.id]);
     expect(calls[calls.length - 1].body).toMatchObject({ transaction: co.body.provider_ref, amount: 2500, reason: 'Erreur de formule' });
@@ -722,6 +1155,8 @@ describe('declarative connectors', () => {
     expect(r.body.totals.confirmed_amounts).toEqual([expect.objectContaining({ currency: 'XAF' })]);
     const stored = await http.get(`/v1/admin/payments/reconciliations?day=${today}`).set(aauth).expect(200);
     expect(stored.body.data[0]).toMatchObject({ day: today, divergences: expect.any(Array) });
+    expect(check(r.body, response('/v1/admin/payments/reconciliations', 'post', '200'))).toEqual([]);
+    expect(check(stored.body, response('/v1/admin/payments/reconciliations', 'get', '200'))).toEqual([]);
   });
 
   it('reconciliation falls back on status queries without a list, reports unverifiable connectors, and runs once a day', async () => {
@@ -763,5 +1198,32 @@ describe('declarative connectors', () => {
     expect(day < today).toBe(true);
     expect(await scheduler.reconcileIfDue(new Date(`${today}T13:00:00Z`))).toBeNull();
     expect(await opsService().hasReport(day)).toBe(true);
+  });
+
+  // Last on purpose: once over its limit, the checkout route is blocked for the rest of the minute.
+  it('S1: subscriptions/checkout has its own limit per user, not per IP (shared operator NAT), 429 RATE_LIMITED', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { reloadConfig } = require('../src/config');
+    // Two users who have not paid in this minute, behind the same IP (supertest: 127.0.0.1).
+    const a = await login('+237690000004');
+    const b = await login('+237690000009');
+    process.env.CHECKOUT_THROTTLE_LIMIT = '1';
+    reloadConfig();
+    try {
+      const send = (u: { token: string; id: string }) => http.post('/v1/subscriptions/checkout').set({ authorization: `Bearer ${u.token}` }).send(body({ account_id: u.id }));
+      await send(a).expect(201);
+      // Same IP, another user: still their first checkout.
+      await send(b).expect(201);
+      // The same user again within the minute: limited.
+      const limited = await send(a).expect(429);
+      expect(limited.body.error).toMatchObject({ code: 'RATE_LIMITED' });
+      expect(check(limited.body, response('/v1/subscriptions/checkout', 'post', '429'))).toEqual([]);
+      expect(limited.headers['retry-after-checkout']).toBeDefined();
+      // The general limit of the other routes is untouched.
+      await http.get('/v1/plans').expect(200);
+    } finally {
+      process.env.CHECKOUT_THROTTLE_LIMIT = '100000';
+      reloadConfig();
+    }
   });
 });

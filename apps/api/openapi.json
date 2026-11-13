@@ -34,6 +34,158 @@
         ],
         "type": "object"
       },
+      "AdminPaymentListView": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AdminPaymentView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "AdminPaymentView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "connector": {
+            "description": "Connecteur qui a lance le paiement",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "events": {
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "needs_review": {
+            "description": "true : a revoir par un operateur (confirmation du fournisseur apres une decision « echoue »). Repasse a false au remboursement termine ou par POST /admin/payments/:id/reviewed",
+            "type": "boolean"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payer_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "payer_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "poll": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PaymentPollView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "refund": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RefundView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events",
+          "payer_type",
+          "payer_id",
+          "connector",
+          "error_code",
+          "poll",
+          "refund",
+          "needs_review"
+        ],
+        "type": "object"
+      },
       "AnalyticsDto": {
         "properties": {
           "device_id_hash": {
@@ -323,6 +475,39 @@
         ],
         "type": "object"
       },
+      "CheckoutConflictDetailView": {
+        "properties": {
+          "code": {
+            "enum": [
+              "CONFLICT"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "$ref": "#/components/schemas/PayOpenDetailsView"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
+        "type": "object"
+      },
+      "CheckoutConflictView": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/CheckoutConflictDetailView"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
       "CheckoutDto": {
         "properties": {
           "account_id": {
@@ -333,6 +518,11 @@
               "user",
               "organisation"
             ],
+            "type": "string"
+          },
+          "confirm_repeat": {
+            "description": "Apres une reponse 409 PAY-RECENT : details.payment_id recu, pour confirmer payer encore en connaissance de ce paiement (meme checkout, meme id). Accepte seulement s’il designe le paiement confirme le plus recent du payeur dans la fenetre (sinon nouveau 409 PAY-RECENT) ; ignore s’il n’y a pas de paiement recent. Note dans le journal et audit_log",
+            "format": "uuid",
             "type": "string"
           },
           "id": {
@@ -371,6 +561,48 @@
         ],
         "type": "object"
       },
+      "CheckoutResultView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "payment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_url": {
+            "description": "Page de paiement du fournisseur, le cas echeant",
+            "type": "string"
+          },
+          "replayed": {
+            "description": "true : rejeu du meme id ou de la meme Idempotency-Key, aucun nouvel appel au fournisseur",
+            "type": "boolean"
+          },
+          "status": {
+            "description": "\"initie\" tant que le paiement est ouvert ; sinon son statut (rejeu)",
+            "example": "initie",
+            "type": "string"
+          },
+          "ussd_push": {
+            "description": "Une demande de validation a ete envoyee sur le telephone",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "payment_id",
+          "status",
+          "ussd_push",
+          "amount",
+          "provider_ref"
+        ],
+        "type": "object"
+      },
       "ConfirmReminderDto": {
         "properties": {
           "health_event": {
@@ -382,6 +614,111 @@
             "description": "Act details (defaults: vaccination today for the reminder step)"
           }
         },
+        "type": "object"
+      },
+      "ConfirmedWithoutSubscriptionView": {
+        "properties": {
+          "payer_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "payer_type": {
+            "type": "string"
+          },
+          "payment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "plan": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "payment_id",
+          "payer_type",
+          "payer_id",
+          "plan"
+        ],
+        "type": "object"
+      },
+      "ConnectorReasonView": {
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "raison": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "raison"
+        ],
+        "type": "object"
+      },
+      "ConnectorSummaryListView": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorSummaryView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ConnectorSummaryView": {
+        "properties": {
+          "channels": {
+            "items": {
+              "enum": [
+                "sms",
+                "whatsapp",
+                "ussd",
+                "payment"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "foreign_payment_events": {
+            "description": "Evenements de paiement envoyes par ce connecteur pour un paiement d’un autre connecteur, refuses sans ecriture (depuis le demarrage de l’instance)",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "label": {
+            "example": "Agregateur Cameroun",
+            "type": "string"
+          },
+          "name": {
+            "example": "agregateur_cm",
+            "type": "string"
+          },
+          "routed_for": {
+            "description": "Canaux et moyens de paiement routes vers ce connecteur",
+            "example": [
+              "sms",
+              "payment:orange_money"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "channels",
+          "routed_for",
+          "foreign_payment_events"
+        ],
         "type": "object"
       },
       "ConnectorTestSmsDto": {
@@ -572,6 +909,102 @@
           "subject_id",
           "event_type",
           "event_date"
+        ],
+        "type": "object"
+      },
+      "CurrentSubscriptionView": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "account_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "entitlements": {
+            "additionalProperties": true,
+            "description": "Droits effectifs (formule, fonctions, quotas, source, jeton signe pour une organisation)",
+            "type": "object"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grace_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": "string"
+          },
+          "price": {
+            "description": "null : abonnement gratuit, ou devise introuvable dans le pack pays (avertissement journalise)",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MoneyView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "actif",
+              "grace",
+              "expire",
+              "gratuit"
+            ],
+            "type": "string"
+          },
+          "subscription": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SubscriptionRefView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account_type",
+          "account_id",
+          "plan",
+          "status",
+          "period",
+          "started_at",
+          "expires_at",
+          "grace_until",
+          "price",
+          "subscription",
+          "entitlements"
         ],
         "type": "object"
       },
@@ -825,6 +1258,55 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "ErrorDetailView": {
+        "properties": {
+          "code": {
+            "enum": [
+              "UNAUTHENTICATED",
+              "FORBIDDEN",
+              "PLAN_REQUIRED",
+              "NOT_FOUND",
+              "CONFLICT",
+              "VALIDATION_ERROR",
+              "BUSINESS_RULE",
+              "QUOTA_EXCEEDED",
+              "RATE_LIMITED",
+              "SERVER_ERROR"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "description": "Regle (rule) et donnees utiles au client",
+            "type": "object"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorView": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetailView"
+          }
+        },
+        "required": [
+          "error"
+        ],
         "type": "object"
       },
       "ExpenseDto": {
@@ -1261,6 +1743,25 @@
         ],
         "type": "object"
       },
+      "MoneyView": {
+        "properties": {
+          "amount_minor": {
+            "description": "Entier en unite mineure ISO 4217",
+            "example": 2500,
+            "type": "number"
+          },
+          "currency": {
+            "description": "Code ISO 4217, venu du pack pays",
+            "example": "XAF",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "type": "object"
+      },
       "OtpRequestDto": {
         "properties": {
           "phone": {
@@ -1349,6 +1850,599 @@
         ],
         "type": "object"
       },
+      "PayOpenDetailsView": {
+        "properties": {
+          "paid_at": {
+            "description": "PAY-RECENT : date de confirmation du paiement recent (UTC)",
+            "format": "date-time",
+            "type": "string"
+          },
+          "payment_id": {
+            "description": "PAY-OPEN : paiement d’abonnement deja ouvert pour ce payeur (a suivre, pas a relancer) ; PAY-RECENT : paiement confirme recent",
+            "format": "uuid",
+            "type": "string"
+          },
+          "plan": {
+            "description": "PAY-OPEN : formule du paiement ouvert (un seul paiement d’abonnement ouvert par compte, toutes formules) ; PAY-RECENT : formule payee",
+            "example": "pro",
+            "type": "string"
+          },
+          "rule": {
+            "description": "PAY-RECENT : un paiement d’abonnement de ce payeur a ete confirme recemment (PAYMENT_RECENT_GUARD_MIN) ; renvoyer le meme checkout avec confirm_repeat = details.payment_id pour payer encore. PAY-RETRY : le paiement ouvert vient de changer d’etat, reessayer",
+            "enum": [
+              "PAY-OPEN",
+              "PAY-RECENT",
+              "PAY-IDEMPOTENCY",
+              "PAY-RETRY"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "description": "PAY-OPEN : statut du paiement ouvert",
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "type": "object"
+      },
+      "PaymentCheckView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "checked": {
+            "description": "false : paiement deja termine, le fournisseur n’a pas ete interroge",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "outcome": {
+            "description": "Issue de l’interrogation (confirmed, failed, still_pending, flagged, errors, ou statut lu)",
+            "example": "confirmed",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events",
+          "checked"
+        ],
+        "type": "object"
+      },
+      "PaymentErrorView": {
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "payment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "raison": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "raison",
+          "payment_id"
+        ],
+        "type": "object"
+      },
+      "PaymentEventView": {
+        "properties": {
+          "at": {
+            "description": "Reception de l’evenement (UTC)",
+            "format": "date-time",
+            "type": "string"
+          },
+          "detail": {
+            "description": "repeat_confirmed : nouveau paiement confirme explicitement malgre un paiement confirme recent (PAY-RECENT) ; late_confirm_after_resolve : confirmation du fournisseur apres une decision « echoue » de l’operateur",
+            "enum": [
+              "repeat_confirmed",
+              "late_confirm_after_resolve"
+            ],
+            "type": "string"
+          },
+          "ignored": {
+            "description": "Administration seulement, toujours true quand present : evenement recu mais non applique (jamais montre au payeur)",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Raison du refus (avec ignored)",
+            "enum": [
+              "montant",
+              "devise"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "description": "Ecrite par l’API a l’enregistrement : webhook (notification du fournisseur), statut (requete de statut), operateur (decision d’un administrateur), client (confirmation explicite du payeur)",
+            "enum": [
+              "webhook",
+              "statut",
+              "operateur",
+              "client"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "description": "Statut annonce par le fournisseur (apres correspondance du connecteur)",
+            "example": "confirme",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "status",
+          "source"
+        ],
+        "type": "object"
+      },
+      "PaymentMethodView": {
+        "properties": {
+          "code": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "label": {
+            "example": "Orange Money",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "label"
+        ],
+        "type": "object"
+      },
+      "PaymentPollView": {
+        "properties": {
+          "count": {
+            "description": "Interrogations faites",
+            "type": "number"
+          },
+          "last": {
+            "description": "Derniere reponse lue (statut du fournisseur ou code d’erreur)",
+            "type": "string"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "next_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "PaymentRefundView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "refund": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RefundView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events",
+          "refund"
+        ],
+        "type": "object"
+      },
+      "PaymentView": {
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "events": {
+            "description": "Journal des evenements (20 derniers) : date, statut et source, sans corps brut ni donnees personnelles. Vue payeur : sans les evenements refuses ; vue administration : avec ignored et reason",
+            "items": {
+              "$ref": "#/components/schemas/PaymentEventView"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "method": {
+            "example": "orange_money",
+            "type": "string"
+          },
+          "paid_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "period": {
+            "description": "mensuel ou annuel",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "example": "pro",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "example": "abonnement",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "initie",
+              "en_attente",
+              "a_verifier",
+              "confirme",
+              "echoue",
+              "remboursement_en_cours",
+              "rembourse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "purpose",
+          "plan",
+          "period",
+          "amount",
+          "method",
+          "provider_ref",
+          "paid_at",
+          "created_at",
+          "events"
+        ],
+        "type": "object"
+      },
+      "PlanCardView": {
+        "properties": {
+          "code": {
+            "example": "pro",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "monthly": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MoneyView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "description": "null : sur devis",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlanPricesView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quotas": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "rank": {
+            "type": "number"
+          },
+          "yearly": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MoneyView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "rank",
+          "features",
+          "quotas",
+          "monthly",
+          "yearly",
+          "price"
+        ],
+        "type": "object"
+      },
+      "PlanPricesView": {
+        "properties": {
+          "from": {
+            "description": "Prix « a partir de » (ex. formule par tranche)",
+            "type": "boolean"
+          },
+          "monthly": {
+            "$ref": "#/components/schemas/MoneyView"
+          },
+          "yearly": {
+            "$ref": "#/components/schemas/MoneyView"
+          }
+        },
+        "required": [
+          "monthly",
+          "yearly",
+          "from"
+        ],
+        "type": "object"
+      },
+      "PlanView": {
+        "properties": {
+          "code": {
+            "example": "pro",
+            "type": "string"
+          },
+          "features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "label": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prices": {
+            "$ref": "#/components/schemas/PlanPricesView"
+          },
+          "purchasable": {
+            "description": "false : pas de tarif dans le pack pays (gratuit ou sur devis)",
+            "type": "boolean"
+          },
+          "quotas": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "rank": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "rank",
+          "features",
+          "quotas",
+          "prices",
+          "purchasable",
+          "note"
+        ],
+        "type": "object"
+      },
+      "PlansView": {
+        "properties": {
+          "country": {
+            "example": "CM",
+            "type": "string"
+          },
+          "currency": {
+            "description": "Devise du pack pays (ISO 4217)",
+            "example": "XAF",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PlanCardView"
+            },
+            "type": "array"
+          },
+          "payment_methods": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentMethodView"
+            },
+            "type": "array"
+          },
+          "plans": {
+            "items": {
+              "$ref": "#/components/schemas/PlanView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "country",
+          "currency",
+          "data",
+          "plans",
+          "payment_methods"
+        ],
+        "type": "object"
+      },
       "PublishDto": {
         "properties": {
           "rollout_pct": {
@@ -1391,6 +2485,181 @@
         ],
         "type": "object"
       },
+      "ReconciliationDivergenceView": {
+        "properties": {
+          "base": {
+            "description": "Notre statut (null : inconnu en base)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connector": {
+            "type": "string"
+          },
+          "ecart": {
+            "enum": [
+              "statut",
+              "montant",
+              "inconnu_en_base",
+              "absent_chez_fournisseur"
+            ],
+            "type": "string"
+          },
+          "fournisseur": {
+            "description": "Statut du fournisseur (null : absent de sa liste)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connector",
+          "payment_id",
+          "provider_ref",
+          "base",
+          "fournisseur",
+          "ecart"
+        ],
+        "type": "object"
+      },
+      "ReconciliationListView": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/StoredReconciliationView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "ReconciliationReportView": {
+        "properties": {
+          "abonnements_sans_paiement": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionWithoutPaymentView"
+            },
+            "type": "array"
+          },
+          "complet": {
+            "description": "false : une erreur temporaire a laisse des points non verifies (rapport refait)",
+            "type": "boolean"
+          },
+          "confirmes_sans_abonnement": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedWithoutSubscriptionView"
+            },
+            "type": "array"
+          },
+          "day": {
+            "description": "Jour metier (fuseau du pays)",
+            "example": "2026-11-09",
+            "type": "string"
+          },
+          "divergences": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationDivergenceView"
+            },
+            "type": "array"
+          },
+          "erreurs": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentErrorView"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "non_verifies": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorReasonView"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationSourceView"
+            },
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ReconciliationTotalsView"
+          }
+        },
+        "required": [
+          "day",
+          "generated_at",
+          "totals",
+          "confirmes_sans_abonnement",
+          "abonnements_sans_paiement",
+          "divergences",
+          "non_verifies",
+          "erreurs",
+          "complet",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "ReconciliationSourceView": {
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "liste",
+              "statut"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ReconciliationTotalsView": {
+        "properties": {
+          "confirmed_amounts": {
+            "items": {
+              "$ref": "#/components/schemas/MoneyView"
+            },
+            "type": "array"
+          },
+          "confirmes": {
+            "type": "number"
+          },
+          "payments": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "payments",
+          "confirmes",
+          "confirmed_amounts"
+        ],
+        "type": "object"
+      },
       "RefreshDto": {
         "properties": {
           "refresh_token": {
@@ -1416,6 +2685,67 @@
         ],
         "type": "object"
       },
+      "RefundView": {
+        "properties": {
+          "done_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "http_status": {
+            "type": "number"
+          },
+          "id": {
+            "description": "Cle d’idempotence du remboursement (stable)",
+            "format": "uuid",
+            "type": "string"
+          },
+          "poll": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaymentPollView"
+              }
+            ],
+            "description": "Suivi par la requete de statut du remboursement"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "ref": {
+            "description": "Reference du remboursement chez le fournisseur",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "requested_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "en_cours",
+              "en_attente",
+              "inconnu",
+              "a_verifier",
+              "rembourse",
+              "refuse"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "reason",
+          "requested_at",
+          "requested_by"
+        ],
+        "type": "object"
+      },
       "ResolveAlertDto": {
         "properties": {
           "action": {
@@ -1437,6 +2767,29 @@
         },
         "type": "object"
       },
+      "ResolveDto": {
+        "properties": {
+          "outcome": {
+            "description": "confirme : active l’abonnement ; echoue : libere le payeur (PAY-OPEN)",
+            "enum": [
+              "confirme",
+              "echoue"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "example": "Releve Orange Money du 12/11 : debit constate",
+            "maxLength": 300,
+            "minLength": 5,
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
+        ],
+        "type": "object"
+      },
       "ReviewDto": {
         "properties": {
           "comments": {
@@ -1453,6 +2806,20 @@
         },
         "required": [
           "decision"
+        ],
+        "type": "object"
+      },
+      "ReviewedDto": {
+        "properties": {
+          "reason": {
+            "example": "Payeur contacte : un seul debit, rien a rembourser",
+            "maxLength": 300,
+            "minLength": 5,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
         ],
         "type": "object"
       },
@@ -1632,6 +2999,130 @@
         ],
         "type": "object"
       },
+      "StoredReconciliationView": {
+        "properties": {
+          "abonnements_sans_paiement": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionWithoutPaymentView"
+            },
+            "type": "array"
+          },
+          "complet": {
+            "description": "false : une erreur temporaire a laisse des points non verifies (rapport refait)",
+            "type": "boolean"
+          },
+          "confirmes_sans_abonnement": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedWithoutSubscriptionView"
+            },
+            "type": "array"
+          },
+          "day": {
+            "description": "Jour metier (fuseau du pays)",
+            "example": "2026-11-09",
+            "type": "string"
+          },
+          "divergences": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationDivergenceView"
+            },
+            "type": "array"
+          },
+          "erreurs": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentErrorView"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "non_verifies": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorReasonView"
+            },
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReconciliationSourceView"
+            },
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ReconciliationTotalsView"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "generated_at",
+          "totals",
+          "confirmes_sans_abonnement",
+          "abonnements_sans_paiement",
+          "divergences",
+          "non_verifies",
+          "erreurs",
+          "complet",
+          "sources",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SubscriptionRefView": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "account_type": {
+            "enum": [
+              "user",
+              "organisation"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account_type",
+          "account_id"
+        ],
+        "type": "object"
+      },
+      "SubscriptionWithoutPaymentView": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "account_type": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string"
+          },
+          "subscription_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id",
+          "account_type",
+          "account_id",
+          "plan"
+        ],
+        "type": "object"
+      },
       "TaskDto": {
         "properties": {
           "assignee_user_id": {
@@ -1786,6 +3277,13 @@
         "parameters": [],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorSummaryListView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -1944,6 +3442,19 @@
             }
           },
           {
+            "description": "true : seulement les paiements a revoir (needs_review)",
+            "in": "query",
+            "name": "needs_review",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -1956,6 +3467,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentListView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -1996,6 +3514,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationListView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2024,6 +3549,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconciliationReportView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2038,6 +3570,43 @@
         ]
       }
     },
+    "/v1/admin/payments/{id}": {
+      "get": {
+        "operationId": "AdminPayments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Detail d’un paiement avec son journal d’evenements (date, statut, source)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/v1/admin/payments/{id}/check": {
       "post": {
         "operationId": "AdminPayments_check",
@@ -2047,12 +3616,20 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentCheckView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2076,6 +3653,7 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
@@ -2092,6 +3670,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRefundView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -2101,6 +3686,140 @@
           }
         ],
         "summary": "Rembourse un paiement confirme (journalise ; une relance ne rembourse jamais deux fois)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}/resolve": {
+      "post": {
+        "operationId": "AdminPayments_resolve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "Reserve a platform_admin (ops et support : 403)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "PAY-RESOLVE-STATUS : le paiement n’est pas (ou plus) « a_verifier » ; details.status = statut actuel"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Tranche un paiement « a_verifier » sans issue du fournisseur (administrateur plateforme ; journalise dans audit_log)",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/admin/payments/{id}/reviewed": {
+      "post": {
+        "operationId": "AdminPayments_reviewed",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewedDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPaymentView"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "Reserve a platform_admin (ops et support : 403)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "PAY-REVIEW-STATUS : le paiement n’est pas a revoir (needs_review faux)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Marque revu un paiement « needs_review » (administrateur plateforme ; motif journalise dans audit_log)",
         "tags": [
           "billing"
         ]
@@ -5411,12 +7130,20 @@
             "name": "id",
             "required": true,
             "schema": {
+              "format": "uuid",
               "type": "string"
             }
           }
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentView"
+                }
+              }
+            },
             "description": ""
           }
         },
@@ -5446,7 +7173,24 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlansView"
+                }
+              }
+            },
             "description": ""
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "PAY-CURRENCY : aucune devise parametree pour ce pays (pack pays)"
           }
         },
         "tags": [
@@ -6167,7 +7911,44 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutResultView"
+                }
+              }
+            },
+            "description": "Paiement lance, ou rejeu (replayed: true) du meme id / de la meme Idempotency-Key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutConflictView"
+                }
+              }
+            },
+            "description": "PAY-RECENT : un paiement d’abonnement du meme payeur a ete confirme il y a moins de PAYMENT_RECENT_GUARD_MIN minutes ; details.payment_id, details.plan, details.paid_at ; pour payer encore, renvoyer le meme checkout avec confirm_repeat = details.payment_id. PAY-OPEN (EF-ABO-01) : un paiement d’abonnement du meme payeur est encore ouvert (initie, en_attente ou a_verifier), quelle que soit la formule ; details.payment_id, details.status et details.plan le designent, le client le suit au lieu de payer une seconde fois. PAY-IDEMPOTENCY : le meme id sert deja a une autre demande. PAY-RETRY : le paiement ouvert vient de changer d’etat, ou un autre checkout du meme payeur est en cours (attente du verrou > 5 s) : reessayer."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "Champs invalides (dont id et Idempotency-Key qui ne designent pas le meme paiement), PAY-INIT (refus du fournisseur) ou PAY-PENDING (issue inconnue, details.payment_id a suivre)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorView"
+                }
+              }
+            },
+            "description": "RATE_LIMITED : trop de demandes de paiement par utilisateur (CHECKOUT_THROTTLE_LIMIT par minute et par utilisateur authentifie, 10 par defaut ; jamais par IP : plusieurs eleveurs partagent le NAT d’un operateur mobile) ; reessayer apres la minute en cours"
           }
         },
         "security": [
@@ -6207,6 +7988,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentSubscriptionView"
+                }
+              }
+            },
             "description": ""
           }
         },

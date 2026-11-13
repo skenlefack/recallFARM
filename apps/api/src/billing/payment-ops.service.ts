@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { AuthUser } from '../common/auth';
 import { AppError, Errors } from '../common/errors';
 import { config } from '../config';
@@ -143,8 +143,9 @@ export class PaymentOpsService {
         { payment_id: p.id, status: st.status, ...(st.fees_minor !== undefined ? { fees_minor: st.fees_minor } : {}) },
         raw.connector
           ? {
+              source: 'statut' as const,
               connector: raw.connector,
-              body: { source: 'statut', status: st.raw_status },
+              body: { status: st.raw_status },
               ...(st.amount_minor !== undefined ? { amount_minor: st.amount_minor } : {}),
               ...(st.currency ? { currency: st.currency } : {}),
             }
@@ -173,11 +174,11 @@ export class PaymentOpsService {
   async checkNow(id: string) {
     const p = await this.ds.getRepository(Payment).findOne({ where: { id } });
     if (!p) throw Errors.notFound('Paiement');
-    if (![...OPEN, 'a_verifier'].includes(p.status)) return { ...this.billing.serialize(p), checked: false };
+    if (![...OPEN, 'a_verifier'].includes(p.status)) return { ...this.billing.serialize(p, 'admin'), checked: false };
     // An "a_verifier" payment is queried again without changing its status if nothing is known.
     const outcome = p.status === 'a_verifier' ? await this.checkFlagged(p) : await this.checkOne(p);
     const fresh = (await this.ds.getRepository(Payment).findOne({ where: { id } }))!;
-    return { ...this.billing.serialize(fresh), checked: true, outcome };
+    return { ...this.billing.serialize(fresh, 'admin'), checked: true, outcome };
   }
 
   private async checkFlagged(p: Payment): Promise<string> {
@@ -189,29 +190,79 @@ export class PaymentOpsService {
     }
     if (!st || (st.status !== 'confirme' && st.status !== 'echoue')) return st?.status ?? 'pas_de_requete_de_statut';
     const raw = (p.raw ?? {}) as { connector?: string };
-    const res = await this.billing.applyResult({ payment_id: p.id, status: st.status }, raw.connector ? { connector: raw.connector, body: { source: 'statut', status: st.raw_status } } : undefined);
+    const res = await this.billing.applyResult({ payment_id: p.id, status: st.status }, raw.connector ? { source: 'statut', connector: raw.connector, body: { status: st.raw_status } } : undefined);
     return res.status;
   }
 
-  async list(status?: string, limit = 50) {
-    const rows: Payment[] = await this.ds.getRepository(Payment).find({
-      where: status ? { status } : {},
-      order: { created_at: 'DESC' },
-      take: Math.min(Math.max(limit, 1), 200),
+  async list(status?: string, limit = 50, needsReview?: boolean) {
+    const q = this.ds.getRepository(Payment).createQueryBuilder('p').orderBy('p.created_at', 'DESC').take(Math.min(Math.max(limit, 1), 200));
+    if (status) q.andWhere('p.status = :status', { status });
+    if (needsReview !== undefined) q.andWhere(`COALESCE((p.raw->>'needs_review')::boolean, false) = :needsReview`, { needsReview });
+    const rows: Payment[] = await q.getMany();
+    return { data: rows.map((p) => this.adminView(p)) };
+  }
+
+  /** One payment for the administration, with its provider event journal (Q-WEB-03). */
+  async get(id: string) {
+    const p = await this.ds.getRepository(Payment).findOne({ where: { id } });
+    if (!p) throw Errors.notFound('Paiement');
+    return this.adminView(p);
+  }
+
+  /**
+   * Operator decision on a payment left "a_verifier" (connector without status query, aggregator
+   * silent): confirmed (activates the subscription) or failed (frees PAY-OPEN). Only from
+   * "a_verifier" (409 PAY-RESOLVE-STATUS otherwise, checked under the row lock); journaled in
+   * audit_log with the actor and the reason, and in the payment journal as an "operateur" event.
+   */
+  async resolve(user: AuthUser, id: string, outcome: 'confirme' | 'echoue', reason: string) {
+    // The audit entry is written in the same transaction as the decision: no decision without its trace.
+    await this.billing.applyResult({ payment_id: id, status: outcome }, { source: 'operateur', expect_status: 'a_verifier' }, (m) =>
+      this.audit(id, `resolve_${outcome}`, user, { outcome, reason, from_status: 'a_verifier' }, m),
+    );
+    this.logger.warn(`payment ${id}: tranche "${outcome}" par l'operateur ${user.id}`);
+    return this.get(id);
+  }
+
+  /**
+   * A payment flagged needs_review has been looked at by a platform administrator (m2): the flag is
+   * cleared under the row lock, with the reason in audit_log. 409 PAY-REVIEW-STATUS when not flagged.
+   */
+  async reviewed(user: AuthUser, id: string, reason: string) {
+    await this.ds.transaction(async (m) => {
+      const p = await m.getRepository(Payment).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!p) throw Errors.notFound('Paiement');
+      if ((p.raw as { needs_review?: unknown } | null)?.needs_review !== true) {
+        throw Errors.conflict('Ce paiement n’est pas à revoir.', { rule: 'PAY-REVIEW-STATUS', needs_review: false });
+      }
+      await m.query(`UPDATE payments SET raw = raw || $2::jsonb, updated_at = now() WHERE id = $1`, [
+        id,
+        JSON.stringify({ needs_review: false, reviewed: { by: user.id, at: new Date().toISOString() } }),
+      ]);
+      await this.audit(id, 'reviewed', user, { reason }, m);
     });
+    return this.get(id);
+  }
+
+  private adminView(p: Payment) {
+    const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string; needs_review?: unknown };
     return {
-      data: rows.map((p) => {
-        const raw = (p.raw ?? {}) as { connector?: string; poll?: unknown; refund?: unknown; error_code?: string };
-        return { ...this.billing.serialize(p), payer_type: p.payer_type, payer_id: p.payer_id, connector: raw.connector ?? null, error_code: raw.error_code ?? null, poll: raw.poll ?? null, refund: raw.refund ?? null };
-      }),
+      ...this.billing.serialize(p, 'admin'),
+      payer_type: p.payer_type,
+      payer_id: p.payer_id,
+      connector: raw.connector ?? null,
+      error_code: raw.error_code ?? null,
+      poll: raw.poll ?? null,
+      refund: raw.refund ?? null,
+      needs_review: raw.needs_review === true,
     };
   }
 
   /* ---------------- refunds ---------------- */
 
   /** Journal entry; `user` null = the system (scheduled refund status query). */
-  private async audit(paymentId: string, action: string, user: AuthUser | null, diff: Record<string, unknown>) {
-    await this.ds.query(`INSERT INTO audit_log (entity, entity_id, action, actor_id, actor_role, diff) VALUES ('payments', $1, $2, $3, $4, $5)`, [
+  private async audit(paymentId: string, action: string, user: AuthUser | null, diff: Record<string, unknown>, m: EntityManager | DataSource = this.ds) {
+    await m.query(`INSERT INTO audit_log (entity, entity_id, action, actor_id, actor_role, diff) VALUES ('payments', $1, $2, $3, $4, $5)`, [
       paymentId,
       action,
       user?.id ?? null,
@@ -252,7 +303,7 @@ export class PaymentOpsService {
       await repo.save(p);
       return { p, done: false };
     });
-    if (prepared.done) return { ...this.billing.serialize(prepared.p), refund: (prepared.p.raw as { refund?: unknown }).refund ?? null };
+    if (prepared.done) return { ...this.billing.serialize(prepared.p, 'admin'), refund: (prepared.p.raw as { refund?: unknown }).refund ?? null };
     const p = prepared.p;
     const refundId = (p.raw as { refund: { id: string } }).refund.id;
     await this.audit(p.id, 'refund_requested', user, { reason, refund_id: refundId, amount_minor: Number(p.amount_minor), currency: p.currency });
@@ -299,14 +350,18 @@ export class PaymentOpsService {
   }
 
   private async finishRefund(id: string, status: string, refundPatch: Record<string, unknown>, user: AuthUser | null) {
+    // A completed refund settles a payment flagged for review (m2).
     await this.ds.query(
-      `UPDATE payments SET status = $2, raw = jsonb_set(raw, '{refund}', COALESCE(raw->'refund', '{}'::jsonb) || $3::jsonb), updated_at = now()
+      `UPDATE payments SET status = $2,
+              raw = jsonb_set(raw, '{refund}', COALESCE(raw->'refund', '{}'::jsonb) || $3::jsonb)
+                    || CASE WHEN $2 = 'rembourse' AND raw ? 'needs_review' THEN '{"needs_review": false}'::jsonb ELSE '{}'::jsonb END,
+              updated_at = now()
         WHERE id = $1 AND status = 'remboursement_en_cours'`,
       [id, status, JSON.stringify(refundPatch)],
     );
     await this.audit(id, `refund_${refundPatch.status as string}`, user, refundPatch);
     const fresh = (await this.ds.getRepository(Payment).findOne({ where: { id } }))!;
-    return { ...this.billing.serialize(fresh), refund: (fresh.raw as { refund?: unknown }).refund ?? null };
+    return { ...this.billing.serialize(fresh, 'admin'), refund: (fresh.raw as { refund?: unknown }).refund ?? null };
   }
 
   /**

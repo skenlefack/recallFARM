@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
-import { DataSource } from 'typeorm';
-import { AccessService } from '../common/access.service';
+import { DataSource, EntityManager } from 'typeorm';
+import { AccessService, ORG_MANAGER_ROLES } from '../common/access.service';
 import { AuthUser, hasPlatformRole } from '../common/auth';
 import { Errors } from '../common/errors';
 import { config } from '../config';
@@ -21,10 +21,72 @@ export interface CheckoutInput {
   id?: string;
   /** Alternative to `id` (header Idempotency-Key): the payment id is derived from (user, key). */
   idempotency_key?: string;
+  /** After 409 PAY-RECENT: details.payment_id, the recent payment the payer saw and confirms paying again. */
+  confirm_repeat?: string;
 }
 
 /** Statuses after which nothing can change the money flow without an operator (refund in progress or done). */
 const REFUND_STATUSES = ['remboursement_en_cours', 'rembourse'];
+
+/**
+ * Payments whose money may still be taken (EF-ABO-01, PAY-OPEN): while one of them exists for a payer
+ * (any plan: an account has one subscription), a new checkout is refused. Same list as the partial
+ * unique index payments_open_payer_uq (migration 1761500000005), which makes the rule hold under
+ * concurrent requests (checked against pg_indexes by test/payment-open-migration.e2e-spec.ts).
+ */
+export const OPEN_PAYMENT_STATUSES = ['initie', 'en_attente', 'a_verifier'];
+
+/** Inserts ignored without a readable open payment before answering 409 PAY-RETRY. */
+const MAX_INSERT_ATTEMPTS = 3;
+
+export type PaymentEventSource = 'webhook' | 'statut' | 'operateur' | 'client';
+/** Refused events kept on the payment. An event from another connector is never written on it (log + counter). */
+export type IgnoredReason = 'montant' | 'devise';
+export type EventDetail = 'repeat_confirmed' | 'late_confirm_after_resolve';
+
+/** Provider or operator event as shown to clients: no raw aggregator body (Q-WEB-03). */
+export interface PaymentEvent {
+  at: string;
+  status: string;
+  source: PaymentEventSource;
+  /** Administration only: event received but not applied. */
+  ignored?: true;
+  reason?: IgnoredReason;
+  detail?: EventDetail;
+}
+
+const SOURCES: PaymentEventSource[] = ['webhook', 'statut', 'operateur', 'client'];
+const REASONS: IgnoredReason[] = ['montant', 'devise'];
+const DETAILS: EventDetail[] = ['repeat_confirmed', 'late_confirm_after_resolve'];
+
+/**
+ * Cleans the journal kept in payments.raw.events (webhook bodies may hold phone numbers or names).
+ * `source` is the one written by our code when the event was recorded, never read from the body
+ * (an event recorded before it existed shows "webhook"). The payer view leaves out refused events:
+ * they never gave the payment its status; the administration sees them with the reason.
+ */
+export function paymentEvents(raw: unknown, view: 'payeur' | 'admin' = 'payeur'): PaymentEvent[] {
+  const events = raw && typeof raw === 'object' ? (raw as { events?: unknown }).events : undefined;
+  if (!Array.isArray(events)) return [];
+  return events.flatMap((e): PaymentEvent[] => {
+    if (!e || typeof e !== 'object') return [];
+    const { at, status, source, ignored, reason, detail } = e as { at?: unknown; status?: unknown; source?: unknown; ignored?: unknown; reason?: unknown; detail?: unknown };
+    if (typeof at !== 'string' || typeof status !== 'string') return [];
+    const src = SOURCES.includes(source as PaymentEventSource) ? (source as PaymentEventSource) : 'webhook';
+    const det = DETAILS.includes(detail as EventDetail) ? { detail: detail as EventDetail } : {};
+    if (ignored === true) {
+      if (view === 'payeur') return [];
+      return [{ at, status, source: src, ignored: true, ...(REASONS.includes(reason as IgnoredReason) ? { reason: reason as IgnoredReason } : {}), ...det }];
+    }
+    return [{ at, status, source: src, ...det }];
+  });
+}
+
+/** PostgreSQL lock_not_available (lock_timeout reached), as raised by pg or wrapped by TypeORM. */
+export function isLockTimeout(e: unknown): boolean {
+  const err = e as { code?: string; driverError?: { code?: string } } | null;
+  return err?.code === '55P03' || err?.driverError?.code === '55P03';
+}
 
 /** Payment id derived from (user, idempotency key): same key, same payment (RFC 9562 version 8 layout). */
 export function idFromKey(userId: string, key: string): string {
@@ -34,6 +96,19 @@ export function idFromKey(userId: string, key: string): string {
 }
 
 const GRACE_DAYS = 7;
+
+/** Where a result comes from; written by our code into the payment journal. */
+export interface ResultSource {
+  source: PaymentEventSource;
+  /** Required for provider events: the connector that sends them. */
+  connector?: string;
+  amount_minor?: number;
+  currency?: string;
+  /** Kept for audit in payments.raw, never shown. */
+  body?: unknown;
+  /** Applied only from this status (operator decision), 409 PAY-RESOLVE-STATUS otherwise. */
+  expect_status?: string;
+}
 
 @Injectable()
 export class BillingService implements OnApplicationBootstrap {
@@ -67,10 +142,46 @@ export class BillingService implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * Currency of a country (ISO 4217), from its published country pack (`currency`). Never a default
+   * written in the code: null when no country pack gives one.
+   */
+  async countryCurrency(country: string): Promise<string | null> {
+    const packs = await this.params.publishedPacks();
+    const pack = packs
+      .filter((p) => p.doc.level === 'pays' && p.doc.country === country && typeof p.doc.currency === 'string' && /^[A-Z]{3}$/.test(p.doc.currency))
+      .at(-1);
+    return pack?.doc.currency ?? null;
+  }
+
+  /**
+   * Price of a subscription. Recorded without its currency: the currency of the account's country pack;
+   * without one, no price (null) rather than an invented currency or an error on the whole answer.
+   */
+  private async subscriptionPrice(sub: Subscription): Promise<{ amount_minor: number; currency: string } | null> {
+    if (sub.currency) return { amount_minor: Number(sub.price_minor), currency: sub.currency };
+    const table = sub.account_type === 'organisation' ? 'organisations' : 'users';
+    const rows: Array<{ country: string }> = await this.ds.query(`SELECT country FROM ${table} WHERE id = $1`, [sub.account_id]);
+    const country = rows[0]?.country;
+    const currency = country ? await this.countryCurrency(country) : null;
+    if (!currency) {
+      this.logger.warn(`abonnement ${sub.id} : prix sans devise et aucune devise pour le pays ${country ?? 'inconnu'} (price: null)`);
+      return null;
+    }
+    return { amount_minor: Number(sub.price_minor), currency };
+  }
+
+  private noCurrency(country: string) {
+    return Errors.business('PAY-CURRENCY', `Aucune devise n’est paramétrée pour le pays ${country}.`, { country });
+  }
+
   /** GET /plans: plans, prices (Money), features and quotas for a country. */
   async plans(country = 'CM') {
     const r = await this.params.resolveBase(country);
     const prices = Object.values(r.objects).filter((o) => o.kind === 'plan_price');
+    // Currency of the country pack; a pack without one but with prices uses the currency of its prices.
+    const countryCurrency = (await this.countryCurrency(country)) ?? (prices.map((x) => x.currency).find((c) => typeof c === 'string') as string | undefined);
+    if (!countryCurrency) throw this.noCurrency(country);
     // Only methods that can actually be paid: with connectors, the routed ones (m12).
     const routed = this.provider.methods?.();
     const methods = Object.values(r.objects)
@@ -78,7 +189,7 @@ export class BillingService implements OnApplicationBootstrap {
       .map((o) => ({ code: o.code, label: o.label }));
     const plans = this.params.plans(r).map((p) => {
       const price = prices.find((x) => x.code === p.code) as { currency: string; monthly_minor: number; yearly_minor: number; note?: string } | undefined;
-      const currency = price?.currency ?? 'XAF';
+      const currency = price?.currency ?? countryCurrency;
       return {
         code: p.code,
         label: this.params.label(r, p.code),
@@ -109,7 +220,7 @@ export class BillingService implements OnApplicationBootstrap {
           ? { monthly: { amount_minor: 0, currency: p.prices.monthly.currency }, yearly: { amount_minor: 0, currency: p.prices.monthly.currency }, from: false }
           : null,
     }));
-    return { country, currency: plans.find((p) => p.purchasable)?.prices.monthly.currency ?? 'XAF', data, plans, payment_methods: methods };
+    return { country, currency: countryCurrency, data, plans, payment_methods: methods };
   }
 
   async checkout(user: AuthUser, input: CheckoutInput) {
@@ -125,33 +236,70 @@ export class BillingService implements OnApplicationBootstrap {
     const price = input.period === 'yearly' ? plan.prices.yearly : plan.prices.monthly;
     const repo = this.ds.getRepository(Payment);
     // Idempotent checkout (M6): a double tap on a slow network gives one payment and one USSD prompt.
-    const id = input.id ?? (input.idempotency_key ? idFromKey(user.id, input.idempotency_key) : randomUUID());
+    const keyId = input.idempotency_key ? idFromKey(user.id, input.idempotency_key) : undefined;
+    // Both given: they must designate the same payment, otherwise the replay would depend on which one wins.
+    if (input.id && keyId && input.id !== keyId) throw Errors.validation({ 'Idempotency-Key': 'incompatible avec id : envoyer l’un ou l’autre' });
+    const id = input.id ?? keyId ?? randomUUID();
     const known = await repo.findOne({ where: { id } });
     if (known) return this.replayCheckout(user, known, input, plan.code);
-    const inserted = await repo
-      .createQueryBuilder()
-      .insert()
-      .into(Payment)
-      .values({
-        id,
-        payer_type: input.account_type,
-        payer_id: input.account_id,
-        purpose: 'abonnement',
-        plan: plan.code,
-        period: input.period === 'yearly' ? 'annuel' : 'mensuel',
-        amount_minor: price.amount_minor,
-        currency: price.currency,
-        method: input.method,
-        phone: input.phone,
-        status: 'initie',
-        created_by: user.id,
-      })
-      .orIgnore()
-      .returning('id')
-      .execute();
-    if (!inserted.raw.length) {
-      // Same id created by a concurrent request a moment ago.
-      return this.replayCheckout(user, (await repo.findOne({ where: { id } }))!, input, plan.code);
+    // PAY-OPEN, then PAY-RECENT (PO decision 2026-11-13), checked at each try in the insert transaction under
+    // a per-payer lock: concurrent checkouts of a payer are decided one after the other. The partial unique
+    // index payments_open_payer_uq stays the last guard (two simultaneous checkouts give one payment).
+    const labelOf = (code: string | null) => catalog.plans.find((p) => p.code === code)?.label ?? code ?? '';
+    for (let attempt = 0; ; attempt++) {
+      const outcome = await this.ds.transaction(async (m): Promise<{ same?: Payment; created?: boolean }> => {
+        // Another checkout of this payer holding the lock longer than 5 s: 409 PAY-RETRY, not a hanging request.
+        await m.query(`SET LOCAL lock_timeout = '5s'`);
+        await m.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`checkout:${input.account_type}:${input.account_id}`]).catch((e: unknown) => {
+          if (isLockTimeout(e)) throw Errors.conflict('Un autre paiement de ce compte est en cours de traitement. Réessayez dans un instant.', { rule: 'PAY-RETRY' });
+          throw e;
+        });
+        // Same id created by a concurrent request a moment ago: answered like a replay.
+        const same = await m.getRepository(Payment).findOne({ where: { id } });
+        if (same) return { same };
+        const open = await this.openPayment(m, input.account_type, input.account_id);
+        if (open) throw this.payOpen(open);
+        const repeatOf = await this.recentGuard(m, input, labelOf);
+        const r = await m
+          .createQueryBuilder()
+          .insert()
+          .into(Payment)
+          .values({
+            id,
+            payer_type: input.account_type,
+            payer_id: input.account_id,
+            purpose: 'abonnement',
+            plan: plan.code,
+            period: input.period === 'yearly' ? 'annuel' : 'mensuel',
+            amount_minor: price.amount_minor,
+            currency: price.currency,
+            method: input.method,
+            phone: input.phone,
+            status: 'initie',
+            created_by: user.id,
+            ...(repeatOf ? { raw: { events: [{ at: new Date().toISOString(), status: 'initie', source: 'client', detail: 'repeat_confirmed' }] } } : {}),
+          })
+          .orIgnore()
+          .returning('id')
+          .execute();
+        const created = r.raw.length > 0;
+        // The payer's confirmation is journaled with the payment, in the same transaction.
+        if (created && repeatOf) {
+          const role = await this.payerRole(user, input);
+          await this.audit(m, id, 'checkout_repeat_confirmed', user, { recent_payment_id: repeatOf.id, plan: repeatOf.plan, paid_at: repeatOf.paid_at, new_plan: plan.code }, role);
+        }
+        return { created };
+      });
+      if (outcome.same) return this.replayCheckout(user, outcome.same, input, plan.code);
+      if (outcome.created) break;
+      // Insert ignored by the index: another subscription payment of this payer is open (EF-ABO-01).
+      const open = await this.openPayment(this.ds, input.account_type, input.account_id);
+      if (open) throw this.payOpen(open);
+      // The open payment ended between the insert and the read: tried again, then a clean 409.
+      if (attempt >= MAX_INSERT_ATTEMPTS - 1) {
+        this.logger.warn(`checkout ${id}: insertion ignoree ${MAX_INSERT_ATTEMPTS} fois sans paiement ouvert lisible`);
+        throw Errors.conflict('Un autre paiement de ce compte vient de changer d’état. Réessayez dans un instant.', { rule: 'PAY-RETRY' });
+      }
     }
     // The routed connector is recorded before the call: a webhook faster than the HTTP answer is accepted.
     const route = this.provider.routeOf?.(input.method);
@@ -192,6 +340,87 @@ export class BillingService implements OnApplicationBootstrap {
       amount: { amount_minor: Number(payment.amount_minor), currency: payment.currency },
       provider_ref: init.provider_ref,
     };
+  }
+
+  private payOpen(open: Payment) {
+    return Errors.conflict('Un paiement d’abonnement est déjà en cours pour ce compte. Validez-le sur votre téléphone ou attendez son issue.', {
+      rule: 'PAY-OPEN',
+      payment_id: open.id,
+      status: open.status,
+      plan: open.plan,
+    });
+  }
+
+  /**
+   * PAY-RECENT: the most recent subscription payment of the payer confirmed within the window (database
+   * clock). Paying again needs `confirm_repeat` = that payment's id, i.e. the payment shown to the payer;
+   * a confirmation of an older payment gets a new 409 with the current one. Without a recent payment,
+   * `confirm_repeat` is ignored. Returns the payment the new one repeats, or null.
+   */
+  private async recentGuard(m: EntityManager, input: CheckoutInput, labelOf: (code: string | null) => string) {
+    const minutes = config().paymentRecentGuardMin;
+    if (minutes <= 0) return null;
+    const rows: Array<{ id: string; plan: string | null; paid_at: Date; ago_min: number }> = await m.query(
+      `SELECT id, plan, paid_at, floor(extract(epoch FROM now() - paid_at) / 60)::int AS ago_min FROM payments
+        WHERE payer_type = $1 AND payer_id = $2 AND purpose = 'abonnement' AND status = 'confirme'
+          AND paid_at > now() - make_interval(mins => $3)
+        ORDER BY paid_at DESC LIMIT 1`,
+      [input.account_type, input.account_id, minutes],
+    );
+    const recent = rows[0];
+    if (!recent) return null;
+    if (input.confirm_repeat?.toLowerCase() === recent.id.toLowerCase()) return recent;
+    throw Errors.conflict(`Vous avez déjà payé la formule ${labelOf(recent.plan)} il y a ${Math.max(1, recent.ago_min)} min. Confirmez pour payer encore.`, {
+      rule: 'PAY-RECENT',
+      payment_id: recent.id,
+      plan: recent.plan,
+      paid_at: new Date(recent.paid_at).toISOString(),
+    });
+  }
+
+  /**
+   * Who confirmed paying again, for the audit: the payer, a manager member of the organisation, or else
+   * the platform roles of the account that paid for someone (support, administrator).
+   */
+  private async payerRole(user: AuthUser, input: CheckoutInput): Promise<string> {
+    const platform = user.platform_roles.join(',');
+    if (input.account_type === 'user') return input.account_id === user.id ? 'payeur' : platform || 'payeur';
+    const membership = await this.access.membership(user, input.account_id);
+    if (membership && ORG_MANAGER_ROLES.includes(membership.role)) return 'gestionnaire_org';
+    return platform || 'gestionnaire_org';
+  }
+
+  /** Journal entry in audit_log; `user` null = the system. */
+  private async audit(m: EntityManager, paymentId: string, action: string, user: AuthUser | null, diff: Record<string, unknown>, role?: string): Promise<void> {
+    await m.query(`INSERT INTO audit_log (entity, entity_id, action, actor_id, actor_role, diff) VALUES ('payments', $1, $2, $3, $4, $5)`, [
+      paymentId,
+      action,
+      user?.id ?? null,
+      role ?? (user ? user.platform_roles.join(',') : 'systeme'),
+      JSON.stringify(diff),
+    ]);
+  }
+
+  /** Events from another connector than the payment's, refused without writing on the payment (per connector). */
+  private readonly foreignEvents = new Map<string, number>();
+
+  foreignEventCounts(): Record<string, number> {
+    return Object.fromEntries(this.foreignEvents);
+  }
+
+  /** Open subscription payment of a payer, whatever the plan (at most one: partial unique index). */
+  private openPayment(m: EntityManager | DataSource, payerType: string, payerId: string): Promise<Payment | null> {
+    return m
+      .getRepository(Payment)
+      .createQueryBuilder('p')
+      .where('p.payer_type = :payerType AND p.payer_id = :payerId AND p.purpose = :purpose AND p.status IN (:...open)', {
+        payerType,
+        payerId,
+        purpose: 'abonnement',
+        open: OPEN_PAYMENT_STATUSES,
+      })
+      .orderBy('p.created_at', 'DESC')
+      .getOne();
   }
 
   /**
@@ -250,7 +479,8 @@ export class BillingService implements OnApplicationBootstrap {
     return this.serialize(p);
   }
 
-  serialize(p: Payment) {
+  /** Payment view; `admin` adds the refused provider events to the journal. */
+  serialize(p: Payment, view: 'payeur' | 'admin' = 'payeur') {
     return {
       id: p.id,
       status: p.status,
@@ -262,6 +492,7 @@ export class BillingService implements OnApplicationBootstrap {
       provider_ref: p.provider_ref,
       paid_at: p.paid_at,
       created_at: p.created_at,
+      events: paymentEvents(p.raw, view),
     };
   }
 
@@ -275,69 +506,112 @@ export class BillingService implements OnApplicationBootstrap {
   }
 
   /**
-   * Applies a provider result (webhook, simulator or dev endpoint). Idempotent and safe under
-   * concurrent webhooks (row lock). A confirmation always wins over a failure: money taken must
-   * give the subscription. With `from`, the payment must have been initiated by that connector
-   * and, when given, the amount and currency must match; the webhook body is kept for audit.
+   * Applies a provider result (webhook, status query, simulator, dev endpoint) or an operator decision.
+   * Idempotent and safe under concurrent webhooks (row lock). A confirmation always wins over a failure:
+   * money taken must give the subscription. With `from`, the event is journaled with the source given
+   * here by our code; a provider event must come from the connector that initiated the payment and,
+   * when given, carry the same amount and currency, otherwise it is journaled as ignored (with its
+   * reason) and not applied. `expect_status`: applied only from that status (409 otherwise).
    */
   async applyResult(
     input: { payment_id?: string; provider_ref?: string; status: string; fees_minor?: number },
-    from?: { connector: string; amount_minor?: number; currency?: string; body?: unknown },
+    from?: ResultSource,
+    /** Runs in the same transaction once the result is applied (e.g. the operator's audit entry). */
+    within?: (m: EntityManager, p: Payment) => Promise<void>,
   ) {
     if (!input.payment_id && !input.provider_ref) throw Errors.notFound('Paiement');
     const ok = ['confirme', 'success', 'successful', 'paid'].includes(input.status.toLowerCase());
     const warnings: string[] = [];
     try {
-      const p = await this.ds.transaction(async (m) => {
-        const repo = m.getRepository(Payment);
-        const found = await repo.findOne({
-          where: input.payment_id ? { id: input.payment_id } : { provider_ref: input.provider_ref! },
-          lock: { mode: 'pessimistic_write' },
-        });
-        if (!found) throw Errors.notFound('Paiement');
-        const raw = (found.raw ?? {}) as { connector?: string; events?: unknown[] };
-        if (from) {
-          if (raw.connector !== from.connector) throw Errors.notFound('Paiement');
-          const events = Array.isArray(raw.events) ? raw.events : [];
-          found.raw = { ...found.raw, events: [...events, { at: new Date().toISOString(), status: input.status, body: from.body ?? null }].slice(-20) };
-          const amountMismatch = from.amount_minor !== undefined && from.amount_minor !== Number(found.amount_minor);
-          const currencyMismatch = from.currency !== undefined && from.currency !== found.currency;
-          if (ok && (amountMismatch || currencyMismatch)) {
-            await repo.save(found);
-            warnings.push(`payment ${found.id}: confirmation refusee (montant ou devise differents)`);
-            return found;
-          }
-        }
-        if (REFUND_STATUSES.includes(found.status)) {
-          // Refunded money: a late provider event never re-activates nor fails it; the operator decides.
-          warnings.push(`payment ${found.id}: ${input.status} recu pendant ou apres remboursement (ignore)`);
-          if (from) await repo.save(found);
-          return found;
-        }
-        if (found.status === 'confirme') {
-          if (!ok) warnings.push(`payment ${found.id}: echec recu apres confirmation (ignore)`);
-          if (from) await repo.save(found);
-          return found;
-        }
-        if (!ok) {
-          found.status = 'echoue';
-          await repo.save(found);
-          return found;
-        }
-        if (found.status === 'echoue') warnings.push(`payment ${found.id}: confirmation tardive apres echec, abonnement active`);
-        found.status = 'confirme';
-        found.paid_at = new Date();
-        found.fees_minor = input.fees_minor ?? null;
-        const sub = await this.activate(m.getRepository(Subscription), found);
-        found.subscription_id = sub.id;
-        await repo.save(found);
-        this.logger.log(`payment ${found.id} confirmed → ${found.payer_type}:${found.payer_id} ${found.plan}`);
-        return found;
+      const { p } = await this.ds.transaction(async (m) => {
+        const result = await this.decide(m, input, ok, warnings, from);
+        if (within && !result.refused) await within(m, result.p);
+        return result;
       });
       return this.serialize(p);
     } finally {
       warnings.forEach((w) => this.logger.warn(w));
     }
+  }
+
+  private async decide(
+    m: EntityManager,
+    input: { payment_id?: string; provider_ref?: string; status: string; fees_minor?: number },
+    ok: boolean,
+    warnings: string[],
+    from?: ResultSource,
+  ): Promise<{ p: Payment; refused: IgnoredReason | null }> {
+    const repo = m.getRepository(Payment);
+    const provider = from && from.source !== 'operateur';
+    const q = repo.createQueryBuilder('p').setLock('pessimistic_write');
+    if (input.payment_id) q.where('p.id = :id', { id: input.payment_id });
+    else {
+      q.where('p.provider_ref = :ref', { ref: input.provider_ref });
+      // An aggregator reference is only looked up among the payments of the connector that sends it.
+      if (provider) q.andWhere(`p.raw->>'connector' = :connector`, { connector: from.connector ?? '' });
+    }
+    const found = await q.getOne();
+    if (!found) throw Errors.notFound('Paiement');
+    if (from?.expect_status && found.status !== from.expect_status) {
+      throw Errors.conflict(`Ce paiement n’est plus « ${from.expect_status} ».`, { rule: 'PAY-RESOLVE-STATUS', status: found.status });
+    }
+    const raw = (found.raw ?? {}) as { connector?: string; events?: unknown[]; resolved?: { outcome?: string } };
+    if (provider && raw.connector !== from.connector) {
+      // Another connector: nothing is written on the payment (its journal cannot be flooded); log + counter.
+      const n = (this.foreignEvents.get(from.connector ?? '') ?? 0) + 1;
+      this.foreignEvents.set(from.connector ?? '', n);
+      warnings.push(`payment ${found.id}: ${input.status} de ${from.connector ?? '?'} refuse (connecteur different, ${n} depuis le demarrage)`);
+      throw Errors.notFound('Paiement');
+    }
+    let event: Record<string, unknown> | null = null;
+    if (from) {
+      let ignored: IgnoredReason | null = null;
+      if (ok && from.amount_minor !== undefined && from.amount_minor !== Number(found.amount_minor)) ignored = 'montant';
+      else if (ok && from.currency !== undefined && from.currency !== found.currency) ignored = 'devise';
+      const events = Array.isArray(raw.events) ? raw.events : [];
+      event = { at: new Date().toISOString(), status: input.status, source: from.source, ...(ignored ? { ignored: true, reason: ignored } : {}), body: from.body ?? null };
+      found.raw = { ...found.raw, events: [...events, event].slice(-20) };
+      // An operator decision is remembered: a later provider confirmation must be reviewed.
+      if (from.source === 'operateur') found.raw = { ...found.raw, resolved: { outcome: ok ? 'confirme' : 'echoue', at: event.at } };
+      if (ignored) {
+        await repo.save(found);
+        warnings.push(`payment ${found.id}: ${input.status} de ${from.connector ?? from.source} ignore (${ignored})`);
+        return { p: found, refused: ignored };
+      }
+    }
+    if (REFUND_STATUSES.includes(found.status)) {
+      // Refunded money: a late provider event never re-activates nor fails it; the operator decides.
+      warnings.push(`payment ${found.id}: ${input.status} recu pendant ou apres remboursement (ignore)`);
+      if (from) await repo.save(found);
+      return { p: found, refused: null };
+    }
+    if (found.status === 'confirme') {
+      if (!ok) warnings.push(`payment ${found.id}: echec recu apres confirmation (ignore)`);
+      if (from) await repo.save(found);
+      return { p: found, refused: null };
+    }
+    if (!ok) {
+      found.status = 'echoue';
+      await repo.save(found);
+      return { p: found, refused: null };
+    }
+    if (found.status === 'echoue') warnings.push(`payment ${found.id}: confirmation tardive apres echec, abonnement active`);
+    if (found.status === 'echoue' && raw.resolved?.outcome === 'echoue') {
+      // The operator had decided "echoue": the money arrived after all. Activated (a confirmation always
+      // wins) but flagged for review, and journaled.
+      found.raw = { ...found.raw, needs_review: true };
+      if (event) event.detail = 'late_confirm_after_resolve';
+      await this.audit(m, found.id, 'late_confirm_after_resolve', null, { resolved: raw.resolved, source: from?.source ?? 'webhook', connector: from?.connector ?? null });
+      warnings.push(`payment ${found.id}: confirmation apres decision operateur "echoue" : a revoir (needs_review)`);
+    }
+    found.status = 'confirme';
+    found.paid_at = new Date();
+    found.fees_minor = input.fees_minor ?? null;
+    const sub = await this.activate(m.getRepository(Subscription), found);
+    found.subscription_id = sub.id;
+    await repo.save(found);
+    this.logger.log(`payment ${found.id} confirmed → ${found.payer_type}:${found.payer_id} ${found.plan}`);
+    return { p: found, refused: null };
   }
 
   private async activate(repo: import('typeorm').Repository<Subscription>, p: Payment): Promise<Subscription> {
@@ -388,8 +662,9 @@ export class BillingService implements OnApplicationBootstrap {
       e = { ...e, token: await this.entitlements.sign(accountId, e) };
     } else {
       if (accountId && accountId !== user.id && !hasPlatformRole(user)) throw Errors.forbidden();
-      accountId = user.id;
-      e = await this.entitlements.forUser(user.id);
+      // A platform account asking for another user gets that user's subscription (S2).
+      accountId = accountId ?? user.id;
+      e = await this.entitlements.forUser(accountId);
     }
     // Subscription row actually in force (a member may benefit from their organisation's plan).
     const src = e.source.account_type !== 'none' ? e.source : { account_type: accountType, account_id: accountId };
@@ -403,7 +678,7 @@ export class BillingService implements OnApplicationBootstrap {
       started_at: sub?.started_at ?? null,
       expires_at: e.expires_at,
       grace_until: e.grace_until,
-      price: sub?.price_minor !== null && sub?.price_minor !== undefined ? { amount_minor: Number(sub.price_minor), currency: sub.currency ?? 'XAF' } : null,
+      price: sub?.price_minor !== null && sub?.price_minor !== undefined ? await this.subscriptionPrice(sub) : null,
       subscription: sub ? { id: sub.id, account_type: sub.account_type, account_id: sub.account_id } : null,
       entitlements: e,
     };

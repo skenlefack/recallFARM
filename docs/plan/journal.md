@@ -114,3 +114,9 @@ Tous les bancs de tests sont en place et passes. Phase 0 terminee.
 - 23 scenarios de recette MVP (apps/api/test/recette-mvp.e2e-spec.ts) ; defauts D-QA-01 (compte provisoire : 500), D-QA-02 (PATCH partiel de lot : 422), D-QA-03 (route analytique en double)
 - CI : scan Trivy des images api et web (CRITICAL bloquant, HIGH rapporte), cache de couches, artefacts de couverture ; le scan detecte 3 CVE CRITICAL dans l image web (requete devops-sre)
 - Suite complete executee 3 fois : 413/413 verts, aucun test instable
+
+## 2026-11-13 — Decision PO : garde PAY-RECENT (EF-ABO-01, branche fix/P1.2-pay-open)
+- Decideur : proprietaire du produit, 2026-11-13 (transmise par l'orchestrateur).
+- Regle : un checkout d'abonnement moins de 30 min (defaut, `PAYMENT_RECENT_GUARD_MIN`, 0 a 1440, 0 = coupe) apres un paiement d'abonnement confirme du meme payeur repond `409 PAY-RECENT {payment_id, plan, paid_at}`.
+- Confirmation explicite liee au paiement montre : le client renvoie le meme checkout avec `confirm_repeat` = `details.payment_id` ; accepte seulement si c'est le paiement confirme le plus recent du payeur (sinon nouveau 409 avec le paiement actuel) ; journalise (`audit_log` `checkout_repeat_confirmed`, event `client`).
+- PAY-OPEN reste prioritaire (un seul paiement d'abonnement ouvert par payeur) ; le rejeu idempotent d'un id n'est jamais PAY-RECENT.

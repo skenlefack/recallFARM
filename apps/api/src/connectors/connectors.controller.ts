@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Inject, Logger, Param, Post, Query, Req, Res } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOperation, ApiProperty, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiProperty, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Matches } from 'class-validator';
 import type { Request, Response } from 'express';
@@ -12,6 +12,7 @@ import { MessagingService } from '../notifications/messaging.service';
 import { ConnectorMessageProvider } from '../notifications/providers';
 import { UssdSessionService } from '../notifications/ussd-session.service';
 import { CONNECTOR_REGISTRY, ConnectorRegistry } from './connector-registry';
+import { ConnectorSummaryListView } from './connector.views';
 import { inspectInbound } from './connector-http';
 import { ConnectorSpec } from './connector.types';
 import { getPath, getString, toE164 } from './template';
@@ -235,6 +236,7 @@ export class ConnectorsController {
         ...(Number.isInteger(fees) && w.fees_minor ? { fees_minor: fees } : {}),
       },
       {
+        source: 'webhook',
         connector: name,
         body,
         ...(amount !== undefined ? { amount_minor: Number.isInteger(amount) ? amount : NaN } : {}),
@@ -248,10 +250,13 @@ export class ConnectorsController {
 
   /** Configured connectors, without secrets nor URLs (platform admins and ops). */
   @ApiBearerAuth()
+  @ApiOkResponse({ type: ConnectorSummaryListView })
   @Get('admin/connectors')
   list(@CurrentUser() user: AuthUser) {
     if (!hasPlatformRole(user, 'ops')) throw Errors.forbidden();
-    return { data: this.registry.summary() };
+    // Payment events refused because another connector sent them (since start-up, BillingService).
+    const foreign = this.billing.foreignEventCounts();
+    return { data: this.registry.summary().map((c) => ({ ...c, foreign_payment_events: foreign[c.name] ?? 0 })) };
   }
 
   /** Sends a test SMS through one connector, to check a new aggregator before routing traffic to it. */

@@ -72,6 +72,47 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
 - **Payment operations** (`billing/payment-ops.service.ts`, `payments.scheduler.ts`): status queries for pending payments
   (capped exponential backoff, then `a_verifier`), refunds (`POST /v1/admin/payments/:id/refund`, `audit_log`), daily
   reconciliation (`/v1/admin/payments/reconciliations`). Checkout is idempotent (`id` from the client or `Idempotency-Key`).
+  `GET /v1/payments/:id` and `GET /v1/admin/payments/:id` return `events` (journal: `at`, `status`, `source`
+  webhook|statut|operateur|client, written by the API when the event is recorded; never the raw aggregator body). Events refused
+  (other amount, other currency) are kept with `ignored: true, reason`; the payer view leaves them out. An event sent by another
+  connector than the payment's is never written on the payment (warning log + per-connector counter
+  `BillingService.foreignEventCounts()`, reset at restart), and an aggregator reference is only looked up among the payments of
+  the connector that sends it.
+- **PAY-RECENT** (PO decision 2026-11-13): a subscription checkout less than `PAYMENT_RECENT_GUARD_MIN` minutes (default 30,
+  0 = off, 0..1440 checked at start-up) after a confirmed subscription payment of the same payer answers `409 CONFLICT`
+  `details: {rule: 'PAY-RECENT', payment_id, plan, paid_at}`. The client asks the payer and sends the same checkout (same id) with
+  `confirm_repeat` = `details.payment_id` of that 409 (the payment shown): accepted, journaled (`events` source `client`, detail `repeat_confirmed`; `audit_log`
+  `checkout_repeat_confirmed`, actor_role `payeur` or `gestionnaire_org`). A `confirm_repeat` naming an older payment gets a new
+  409 with the current one; without a recent payment it is ignored. The replay of an id is never PAY-RECENT; PAY-OPEN is checked
+  first, both again at each try in the insert transaction under a per-payer advisory lock (`lock_timeout` 5 s, then
+  `409 PAY-RETRY`). `confirm_repeat` is compared without case. Checkout has its own limit, `CHECKOUT_THROTTLE_LIMIT` per minute
+  and **authenticated user** (default 10, each request sends a payment prompt; 429 `RATE_LIMITED`, header `Retry-After-checkout`),
+  never per IP: many farmers share a mobile operator NAT (`CheckoutThrottlerGuard`; the global per-IP limit is skipped there).
+- **PAY-OPEN (EF-ABO-01)**: one open subscription payment (`initie`, `en_attente`, `a_verifier`) per payer, **whatever the plan**
+  (an account has one subscription). A checkout with another id, key or plan meanwhile answers `409 CONFLICT`
+  `details: {rule: 'PAY-OPEN', payment_id, status, plan}` (the client follows that payment); the replay of the same id/key is still a
+  replay; `id` and `Idempotency-Key` that designate different payments answer 422. Enforced by the partial unique index
+  `payments_open_payer_uq` (migration 1761500000005), so concurrent requests give one payment (`409 PAY-RETRY` in the rare case
+  where the open payment changes state during the request: try again).
+- **Runbook — payments**:
+  - *Migration 1761500000005 stops* ("plusieurs paiements d'abonnement ouverts"): it locks `payments` against writes, lists the
+    payers with several open payments (id, plan, status) and changes nothing. Settle all but one of each payer's payments (below),
+    then run the migration again.
+  - *Payment `a_verifier`* (no answer after the status queries, or connector without status query): it blocks every new checkout
+    of its payer. List: `GET /v1/admin/payments?status=a_verifier`. First `POST /v1/admin/payments/:id/check` (ops). Without an
+    answer from the aggregator, check its statement / back office, then a platform administrator decides with
+    `POST /v1/admin/payments/:id/resolve` `{outcome: 'confirme'|'echoue', reason}` (reason >= 5 characters: the evidence seen).
+    `confirme` activates the subscription; `echoue` frees the payer. Only from `a_verifier` (409 `PAY-RESOLVE-STATUS` otherwise);
+    the decision and its reason are in `audit_log` (`resolve_confirme` / `resolve_echoue`, actor) and the journal (`operateur`).
+    If money arrives later on a payment decided `echoue`, the aggregator's confirmation still activates it (a confirmation always
+    wins) and flags it `needs_review` (`audit_log` `late_confirm_after_resolve`, event detail `late_confirm_after_resolve`).
+    List: `GET /v1/admin/payments?needs_review=true`; check with the payer, refund through `/refund` if they paid twice.
+    Once settled, a platform administrator clears it with `POST /v1/admin/payments/:id/reviewed` `{reason}` (`audit_log`
+    `reviewed`); a completed refund clears it too. Refused events of another connector: `foreign_payment_events` in
+    `GET /v1/admin/connectors` (since start-up).
+- **Currency**: always the country pack's (`pays.<CC>.json` → `currency`, or the `plan_price` currency). Without one, `GET /plans`
+  answers `422 PAY-CURRENCY`; `/subscriptions/current` gives `price: null` (warning in the log) for a subscription stored without
+  currency.
 - **WhatsApp**: simulator only. **Push** = journaled (`channel=push`), delivered through `/inbox` and sync.
 - **Payments** `PAYMENT_PROVIDER=simulator`: checkout returns `{payment_id, status:"initie", ussd_push:true}` and auto-confirms after
   `PAYMENT_SIM_AUTOCONFIRM_MS` (5 s) through the webhook code path; `POST /v1/dev/payments/:id/confirm|fail` for manual control.
