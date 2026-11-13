@@ -141,7 +141,7 @@ describe('A1 : rechargement et navigation', () => {
     const raw = localStorage.getItem(storeKey())!;
     const saved = JSON.parse(raw) as Record<string, unknown>;
     expect(saved).toMatchObject({ paymentId: 'pay-1', ownerId: userId, plan: 'structure', planName: 'Structure', period: 'monthly', unsent: false, existing: false });
-    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'recent', 'sentAt', 'subKnown', 'subSnap', 'unknown', 'unsent']);
+    expect(Object.keys(saved).sort()).toEqual(['amount', 'existing', 'id', 'method', 'ownerId', 'paymentId', 'period', 'phoneMasked', 'plan', 'planName', 'recent', 'repeating', 'sentAt', 'subKnown', 'subSnap', 'unknown', 'unsent']);
     expect(raw).not.toContain('690000002');
     expect(raw).not.toContain('account_id');
     expect(saved.phoneMasked).toBe('••••••02');

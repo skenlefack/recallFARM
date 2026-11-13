@@ -78,7 +78,7 @@ export interface Attempt {
 }
 
 /** Ce que contient localStorage : aucune donnee personnelle (telephone masque, pas de numero de compte). */
-type Stored = Pick<Attempt, 'recent' | 'subSnap' | 'subKnown' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
+type Stored = Pick<Attempt, 'repeating' | 'recent' | 'subSnap' | 'subKnown' | 'id' | 'ownerId' | 'paymentId' | 'plan' | 'planName' | 'period' | 'method' | 'amount' | 'sentAt' | 'unsent' | 'unknown' | 'existing' | 'phoneMasked'>;
 
 const PREFIX = 'rf.payment.';
 const storageKey = (userId: string, payerId: string) => `${PREFIX}v1.${userId}.${payerId}`;
@@ -114,6 +114,8 @@ function parseStored(raw: string, userId: string): Stored | null {
       phoneMasked: a.phoneMasked ?? '••••',
       subSnap: a.subSnap ?? null,
       subKnown: !!a.subKnown,
+      // « Payer quand meme » en cours d'envoi dans un autre onglet : meme garde ici ; un marqueur plus vieux que 60 s est tenu pour perime (onglet ferme)
+      repeating: !!a.repeating && Date.now() - a.sentAt < 60_000,
       recent: a.recent && typeof a.recent.paidAt === 'string' && typeof a.recent.paymentId === 'string' ? { paymentId: a.recent.paymentId, plan: a.recent.plan ?? '', paidAt: a.recent.paidAt, skewMs: typeof a.recent.skewMs === 'number' ? a.recent.skewMs : 0 } : null,
     };
   } catch (e) {
@@ -173,6 +175,7 @@ function writeAttempt(userId: string, payerId: string, a: Attempt | null): void 
       phoneMasked: a.phoneMasked,
       subSnap: a.subSnap,
       subKnown: a.subKnown,
+      repeating: !!a.repeating,
       recent: a.recent,
     };
     localStorage.setItem(storageKey(userId, payerId), JSON.stringify(stored));
@@ -198,7 +201,14 @@ export function purgePaymentStorage(): void {
   }
 }
 
+/** Pourquoi l'ecran « paiement recent » a disparu : on ne ferme la fenetre que pour keep, other-tab, expired ; un echec s'affiche dans la fenetre. */
+export type EndCause = 'keep' | 'other-tab' | 'expired' | 'failed';
+
 export interface Tracker {
+  /** Derniere cause de fin d'une tentative (lue par la fenetre au moment ou la tentative disparait). */
+  lastEnd: () => EndCause | null;
+  /** Erreur qui a mis fin a la derniere tentative (avec lastEnd() === 'failed'). */
+  lastFailure: () => unknown;
   attempt: Attempt | null;
   /** Statut interroge (jamais devine). */
   status: PaymentStatus | undefined;
@@ -221,7 +231,7 @@ export interface Tracker {
   /** La page indique si l'abonnement du payeur est charge et a jour. */
   setGateReady: (v: boolean) => void;
   /** PAY-RECENT, « Garder ma formule » : rien n'est envoye, on repart de zero et on recharge l'abonnement. */
-  keepPlan: () => void;
+  keepPlan: (cause?: EndCause) => void;
   /** Abandon d'un envoi sans reponse : repart de zero puis recharge l'abonnement et previent (le paiement a pu aboutir). */
   abandon: () => void;
   clearError: () => void;
@@ -270,6 +280,9 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
   const announced = useRef<string | null>(null);
   const terminalRef = useRef(false);
   const sendingRef = useRef(false);
+  const endRef = useRef<EndCause | null>(null);
+  /** Erreur de l'envoi qui a mis fin a la tentative (l'etat d'erreur de la mutation arrive un rendu plus tard). */
+  const endErrRef = useRef<unknown>(null);
   const checkingRef = useRef(0);
   /** L'abonnement du payeur est charge et a jour (fourni par la page) : sans lui, ni nouveau paiement ni « Payer quand meme ». */
   const gateReadyRef = useRef(false);
@@ -314,6 +327,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
   const checking = checks > 0;
   const checkAfterAbandon = useCallback(
     (a: Attempt) => {
+      if (!payerRef.current) return; // pas de payeur : pas d'appel a /subscriptions/current
       // le resultat appartient a ce compte, a ce payeur et a cette « generation » : un changement ou une deconnexion l'invalide
       const origin = { uid: userIdRef.current, payer: payerRef.current, gen: genRef.current };
       const stale = () => origin.uid !== userIdRef.current || origin.payer !== payerRef.current || origin.gen !== genRef.current;
@@ -321,7 +335,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       setChecks((n) => n + 1);
       const key = subKey();
       const payer = payerRef.current;
-      qc.fetchQuery({ queryKey: key, queryFn: () => api.currentSubscription({ account_type: payerTypeRef.current, account_id: payer ?? '' }), staleTime: 0 })
+      qc.fetchQuery({ queryKey: key, queryFn: () => api.currentSubscription({ account_type: payerTypeRef.current, account_id: payer }), staleTime: 0 })
         .then(
           (sub) => {
             if (stale()) return; // aucun toast apres une deconnexion ou un changement de payeur
@@ -356,6 +370,12 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     onSuccess: (r, a) => settle(a, { ...a, paymentId: r.payment_id, unsent: false, recent: null, repeating: false, sentAt: Date.now() }),
     onError: (err, a) => {
       const o = checkoutOutcome(err);
+      // Regle : un refus « pas traite maintenant » (429, PAY-RETRY, 5xx, reseau) n'est jamais une issue tranchee. Quand le premier envoi
+      // (ou « Payer quand meme ») a pu partir, la meme requete est toujours d'issue inconnue : on garde l'id, jamais de Payer.
+      if ((o.kind === 'ratelimit' || o.kind === 'retry') && (a.unsent || a.confirmRepeat)) {
+        settle(a, { ...a, unsent: true, recent: null, repeating: false, tries: a.unsent ? a.tries + 1 : 0 });
+        return;
+      }
       if (o.kind === 'pending') settle(a, { ...a, paymentId: o.paymentId, unsent: false, unknown: true, recent: null, repeating: false });
       else if (o.kind === 'open') {
         // le compte n'a qu'un abonnement : le paiement ouvert peut etre d'une autre formule, c'est elle qu'on annonce
@@ -377,13 +397,17 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         // paiement confirme il y a quelques minutes : on garde la tentative (et son id), l'ecran dedie decide ; jamais de renvoi automatique
         // (un 2e PAY-RECENT avec un autre payment_id reaffiche l'ecran avec ce nouveau paiement : la confirmation precedente ne vaut plus)
         settle(a, { ...a, recent: { paymentId: o.paymentId, plan: o.plan ?? '', paidAt: o.paidAt, skewMs: o.skewMs }, repeating: false, unsent: false, confirmRepeat: undefined });
+        gateReadyRef.current = false; // l'abonnement se recharge : pas de « Payer quand meme » avant son retour
         qc.invalidateQueries({ queryKey: ['subscription'] });
       } else if (o.kind === 'retry') {
         // un autre paiement de ce payeur vient de se terminer : jamais un nouveau Payer sur la foi d'un simple refus, on verifie l'abonnement d'abord
         settle(a, null);
         checkAfterAbandon(a);
-      } else if (o.kind === 'refused' || o.kind === 'conflict' || isDefinitiveRejection(err)) settle(a, null); // rien n'a ete cree : nouvelle cle au prochain essai
-      else settle(a, { ...a, unsent: true, recent: null, repeating: false, tries: a.unsent ? a.tries + 1 : 0 }); // issue inconnue : bloque tout nouveau checkout ; les echecs de « Reessayer » sont comptes ici, pas les clics
+      } else if (o.kind === 'refused' || o.kind === 'conflict' || isDefinitiveRejection(err)) {
+        endRef.current = 'failed';
+        endErrRef.current = err;
+        settle(a, null); // rien n'a ete cree : nouvelle cle au prochain essai
+      } else settle(a, { ...a, unsent: true, recent: null, repeating: false, tries: a.unsent ? a.tries + 1 : 0 }); // issue inconnue : bloque tout nouveau checkout ; les echecs de « Reessayer » sont comptes ici, pas les clics
     },
   });
   const { mutate, reset } = m;
@@ -434,7 +458,10 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
         if (cur && !sendingRef.current) {
           attemptRef.current = null;
           setAttemptState(null);
-          if (cur.unsent || cur.recent) checkAfterAbandon(cur); // abandon / « Garder ma formule » dans un autre onglet : meme verification que chez lui
+          endRef.current = 'other-tab';
+          // abandon / « Garder ma formule » dans un autre onglet : meme verification que chez lui ; une simple expiration de la fenetre ne declenche pas de toast
+          if (cur.unsent || (cur.recent && recentAgeMs(cur.recent) < RECENT_WINDOW_MS)) checkAfterAbandon(cur);
+          else if (cur.recent) qc.invalidateQueries({ queryKey: ['subscription'] });
         }
         return;
       }
@@ -562,11 +589,13 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     if (!cur?.recent || !cur.body || cur.repeating || sendingRef.current || checkingRef.current > 0 || !gateReadyRef.current) return;
     const next: Attempt = { ...cur, repeating: true, confirmRepeat: cur.recent.paymentId, sentAt: Date.now() }; // l'ecran recent reste affiche, occupe
     sendingRef.current = true;
-    update(next);
+    endRef.current = null;
+    update(next); // ecrit `repeating` : les autres onglets desactivent aussi « Payer quand meme »
     mutate(next); // meme id, meme corps, + confirm_repeat
   }, [mutate, update]);
 
-  const keepPlan = useCallback(() => {
+  const keepPlan = useCallback((cause: EndCause = 'keep') => {
+    endRef.current = cause;
     dismiss();
     qc.invalidateQueries({ queryKey: ['subscription'] });
   }, [dismiss, qc]);
@@ -577,7 +606,7 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
     const r = attemptRef.current?.recent;
     if (!r) return;
     const timer = setTimeout(() => {
-      if (!attemptRef.current?.repeating && !sendingRef.current) keepPlan();
+      if (!attemptRef.current?.repeating && !sendingRef.current) keepPlan('expired');
     }, Math.max(0, RECENT_WINDOW_MS - recentAgeMs(r)));
     return () => clearTimeout(timer);
   }, [recentKey, keepPlan]);
@@ -620,6 +649,8 @@ export function PaymentTrackerProvider({ children }: { children: ReactNode }) {
       submit,
       dismiss,
       abandon,
+      lastEnd: () => endRef.current,
+      lastFailure: () => endErrRef.current,
       confirmRepeat,
       keepPlan,
       setGateReady,

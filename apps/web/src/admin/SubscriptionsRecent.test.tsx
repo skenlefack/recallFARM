@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ApiError, setTransport, type Transport } from '../api/client';
 import { session } from '../api/session';
@@ -75,6 +75,12 @@ async function pay() {
   await waitFor(() => expect(btn).toBeEnabled());
   await userEvent.click(btn);
 }
+/** Bouton de l'ecran « paiement recent » : arme ~500 ms apres l'affichage (un double clic ne tombe jamais sur l'autre bouton). */
+const armed = async (name: string) => {
+  const btn = await screen.findByRole('button', { name });
+  await waitFor(() => expect(btn).toBeEnabled(), { timeout: 2000 });
+  return btn;
+};
 const subLoaded = async () => {
   await screen.findByText('Formule actuelle');
   await screen.findByText('Active');
@@ -197,7 +203,7 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     expect(await screen.findByText('Vous venez de payer la formule Pro il y a 3 min.')).toBeInTheDocument();
     expect(screen.getByText(/Paiement confirmé à \d{2}:\d{2}\./)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Garder ma formule' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Payer quand même' })).toBeEnabled();
+    await armed('Payer quand même');
     expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
     expect(screen.queryByText(/Confirmez pour payer encore/)).toBeNull();
     await new Promise((r) => setTimeout(r, 400));
@@ -212,7 +218,7 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     await subLoaded();
     await pay();
     await screen.findByText(/Vous venez de payer la formule Pro/);
-    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    await userEvent.click(await armed('Payer quand même'));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies).toHaveLength(2);
     expect(b.bodies[0]).not.toHaveProperty('confirm_repeat');
@@ -229,13 +235,13 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     await subLoaded();
     await pay();
     await screen.findByText('Vous venez de payer la formule Pro il y a 3 min.');
-    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    await userEvent.click(await armed('Payer quand même'));
     // un autre paiement a ete confirme entre-temps : nouvel ecran, nouveau paiement
     expect(await screen.findByText('Vous venez de payer la formule Structure il y a 1 min.')).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 400));
     expect(b.bodies).toHaveLength(2); // pas de 3e envoi automatique
     expect(b.bodies[1]).toMatchObject({ confirm_repeat: PID1 });
-    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    await userEvent.click(await armed('Payer quand même'));
     await screen.findByText(/Validez sur votre téléphone/);
     expect(b.bodies).toHaveLength(3);
     expect(b.bodies[2]).toEqual({ ...b.bodies[0], confirm_repeat: PID2 });
@@ -248,7 +254,7 @@ describe('PAY-RECENT : un paiement de ce compte vient d\'etre confirme', () => {
     renderApp(<Subscriptions />);
     await subLoaded();
     await pay();
-    await userEvent.click(await screen.findByRole('button', { name: 'Garder ma formule' }));
+    await userEvent.click(await armed('Garder ma formule'));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(b.bodies).toHaveLength(1);
     expect(Object.keys(localStorage).filter((k) => k.startsWith('rf.payment.v1.'))).toEqual([]);
@@ -415,7 +421,7 @@ describe('A-4 et A-5 : banniere et formule absente', () => {
     await pay();
     expect(await screen.findByText('Vous venez de payer il y a 3 min.')).toBeInTheDocument();
     expect(screen.queryByText(/formule Structure/)).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Garder ma formule' }));
+    await userEvent.click(await armed('Garder ma formule'));
     expect(screen.queryByText(/Un paiement de la formule/)).toBeNull();
   });
 
@@ -438,7 +444,7 @@ describe('S-1 et S-5 : Payer quand meme', () => {
     await subLoaded();
     await pay();
     await screen.findByText(/Vous venez de payer la formule Pro/);
-    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    await userEvent.click(await armed('Payer quand même'));
     const busy = await screen.findByRole('button', { name: 'Envoi de la demande…' });
     expect(busy).toBeDisabled();
     expect(busy).toHaveAttribute('aria-busy', 'true');
@@ -456,7 +462,7 @@ describe('S-1 et S-5 : Payer quand meme', () => {
     await subLoaded();
     await pay();
     await screen.findByText(/Vous venez de payer la formule Pro/);
-    await userEvent.dblClick(screen.getByRole('button', { name: 'Payer quand même' }));
+    await userEvent.dblClick(await armed('Payer quand même'));
     await new Promise((r) => setTimeout(r, 100));
     release(created('pay-2'));
     await screen.findByText(/Validez sur votre téléphone/);
@@ -476,7 +482,7 @@ describe('S-1 et S-5 : Payer quand meme', () => {
     await subLoaded();
     await pay();
     await screen.findByText(/Vous venez de payer la formule Pro/);
-    await userEvent.click(screen.getByRole('button', { name: 'Payer quand même' }));
+    await userEvent.click(await armed('Payer quand même'));
     expect(await screen.findByText(/La demande n’a pas reçu de réponse/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
     await screen.findByText(/Validez sur votre téléphone/);
@@ -515,5 +521,192 @@ describe('S-5 : payeur utilisateur', () => {
       expect(u).toContain('account_type=user');
       expect(u).toContain(`account_id=${j.user.id}`);
     }
+  });
+});
+
+const tooMany = () => json(429, { error: { code: 'RATE_LIMITED', message: 'Trop de requetes' } });
+const initRefused = () => json(422, { error: { code: 'BUSINESS_RULE', message: 'refus brut', details: { rule: 'PAY-INIT', payment_id: 'p-x' } } });
+const RATE = 'Trop de demandes, patientez une minute.';
+const storedId = () => JSON.parse(localStorage.getItem(storeKey())!).id as string;
+
+describe('B-NEW-1 : « pas traite maintenant » n\'est jamais une issue tranchee', () => {
+  it('429 puis PAY-RETRY sur « Reessayer » : meme id conserve, jamais de Payer, message dedie', async () => {
+    const b = backend({ checkout: (n) => (n === 1 ? tooMany() : retry409()) });
+    setTransport(b.transport);
+    seed({ unsent: true, sentAt: Date.now() - 10 * 60_000 });
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    expect(storedId()).toBe(ID);
+    await userEvent.click(await screen.findByRole('button', { name: 'Réessayer' }));
+    await waitFor(() => expect(b.bodies).toHaveLength(2));
+    expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    expect(storedId()).toBe(ID);
+    expect(new Set(b.bodies.map((x) => x.id))).toEqual(new Set([ID]));
+    expect(b.bodies[1]).toEqual(b.bodies[0]);
+  });
+
+  it('S-d : 429 sur le PREMIER envoi : texte dedie dans le formulaire (rien n\'est parti, Payer reste possible)', async () => {
+    const b = backend({ checkout: (n) => (n === 1 ? tooMany() : created()) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    expect(await screen.findByText(RATE)).toBeInTheDocument();
+    expect(screen.queryByText('La demande n’a pas pu être traitée. Réessayez dans un moment.')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Payer' })).toBeEnabled());
+  });
+});
+
+describe('A-NEW-1 : un echec de « Payer quand meme » ne ferme pas la fenetre en silence', () => {
+  const recentAt = () => new Date(Date.now() - 3 * 60_000).toISOString();
+
+  it('PAY-INIT : la notice est affichee, la fenetre reste ouverte', async () => {
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : initRefused()) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    await userEvent.click(await armed('Payer quand même'));
+    expect(await screen.findByText(/Paiement refusé/)).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByText(/refus brut/)).toBeNull();
+  });
+
+  it('PAY-INIT depuis la banniere (sans formule a afficher) : la fenetre se ferme AVEC un message', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 } });
+    setTransport(backend({ checkout: () => initRefused() }).transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(await armed('Payer quand même'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await screen.findByText(/Paiement refusé/)).toBeInTheDocument();
+  });
+
+  it('429 sur « Payer quand meme » : issue inconnue, meme id, « Reessayer » renvoie confirm_repeat, jamais de Payer', async () => {
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : n === 2 ? tooMany() : created('pay-5')) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    const id = storedId();
+    await userEvent.click(await armed('Payer quand même'));
+    expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    expect(storedId()).toBe(id);
+    await userEvent.click(screen.getByRole('button', { name: 'Réessayer' }));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies[2]).toMatchObject({ id, confirm_repeat: PID1 });
+    expect(b.bodies[2]).toEqual(b.bodies[1]);
+  });
+
+  it('PAY-RETRY sur « Payer quand meme » : meme traitement (issue inconnue, meme id, pas de Payer)', async () => {
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : retry409()) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    const id = storedId();
+    await userEvent.click(await armed('Payer quand même'));
+    expect(await screen.findByText(new RegExp(RATE))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Payer' })).toBeNull();
+    expect(storedId()).toBe(id);
+  });
+});
+
+describe('A-NEW-2 : les boutons de l\'ecran recent s\'arment apres un court delai', () => {
+  const recentAt = () => new Date(Date.now() - 3 * 60_000).toISOString();
+
+  it('desactives a l\'affichage, actifs ensuite ; un clic double (detail > 1) ne confirme rien', async () => {
+    const b = backend({ checkout: () => recent409(recentAt()) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    expect(screen.getByRole('button', { name: 'Payer quand même' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Garder ma formule' })).toBeDisabled();
+    const repeat = await armed('Payer quand même');
+    fireEvent.click(repeat, { detail: 2 });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(b.bodies).toHaveLength(1);
+  });
+});
+
+describe('S-b : « Payer quand meme » en cours dans un autre onglet', () => {
+  const recentAt = () => new Date(Date.now() - 3 * 60_000).toISOString();
+
+  it('l\'etat repeating est persiste pendant l\'envoi', async () => {
+    let release: (r: Response) => void = () => undefined;
+    const b = backend({ checkout: (n) => (n === 1 ? recent409(recentAt()) : (new Promise<Response>((r) => (release = r)) as unknown as Response)) });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await pay();
+    await screen.findByText(/Vous venez de payer la formule Pro/);
+    await userEvent.click(await armed('Payer quand même'));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(storeKey())!).repeating).toBe(true));
+    release(created('pay-1'));
+    await screen.findByText(/Validez sur votre téléphone/);
+  });
+
+  it('un autre onglet voit l\'envoi en cours : « Payer quand meme » desactive ; un marqueur perime (onglet ferme) est ignore', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 }, repeating: true, sentAt: Date.now() });
+    setTransport(backend({}).transport);
+    const first = renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await new Promise((r) => setTimeout(r, 700));
+    expect(screen.getByRole('button', { name: 'Envoi de la demande…' })).toBeDisabled();
+    first.unmount();
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: recentAt(), skewMs: 0 }, repeating: true, sentAt: Date.now() - 5 * 60_000 });
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await armed('Payer quand même');
+  });
+});
+
+describe('S-e : expirations par minuteur', () => {
+  const almostExpired = (ms: number) => new Date(Date.now() - 30 * 60_000 + ms).toISOString();
+
+  it('fenetre ouverte : a l\'expiration l\'ecran se ferme, sans toast d\'echec, abonnement recharge, stockage vide', async () => {
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: almostExpired(1200), skewMs: 0 } });
+    const b = backend({});
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    const calls = b.subCalls();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    expect(await screen.findByText(/Vous venez de payer la formule Pro/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 4000 });
+    expect(localStorage.getItem(storeKey())).toBeNull();
+    expect(screen.queryByText(/Paiement refusé|n’a pas pu être traitée/)).toBeNull();
+    await waitFor(() => expect(b.subCalls()).toBeGreaterThan(calls));
+  });
+
+  it('pendant « Payer quand meme » : pas d\'expiration, l\'envoi aboutit', async () => {
+    let release: (r: Response) => void = () => undefined;
+    seed({ recent: { paymentId: PID1, plan: 'pro', paidAt: almostExpired(1500), skewMs: 0 } });
+    const b = backend({ checkout: () => new Promise<Response>((r) => (release = r)) as unknown as Response });
+    setTransport(b.transport);
+    renderApp(<Subscriptions />);
+    await subLoaded();
+    await userEvent.click(await screen.findByRole('button', { name: 'Voir le paiement' }));
+    await userEvent.click(await armed('Payer quand même'));
+    await new Promise((r) => setTimeout(r, 1800)); // le minuteur d'expiration a sonne pendant l'envoi
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Envoi de la demande…' })).toBeDisabled();
+    release(created('pay-7'));
+    await screen.findByText(/Validez sur votre téléphone/);
+    expect(b.bodies[0]).toMatchObject({ id: ID, confirm_repeat: PID1 });
   });
 });

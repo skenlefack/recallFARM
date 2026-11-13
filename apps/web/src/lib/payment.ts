@@ -6,12 +6,14 @@ export type CheckoutOutcome =
   | { kind: 'conflict' } // PAY-IDEMPOTENCY : la cle a servi a une autre demande
   | { kind: 'open'; paymentId: string; plan?: string } // PAY-OPEN : le compte a deja un paiement ouvert (toutes formules), on le suit
   | { kind: 'recent'; paymentId: string; plan?: string; paidAt: string; skewMs: number } // PAY-RECENT : un paiement de ce payeur a ete confirme il y a quelques minutes ; passer outre = decision explicite
+  | { kind: 'ratelimit' } // 429 : « pas traite maintenant », jamais une issue tranchee
   | { kind: 'retry' } // PAY-RETRY : un autre paiement de ce payeur vient de se terminer ; la suite se decide apres rechargement de l'abonnement
   | { kind: 'other' };
 
 /** Interprete une erreur de POST /subscriptions/checkout (422 BUSINESS_RULE, 409 CONFLICT). */
 export function checkoutOutcome(err: unknown): CheckoutOutcome {
   if (!(err instanceof ApiError)) return { kind: 'other' };
+  if (err.status === 429) return { kind: 'ratelimit' };
   if (err.code === 'CONFLICT' && err.rule === 'PAY-IDEMPOTENCY') return { kind: 'conflict' };
   if (err.code === 'CONFLICT' && err.rule === 'PAY-RETRY') return { kind: 'retry' };
   if (err.code === 'CONFLICT' && err.rule === 'PAY-RECENT') {
