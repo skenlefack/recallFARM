@@ -84,7 +84,9 @@ See `.env.example` (every variable documented). Required in production: `JWT_ACC
   `confirm_repeat` = `details.payment_id` of that 409 (the payment shown): accepted, journaled (`events` source `client`, detail `repeat_confirmed`; `audit_log`
   `checkout_repeat_confirmed`, actor_role `payeur` or `gestionnaire_org`). A `confirm_repeat` naming an older payment gets a new
   409 with the current one; without a recent payment it is ignored. The replay of an id is never PAY-RECENT; PAY-OPEN is checked
-  first, both again at each try in the insert transaction under a per-payer advisory lock.
+  first, both again at each try in the insert transaction under a per-payer advisory lock (`lock_timeout` 5 s, then
+  `409 PAY-RETRY`). `confirm_repeat` is compared without case. Checkout has its own limit, `CHECKOUT_THROTTLE_LIMIT` per minute
+  and client (default 10, each request sends a payment prompt; 429 `RATE_LIMITED`).
 - **PAY-OPEN (EF-ABO-01)**: one open subscription payment (`initie`, `en_attente`, `a_verifier`) per payer, **whatever the plan**
   (an account has one subscription). A checkout with another id, key or plan meanwhile answers `409 CONFLICT`
   `details: {rule: 'PAY-OPEN', payment_id, status, plan}` (the client follows that payment); the replay of the same id/key is still a
